@@ -85,11 +85,26 @@ Fold semantics (documented on the unit itself):
 
 ## Install
 
+`dsh plugin --profile <name>` forwards to pnpm inside the profile directory
+and reconciles `dsh.profile.bundles` automatically (any installed dependency
+whose package declares `dsh.bundle.patch` joins the layer stack). Profiles
+are pnpm workspace roots, so `add` needs `-w`:
+
 ```bash
-dsh plugin --profile web add --workspace /abs/path/to/dsh-pulse
+# from the npm registry
+dsh plugin --profile web add -w dsh-pulse
+
+# from a packed tarball (pnpm pack, no publishing involved)
+dsh plugin --profile web add -w /abs/path/to/dsh-pulse-0.2.0.tgz
+
+# from a source checkout (development)
+dsh plugin --profile web add -w link:/abs/path/to/dsh-pulse
+
+# from git
+dsh plugin --profile web add -w git+https://github.com/<you>/dsh-pulse
+
 # …or manually: add "dsh-pulse": "link:/abs/path/to/dsh-pulse" to
-# ~/.dsh/profiles/web/package.json dependencies (the dsh.bundle.patch
-# declaration puts it into the bundles list automatically), then pnpm install
+# ~/.dsh/profiles/web/package.json dependencies, then pnpm install
 # inside the profile directory.
 ```
 

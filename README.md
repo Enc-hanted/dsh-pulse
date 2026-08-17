@@ -1,5 +1,7 @@
 # dsh-pulse
 
+**English** | [简体中文](./README.zh-CN.md)
+
 **Cross-session usage & cost observatory for [dsh](https://github.com/deepseek-ai/deepseek-harness)** — the first thing everyone wants from a new agent harness: *what did it actually cost me?*
 
 `dsh-pulse` folds every session in your corpus (live + persisted) into per-session

@@ -1,0 +1,52 @@
+{
+  "name": "dsh-pulse",
+  "version": "0.3.0",
+  "description": "Cross-session usage & cost observatory for dsh — daily token charts, cache hit ring, 90d/1y heatmaps, model and project breakdowns in the web UI",
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=22.15"
+  },
+  "exports": {
+    ".": "./src/index.js",
+    "./aggregate": "./src/aggregate.js",
+    "./view": "./src/view.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "lib/client.js",
+    "scripts/sync-mirror.mjs",
+    "test",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "usage",
+    "analytics",
+    "dashboard",
+    "heatmap"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@deepseek-ai/dsh-credentials": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-storage-domain": "^0.1.0-rc.6",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "zod": "^4.4.3"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [],
+      "immediately": false
+    }
+  }
+}

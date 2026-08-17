@@ -1,0 +1,27 @@
+# dsh-pulse bundle patch: inserts the usage observatory over the profile
+# root. A patch replaces a targeted row's whole config, so this row restates
+# every key it owns. Pricing defaults come from the official page
+# (https://api-docs.deepseek.com/zh-cn/quick_start/pricing/, checked
+# 2026-08-17) and are built into the plugin; list rules here only to override.
+# Official rates are peak/off-peak over the official Beijing-time windows
+# (09:00–12:00, 14:00–18:00): use a `peak` block for peak-hour rates (omit it
+# for a flat rate) and `peakHours` (0–23, Beijing time) to override the
+# windows per model. Rules price in CNY (default) or USD; USD converts into
+# the unified CNY total through `usdToCny`.
+# `costEnabled: false` hides the cost chip and the /pulse command cost line.
+# All of this is also editable live from the settings page (Settings →
+# 用量观测台 → 定价与费用), which persists to `$DSH_HOME/settings.yaml`; this
+# patch stays the composition `base` layer under those user edits.
+#
+# `defaultDays` names the window served when the client sends no range; the
+# client normally requests an explicit `from`/`to`. The host half also
+# requires the harness's session-projection seam (registry + persisted
+# cache), which the web profile's base/web-app bundles already compose.
+- insert:
+    - id: pulse
+      name: 'dsh-pulse'
+      config:
+        defaultDays: 30
+        topProjects: 8
+        usdToCny: 6.8
+        pricing: []

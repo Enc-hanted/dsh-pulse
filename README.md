@@ -136,7 +136,7 @@ dsh plugin --profile web add -w /abs/path/to/dsh-pulse-0.3.0.tgz
 dsh plugin --profile web add -w link:/abs/path/to/dsh-pulse
 
 # from git
-dsh plugin --profile web add -w git+https://github.com/<you>/dsh-pulse
+dsh plugin --profile web add -w git+https://github.com/Enc-hanted/dsh-pulse
 
 # …or manually: add "dsh-pulse": "link:/abs/path/to/dsh-pulse" to
 # ~/.dsh/profiles/web/package.json dependencies, then pnpm install

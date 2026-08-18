@@ -33,7 +33,7 @@ With a stored `DEEPSEEK_API_KEY`, the dashboard also shows the official balance 
 dsh plugin --profile web add -w dsh-pulse
 
 # from a packed tarball
-dsh plugin --profile web add -w /abs/path/to/dsh-pulse-0.3.0.tgz
+dsh plugin --profile web add -w /abs/path/to/dsh-pulse-0.4.0.tgz
 
 # from a source checkout (development)
 dsh plugin --profile web add -w link:/abs/path/to/dsh-pulse
@@ -68,6 +68,10 @@ Currency: rules price in **CNY** (default) or **USD**; USD-priced models convert
 ## Configuration
 
 **Settings → Usage Pulse → Pricing & cost** edits the rates. Model rows come from the Models settings page with official DeepSeek rates prefilled; each row takes off-peak input / cache-hit / output rates, a CNY/USD selector, and a 24-hour peak strip (Beijing time, official windows by default, all deselected = flat). The exchange-rate field re-prices the loaded window with your unsaved edits. **Official rates** resets a row to the baseline; **Refresh catalog** re-reads the model catalog; **Enable cost estimates** turns cost figures off entirely. Fallback rows cover models with usage but no catalog entry, saved rules matching neither, and a manual add for the rest; without the `llm` service the editor runs on these rows alone.
+
+**Compare plans** (Settings → Usage Pulse → Compare plans) prices a usage scenario (total input, output/input ratio, cache hit rate) against the effective pricing rules (official defaults included), so rate edits show up here automatically. Temporary plans can be added; every plan can be shown or hidden. The scenario can be taken from the real usage window, or set by hand.
+
+**Display settings** (Settings → Usage Pulse → Display settings) toggle each dashboard panel and the sidebar balance indicator. The **monthly budget** card on the dashboard takes a CNY budget and shows month-to-date spend, a progress bar and a run-rate month-end forecast; the balance bar shows how many days the balance lasts at the recent spend rate. All local preferences.
 
 Saves go to `$DSH_HOME/settings.yaml` (`pulse:` section), apply immediately, and survive restarts. **Restore defaults** clears the user section back to the composition config and the official defaults. Without a settings service the page is read-only.
 

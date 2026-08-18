@@ -1,12 +1,20 @@
 {
   "name": "dsh-pulse",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Cross-session usage & cost observatory for dsh — daily token charts, cache hit ring, 90d/1y heatmaps, model and project breakdowns in the web UI",
   "type": "module",
   "main": "src/index.js",
   "engines": {
     "node": ">=22.15"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Enc-hanted/dsh-pulse.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Enc-hanted/dsh-pulse/issues"
+  },
+  "homepage": "https://github.com/Enc-hanted/dsh-pulse#readme",
   "exports": {
     ".": "./src/index.js",
     "./aggregate": "./src/aggregate.js",

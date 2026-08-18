@@ -76,6 +76,7 @@ const pricingRuleSchema = z.object({
 
 /** Schemastery validation with deployment-friendly defaults. */
 export const Config = z.object({
+  currency: z.union(["CNY", "USD"]).default("CNY").description("global pricing currency; every effective rule prices in it and USD rates convert to the unified CNY total"),
   topProjects: z.number().default(8).description("how many project rows to keep in the breakdown"),
   projectDepth: z.number().default(1).description("path segments kept in a project label (1..3; deeper disambiguates same-named directories)"),
   defaultDays: z.number().default(30).description("day window served when the client sends no range"),
@@ -85,7 +86,9 @@ export const Config = z.object({
 });
 
 /** Resolve the effective pricing rules (config wins, official defaults fill
- *  in; `peakHours` normalized so the editor and the fold see clean lists). */
+ *  in; `peakHours` normalized so the editor and the fold see clean lists;
+ *  every rule prices in the one global currency — per-rule `currency` values
+ *  from older configs are superseded). */
 function effectivePricing(config) {
   const rules = new Map();
   for (const rule of OFFICIAL_PRICING) rules.set(rule.model, { ...rule, peakHours: normalizePeakHours(rule.peakHours) });
@@ -96,7 +99,8 @@ function effectivePricing(config) {
       peakHours: normalizePeakHours(rule.peakHours ?? rules.get(rule.model)?.peakHours),
     });
   }
-  return [...rules.values()];
+  const currency = config.currency === "USD" ? "USD" : "CNY";
+  return [...rules.values()].map((rule) => ({ ...rule, currency }));
 }
 
 /** Canonical model→peak-hours map of the effective pricing, the fold's
@@ -671,6 +675,7 @@ function serveSettings(ctx, resolveConfig, getSettings, getLlm, invalidate, pred
       const config = resolveConfig();
       const settings = getSettings();
       const body = {
+        currency: config.currency === "USD" ? "USD" : "CNY",
         costEnabled: config.costEnabled !== false,
         pricing: effectivePricing(config),
         fx: { usdToCny: effectiveUsdToCny(config) },
@@ -705,6 +710,7 @@ function serveSettings(ctx, resolveConfig, getSettings, getLlm, invalidate, pred
       costEnabled: z.boolean(),
       usdToCny: z.number(),
       pricing: z.array(pricingRuleSchema),
+      currency: z.union(["CNY", "USD"]),
       reset: z.boolean(),
     });
     try {
@@ -719,16 +725,19 @@ function serveSettings(ctx, resolveConfig, getSettings, getLlm, invalidate, pred
       return;
     }
     // Predicted before persisting: the watch (and the re-register it may
-    // trigger) can fire before replace resolves, which would otherwise
+    // trigger) can fire before the write resolves, which would otherwise
     // compare the new map against itself.
     const refold = predictRefold(parsed) === true;
-    const current = resolveConfig();
     const persist = parsed.reset === true
       ? settings.scope.replace({})
-      : settings.scope.replace({
-        costEnabled: parsed.costEnabled ?? true,
-        usdToCny: parsed.usdToCny ?? effectiveUsdToCny(current),
-        pricing: parsed.pricing ?? [],
+      // Partial merge: each present field lands in the user section and
+      // everything else re-inherits the composition base — the pricing page
+      // and the currency settings can save independently.
+      : settings.scope.update({
+        ...(parsed.costEnabled !== undefined ? { costEnabled: parsed.costEnabled } : {}),
+        ...(parsed.usdToCny !== undefined ? { usdToCny: parsed.usdToCny } : {}),
+        ...(parsed.pricing !== undefined ? { pricing: parsed.pricing } : {}),
+        ...(parsed.currency !== undefined ? { currency: parsed.currency } : {}),
       });
     return persist
       .then(() => {

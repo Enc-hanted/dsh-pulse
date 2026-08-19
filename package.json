@@ -1,6 +1,6 @@
 {
   "name": "dsh-pulse",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Cross-session usage & cost observatory for dsh — daily token charts, cache hit ring, 90d/1y heatmaps, model and project breakdowns in the web UI",
   "type": "module",
   "main": "src/index.js",
@@ -29,6 +29,7 @@
     "test",
     "cordis.patch.yml",
     "README.md",
+    "README.zh-CN.md",
     "LICENSE"
   ],
   "keywords": [

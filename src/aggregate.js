@@ -20,7 +20,7 @@
 
 import { z } from "zod";
 
-import { DEFAULT_USD_TO_CNY } from "./view.js";
+import { DEFAULT_USD_TO_CNY, modelKey } from "./view.js";
 
 /** Local-timezone `YYYY-MM-DD` for a Unix epoch millisecond stamp. */
 export function localDay(timeMs) {
@@ -220,8 +220,11 @@ export function tierAt(timeMs, peakHours = PEAK_HOURS) {
  * Folding semantics:
  * - `byDay` / `modelsByDay` accumulate the disjoint provider usage of each
  *   `assistant/message` event (input = uncached input; cacheRead/cacheWrite
- *   are reported separately by the harness adapters). Events whose adapter
- *   reported no usage, or whose sum is zero, add nothing.
+ *   are reported separately by the harness adapters). Model keys are
+ *   `provider\u0000model` composites from the event's message source, so
+ *   same-named models of different providers fold into distinct rows; a
+ *   missing provider (legacy events) falls back to the bare model id.
+ *   Events whose adapter reported no usage, or whose sum is zero, add nothing.
  * - `hoursByDay` keeps the same usage per local `HH` hour and per model for
  *   the most recent {@link HOURS_RETENTION_DAYS} days — the hourly line
  *   chart's data source, model-filterable. Older hour maps are pruned as
@@ -246,13 +249,14 @@ export function tierAt(timeMs, peakHours = PEAK_HOURS) {
  *
  * @param {object} [options]
  * @param {(model: string) => number[]} [options.peakHoursFor] - peak hour
- *   set per model id (Beijing time); omitted models fold at the official
- *   windows. Defaults to the official windows for everything.
- * @param {number} [options.stateVersion=4] - fold-semantics version; the
+ *   set per composite model key (`provider\u0000model`, bare id without a
+ *   provider); omitted models fold at the official windows. Defaults to the
+ *   official windows for everything.
+ * @param {number} [options.stateVersion=5] - fold-semantics version; the
  *   host bumps it when peak-hour settings change so persisted rows replay.
  * @returns {object} the projection definition (`key`, `schema`, `init`, `apply`, `view`, `stateVersion`).
  */
-export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 4 } = {}) {
+export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 5 } = {}) {
   const dayOf = (event) => (num(event.time) > 0 ? localDay(event.time) : null);
   /** Per-model hour sets, materialized once (the map lives and dies with one
    *  registration, so a re-register on settings change starts it fresh). An
@@ -300,7 +304,9 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 4 } = {
           + num(usage.cacheReadTokens) + num(usage.cacheWriteTokens);
         if (sum <= 0) return state;
         const source = data.message?.source;
-        const model = typeof source?.model === "string" && source.model.length > 0 ? source.model : "unknown";
+        // Provider + model provenance: the composite key keeps same-named
+        // models of different providers distinct in every per-model map.
+        const key = modelKey(source?.provider, source?.model);
         const day = dayOf(event);
         if (day === null) return state; // untimestamped: nothing is day-attributed
         const next = { ...state };
@@ -310,26 +316,26 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 4 } = {
         next.byDay[day] = daily;
         next.modelsByDay = { ...state.modelsByDay };
         const dayModels = { ...(state.modelsByDay[day] ?? {}) };
-        const perModel = { ...(dayModels[model] ?? EMPTY_TOKENS()) };
+        const perModel = { ...(dayModels[key] ?? EMPTY_TOKENS()) };
         addTokens(perModel, usage);
-        dayModels[model] = perModel;
+        dayModels[key] = perModel;
         next.modelsByDay[day] = dayModels;
         next.hoursByDay = prunedHours(state.hoursByDay, day);
         const hh = hourKey(event.time);
         const dayHours = { ...(next.hoursByDay[day] ?? {}) };
         const hourModels = { ...(dayHours[hh] ?? {}) };
-        const perHourModel = { ...(hourModels[model] ?? EMPTY_TOKENS()) };
+        const perHourModel = { ...(hourModels[key] ?? EMPTY_TOKENS()) };
         addTokens(perHourModel, usage);
-        hourModels[model] = perHourModel;
+        hourModels[key] = perHourModel;
         dayHours[hh] = hourModels;
         next.hoursByDay = { ...next.hoursByDay, [day]: dayHours };
         // Peak/off-peak split (Beijing-time hour set, per model) per day and
         // model, the cost estimate's tier source for any window length.
         next.tiersByDay = { ...state.tiersByDay };
         const dayTiers = { ...(state.tiersByDay[day] ?? {}) };
-        const modelTiers = { ...(dayTiers[model] ?? EMPTY_TIER()) };
-        addTier(modelTiers, usage, tierAt(event.time, hoursOf(model)));
-        dayTiers[model] = modelTiers;
+        const modelTiers = { ...(dayTiers[key] ?? EMPTY_TIER()) };
+        addTier(modelTiers, usage, tierAt(event.time, hoursOf(key)));
+        dayTiers[key] = modelTiers;
         next.tiersByDay = { ...next.tiersByDay, [day]: dayTiers };
         withFirstDay(next, day);
         return next;
@@ -436,7 +442,7 @@ export function balanceSpendSeries(snapshots, fromDay, toDay) {
  * or the creation day when the session was created inside the window without
  * activity yet. Records with nothing in the window fold to null.
  *
- * @param {object} record - `{id, createdAt, createdDay, project, subagent, firstDay, byDay, modelsByDay, turnsByDay, toolCallsByDay}`.
+ * @param {object} record - `{id, createdAt, createdDay, project, subagent, parentSession, delegationDepth, firstDay, byDay, modelsByDay, turnsByDay, toolCallsByDay}`.
  * @param {string} fromDay - inclusive `YYYY-MM-DD`.
  * @param {string} toDay - inclusive `YYYY-MM-DD`.
  * @returns {object|null} the windowed record, or null when nothing lands in the window.
@@ -465,6 +471,8 @@ export function sliceRecord(record, fromDay, toDay) {
     createdAt: record.createdAt ?? null,
     project: record.project ?? null,
     subagent: record.subagent === true,
+    parentSession: record.parentSession ?? null,
+    delegationDepth: Number.isFinite(record.delegationDepth) ? record.delegationDepth : 0,
     day: anchor,
     byDay,
     modelsByDay,
@@ -473,6 +481,69 @@ export function sliceRecord(record, fromDay, toDay) {
     turnsByDay,
     toolCallsByDay,
   };
+}
+
+/**
+ * Compact event-level timeline of one session's LLM usage, extracted from
+ * its raw event log (seconds-accurate timestamps). Each entry is one
+ * `assistant/message` whose adapter reported usage; model keys are the same
+ * `provider\u0000model` composites the projection folds. `turns` collects
+ * closed `turn/start`→`turn/end` boundaries so the client can align break
+ * marks to task stages, not just wall-clock time.
+ *
+ * @param {Array<object>} events - a session's raw event log (ascending seq).
+ * @param {object} [options]
+ * @param {string} [options.id] - session id echoed into the result.
+ * @param {object} [options.header] - the session header (identity fields).
+ * @returns {{id: string|null, header: object, events: Array, turns: Array}}
+ *   `events` = `[{t, i, o, cr, cw, key}]` sorted by time; `turns` =
+ *   `[{start, end}]` in time order.
+ */
+export function timelineEvents(events, { id = null, header = null } = {}) {
+  const out = [];
+  const turns = [];
+  let openStart = null;
+  for (const event of Array.isArray(events) ? events : []) {
+    if (event === null || typeof event !== "object") continue;
+    if (event.type === "assistant/message") {
+      const t = num(event.time);
+      const u = compactUsage(event);
+      if (t > 0 && u !== null) out.push({ t, ...u });
+    } else if (event.type === "turn/start") {
+      const t = num(event.time);
+      if (t > 0) openStart = t;
+    } else if (event.type === "turn/end" && openStart !== null) {
+      const t = num(event.time);
+      if (t > 0 && t >= openStart) turns.push({ start: openStart, end: t });
+      openStart = null;
+    }
+  }
+  out.sort((a, b) => a.t - b.t);
+  const headerOut = header === null || typeof header !== "object"
+    ? {}
+    : {
+      id: header.id ?? null,
+      createdAt: header.createdAt ?? null,
+      cwd: header.cwd ?? null,
+      origin: header.origin === "subagent" ? "subagent" : "main",
+      parentSession: header.parentSession ?? null,
+      delegationDepth: Number.isFinite(header.delegationDepth) ? header.delegationDepth : 0,
+    };
+  return { id: id ?? headerOut.id ?? null, header: headerOut, events: out, turns };
+}
+
+/** One `assistant/message` usage event compacted for the session timeline,
+ *  or null when the event has no usable usage. */
+function compactUsage(event) {
+  const usage = event?.data?.usage;
+  if (usage === null || typeof usage !== "object") return null;
+  const input = num(usage.inputTokens);
+  const output = num(usage.outputTokens);
+  const cacheRead = num(usage.cacheReadTokens);
+  const cacheWrite = num(usage.cacheWriteTokens);
+  if (input + output + cacheRead + cacheWrite <= 0) return null;
+  const source = event?.data?.message?.source;
+  return { i: input, o: output, cr: cacheRead, cw: cacheWrite, key: modelKey(source?.provider, source?.model) };
 }
 
 /**
@@ -487,10 +558,12 @@ export function sliceRecord(record, fromDay, toDay) {
  * @param {boolean} [options.costEnabled] - whether the client should show cost estimates.
  * @param {{usdToCny?: number}} [options.fx] - USD→CNY rate for the unified
  *   CNY cost display (invalid values fall back to the built-in default).
+ * @param {string[]} [options.monthly] - provider ids billed as a flat monthly
+ *   subscription, echoed to the client for zero-cost pricing.
  * @param {number} [options.now] - clock override for tests.
  * @returns {object} the JSON payload.
  */
-export function buildPayload({ records, fromDay, toDay, pricing = [], topProjects = 8, costEnabled = true, fx = {}, now = Date.now() }) {
+export function buildPayload({ records, fromDay, toDay, pricing = [], topProjects = 8, costEnabled = true, fx = {}, monthly = [], now = Date.now() }) {
   const today = localDay(now);
   const window = resolveWindow(
     { from: validDay(fromDay) ? fromDay : undefined, to: validDay(toDay) ? toDay : undefined },
@@ -509,6 +582,7 @@ export function buildPayload({ records, fromDay, toDay, pricing = [], topProject
     fromDay: window.fromDay,
     toDay: window.toDay,
     pricing: Array.isArray(pricing) ? pricing : [],
+    monthly: Array.isArray(monthly) ? monthly : [],
     topProjects: Number.isFinite(top) && top > 0 ? Math.floor(top) : 8,
     costEnabled: costEnabled !== false,
     fx: { usdToCny: Number.isFinite(rate) && rate > 0 ? rate : DEFAULT_USD_TO_CNY },

@@ -4,9 +4,9 @@ import { defineDomain } from "@deepseek-ai/dsh-storage-domain";
 import { z as zv } from "zod";
 import {
   balanceSpendSeries, buildPayload, localDay, normalizePeakHours, projectOf,
-  pulseProjectionDefinition, resolveWindow, sliceRecord, PEAK_HOURS,
+  pulseProjectionDefinition, resolveWindow, sliceRecord, timelineEvents, PEAK_HOURS,
 } from "./aggregate.js";
-import { buildView, DEFAULT_USD_TO_CNY, fmtCost } from "./view.js";
+import { buildView, DEFAULT_USD_TO_CNY, fmtCost, modelKey, splitModelKey } from "./view.js";
 
 /**
  * dsh-pulse — the usage & cost observatory.
@@ -59,8 +59,10 @@ const OFFICIAL_PRICING = [
 
 /** One pricing rule (top-level rates are off-peak; `peak` holds the
  *  peak-hour rates when the model bills by time of day; `peakHours` lists
- *  the peak hours in Beijing time). */
+ *  the peak hours in Beijing time; `provider` scopes the rule to one
+ *  provider route — empty prices the model id wherever it appears). */
 const pricingRuleSchema = z.object({
+  provider: z.string().default("").description("provider route id the rates apply to (empty = any provider, e.g. the official defaults)"),
   model: z.string().description("model id the rates apply to (as reported in usage events)"),
   input: z.number().default(0).description("price per million uncached input tokens in off-peak hours (cache misses and writes)"),
   cacheRead: z.number().description("price per million cache-hit input tokens in off-peak hours (defaults to `input` when omitted)"),
@@ -82,24 +84,35 @@ export const Config = z.object({
   defaultDays: z.number().default(30).description("day window served when the client sends no range"),
   costEnabled: z.boolean().default(true).description("show cost estimates; off hides the cost chip and the /pulse command cost line"),
   usdToCny: z.number().default(DEFAULT_USD_TO_CNY).description("USD→CNY rate converting USD-priced models into the unified CNY estimate"),
+  monthlyProviders: z.array(z.string()).default([]).description("provider route ids billed as a flat monthly subscription — their models cost 0 marginal and need no per-model rates"),
   pricing: z.array(pricingRuleSchema).default([]).description("per-model rates; empty disables cost estimation"),
 });
 
 /** Resolve the effective pricing rules (config wins, official defaults fill
  *  in; `peakHours` normalized so the editor and the fold see clean lists;
  *  every rule prices in the one global currency — per-rule `currency` values
- *  from older configs are superseded). */
+ *  from older configs are superseded). Rules are keyed by `provider\u0000model`
+ *  (bare model id when provider-less), so a provider-scoped rule coexists
+ *  with the wildcard default for the same model id. */
 function effectivePricing(config) {
   const rules = new Map();
-  for (const rule of OFFICIAL_PRICING) rules.set(rule.model, { ...rule, peakHours: normalizePeakHours(rule.peakHours) });
+  const currency = config.currency === "USD" ? "USD" : "CNY";
+  for (const rule of OFFICIAL_PRICING) {
+    const key = modelKey("", rule.model);
+    rules.set(key, { ...rule, provider: "", peakHours: normalizePeakHours(rule.peakHours), currency });
+  }
   for (const rule of Array.isArray(config.pricing) ? config.pricing : []) {
-    rules.set(rule.model, {
-      ...(rules.get(rule.model) ?? {}),
-      ...rule,
-      peakHours: normalizePeakHours(rule.peakHours ?? rules.get(rule.model)?.peakHours),
+    const model = typeof rule?.model === "string" && rule.model !== "" ? rule.model : null;
+    if (model === null) continue;
+    const provider = typeof rule?.provider === "string" && rule.provider.length > 0 ? rule.provider : "";
+    const key = modelKey(provider, model);
+    const prev = rules.get(key) ?? {};
+    rules.set(key, {
+      ...prev, ...rule, provider,
+      peakHours: normalizePeakHours(rule.peakHours ?? prev.peakHours),
+      currency,
     });
   }
-  const currency = config.currency === "USD" ? "USD" : "CNY";
   return [...rules.values()].map((rule) => ({ ...rule, currency }));
 }
 
@@ -108,11 +121,16 @@ function effectivePricing(config) {
  *  windows appear (everything else folds at the official windows anyway), so
  *  deep-equality over this map decides whether changing settings requires
  *  re-folding history (re-registering the projection unit at a bumped state
- *  version); price-only edits and new flat rules never trigger a replay. */
+ *  version); price-only edits and new flat rules never trigger a replay.
+ *  Wildcard (provider-less) rules index the bare model id so events folded
+ *  under a `provider\u0000model` key still hit them. */
 function peakMapOf(config) {
   const map = new Map();
   for (const rule of effectivePricing(config)) {
-    if (rule.peakHours.join() !== PEAK_HOURS.join()) map.set(rule.model, rule.peakHours);
+    if (rule.peakHours.join() !== PEAK_HOURS.join()) {
+      const provider = rule.provider ?? "";
+      map.set(provider === "" ? rule.model : modelKey(provider, rule.model), rule.peakHours);
+    }
   }
   return map;
 }
@@ -226,6 +244,8 @@ async function aggregate(ctx, config, fromDay, toDay, snapshotsOf) {
         createdDay: localDay(header.createdAt),
         project: projectOf(header.cwd, config.projectDepth),
         subagent: header.origin === "subagent",
+        parentSession: header.parentSession ?? null,
+        delegationDepth: Number.isFinite(header.delegationDepth) ? header.delegationDepth : 0,
         firstDay: pulse?.firstDay ?? null,
         byDay: pulse?.byDay ?? {},
         modelsByDay: pulse?.modelsByDay ?? {},
@@ -247,6 +267,7 @@ async function aggregate(ctx, config, fromDay, toDay, snapshotsOf) {
     topProjects: config.topProjects,
     costEnabled: config.costEnabled !== false,
     fx: { usdToCny: effectiveUsdToCny(config) },
+    monthly: Array.isArray(config.monthlyProviders) ? config.monthlyProviders : [],
   });
   // The reconciliation overlay rides along when the storage domain (and
   // therefore snapshot history) is available; otherwise the key stays absent
@@ -287,12 +308,27 @@ function summarize(payload) {
   return lines.join("\n");
 }
 
+/** Short TTL for the enumerated catalog: the model catalog is configuration,
+ *  not hot data, so a brief cache lets rapid tab switching read the editor's
+ *  source of truth without re-listing every provider's models each time. */
+const CATALOG_CACHE_MS = 3000;
+let catalogCache = { at: 0, value: null, llm: null };
+/** Drop the catalog cache (e.g. after a settings save). */
+function invalidateCatalog() {
+  catalogCache = { at: 0, value: null, llm: null };
+}
+
 /** Enumerate the harness's current model catalog (the Models settings page)
  *  through the `llm` service: one group per provider route, each with its
  *  configured models. One broken provider is skipped, never fatal; the call
- *  is advisory and touches no network on the bundled adapters. */
+ *  is advisory and touches no network on the bundled adapters. Result is
+ *  cached briefly per `llm` reference to keep rapid page-switch reads cheap. */
 async function catalogOf(llm) {
   if (llm === null || typeof llm !== "object") return [];
+  if (catalogCache.llm === llm && catalogCache.value !== null
+    && Date.now() - catalogCache.at < CATALOG_CACHE_MS) {
+    return catalogCache.value;
+  }
   if (typeof llm.listProviders !== "function" || typeof llm.listModels !== "function") return [];
   const out = [];
   for (const provider of llm.listProviders()) {
@@ -307,6 +343,7 @@ async function catalogOf(llm) {
       // An unreadable catalog must not break the settings editor.
     }
   }
+  catalogCache = { at: Date.now(), value: out, llm };
   return out;
 }
 
@@ -330,9 +367,11 @@ export function apply(ctx, config) {
    *  rows of every older epoch are invalid by construction. */
   let epoch = 0;
   let peakMap = peakMapOf(config);
-  const peakHoursFor = (model) => peakMap.get(model) ?? PEAK_HOURS;
+  /** Peak hours for a composite fold key (`provider\u0000model`), falling back
+   *  to a provider-less (wildcard) rule's hours and then the official ones. */
+  const peakHoursFor = (model) => peakMap.get(model) ?? peakMap.get(splitModelKey(model).model) ?? PEAK_HOURS;
   let disposeProjection = ctx.sessionProjections.register(
-    pulseProjectionDefinition({ peakHoursFor, stateVersion: 4 + epoch }),
+    pulseProjectionDefinition({ peakHoursFor, stateVersion: 5 + epoch }),
   );
   ctx.effect(() => () => disposeProjection(), "dsh-pulse: projection fallback");
   /** After a re-register every session must re-fold (persisted rows no
@@ -368,7 +407,7 @@ export function apply(ctx, config) {
     epoch += 1;
     disposeProjection();
     disposeProjection = ctx.sessionProjections.register(
-      pulseProjectionDefinition({ peakHoursFor, stateVersion: 4 + epoch }),
+      pulseProjectionDefinition({ peakHoursFor, stateVersion: 5 + epoch }),
     );
     void warmUpRefolds();
   };
@@ -562,14 +601,16 @@ export function apply(ctx, config) {
 
   /** Predict, at POST time and independent of watch timing, whether the
    *  submitted section changes any model's peak hours — the editor shows a
-   *  "history is re-folding" note only when it actually does. */
+   *  "history is re-folding" note only when it actually does. Partial merges
+   *  (a POST that omits `pricing`, e.g. currency or monthly-only saves) keep
+   *  the current pricing in the prediction. */
   const predictRefold = (parsed) => {
     const current = resolveConfig();
     const next = parsed.reset === true ? config : {
       ...current,
       costEnabled: parsed.costEnabled ?? true,
       usdToCny: parsed.usdToCny ?? effectiveUsdToCny(current),
-      pricing: Array.isArray(parsed.pricing) ? parsed.pricing : [],
+      pricing: Array.isArray(parsed.pricing) ? parsed.pricing : current.pricing,
     };
     return peakMapKey(peakMapOf(next)) !== peakMapKey(peakMap);
   };
@@ -598,6 +639,10 @@ export function apply(ctx, config) {
         const pathname = decodeURIComponent(url.pathname);
         if (pathname === "/pulse/settings") {
           await serveSettings(ctx, resolveConfig, () => ({ scope: settingsScope, provider: settingsProvider }), () => llmService, invalidatePayload, predictRefold, req, res);
+          return;
+        }
+        if (pathname === "/pulse/session") {
+          await serveSession(ctx, url, req, res);
           return;
         }
         if (pathname === "/pulse/balance") {
@@ -660,6 +705,46 @@ function readBody(req) {
   });
 }
 
+/** Short TTL + bounded LRU for `/pulse/session` event timelines: the raw
+ *  event log of one session is immutable (a live session appends, so the
+ *  cache naturally expires via TTL), and repeated detail-view reads hit
+ *  memory instead of re-reading the persisted log. */
+const SESSION_CACHE_MS = 60000;
+const SESSION_CACHE_MAX = 20;
+const sessionCache = new Map();
+
+/** `GET /pulse/session?id=<sessionId>` — one session's event-level usage
+ *  timeline (seconds-accurate) for the detail view's cumulative-consumption
+ *  chart and break marks. Reads the raw event log through `sessionQuery`,
+ *  never the aggregated projection, so breaks can slice at any instant. */
+async function serveSession(ctx, url, req, res) {
+  const id = url.searchParams.get("id") ?? "";
+  if (id === "") {
+    json(res, 400, { ok: false, error: "missing session id" });
+    return;
+  }
+  if (typeof ctx.sessionQuery?.readSession !== "function") {
+    json(res, 503, { ok: false, error: "session log access is unavailable in this environment" });
+    return;
+  }
+  const hit = sessionCache.get(id);
+  if (hit !== undefined && Date.now() - hit.at < SESSION_CACHE_MS) {
+    json(res, 200, hit.value);
+    return;
+  }
+  try {
+    const loaded = await ctx.sessionQuery.readSession(id);
+    const value = timelineEvents(loaded.events, { id, header: loaded.session });
+    sessionCache.delete(id);
+    sessionCache.set(id, { at: Date.now(), value });
+    while (sessionCache.size > SESSION_CACHE_MAX) sessionCache.delete(sessionCache.keys().next().value);
+    json(res, 200, value);
+  } catch (error) {
+    ctx.logger.warn(error);
+    json(res, 404, { ok: false, error: `session unavailable: ${String(error?.message ?? error)}` });
+  }
+}
+
 /** `GET /pulse/settings` — the editor's source of truth: the effective
  *  cost-enabled flag, USD→CNY rate and pricing rules (official defaults
  *  merged), the untouched official baseline (for per-row "restore official
@@ -678,6 +763,7 @@ function serveSettings(ctx, resolveConfig, getSettings, getLlm, invalidate, pred
         currency: config.currency === "USD" ? "USD" : "CNY",
         costEnabled: config.costEnabled !== false,
         pricing: effectivePricing(config),
+        monthly: Array.isArray(config.monthlyProviders) ? config.monthlyProviders : [],
         fx: { usdToCny: effectiveUsdToCny(config) },
         official: OFFICIAL_PRICING,
         catalog,
@@ -711,6 +797,7 @@ function serveSettings(ctx, resolveConfig, getSettings, getLlm, invalidate, pred
       usdToCny: z.number(),
       pricing: z.array(pricingRuleSchema),
       currency: z.union(["CNY", "USD"]),
+      monthly: z.array(z.string()),
       reset: z.boolean(),
     });
     try {
@@ -731,17 +818,19 @@ function serveSettings(ctx, resolveConfig, getSettings, getLlm, invalidate, pred
     const persist = parsed.reset === true
       ? settings.scope.replace({})
       // Partial merge: each present field lands in the user section and
-      // everything else re-inherits the composition base — the pricing page
-      // and the currency settings can save independently.
+      // everything else re-inherits the composition base — the pricing page,
+      // the currency settings and the monthly-provider list save independently.
       : settings.scope.update({
         ...(parsed.costEnabled !== undefined ? { costEnabled: parsed.costEnabled } : {}),
         ...(parsed.usdToCny !== undefined ? { usdToCny: parsed.usdToCny } : {}),
         ...(parsed.pricing !== undefined ? { pricing: parsed.pricing } : {}),
         ...(parsed.currency !== undefined ? { currency: parsed.currency } : {}),
+        ...(parsed.monthly !== undefined ? { monthlyProviders: parsed.monthly } : {}),
       });
     return persist
       .then(() => {
         invalidate();
+        invalidateCatalog();
         json(res, 200, { ok: true, refold });
       })
       .catch((error) => {

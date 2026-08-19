@@ -2,8 +2,9 @@ import { strict as assert } from "node:assert";
 import {
   balanceSpendSeries, BEIJING_OFFSET_MS, buildPayload, clampDays, dayStart, foldEvents, localDay,
   MAX_WINDOW_DAYS, normalizePeakHours, PEAK_HOURS, projectOf, pulseProjectionDefinition,
-  resolveWindow, sliceRecord, tierAt, validDay,
+  resolveWindow, sliceRecord, tierAt, timelineEvents, validDay,
 } from "../src/aggregate.js";
+import { modelKey } from "../src/view.js";
 
 const DAY = 86400000;
 const noon = (offsetDays) => {
@@ -99,7 +100,7 @@ const day = localDay(t1);
 assert.equal(folded.turnsByDay[day], 1, "one distinct turn with a closed step");
 assert.equal(folded.toolCallsByDay[day], 1);
 assert.deepEqual(folded.byDay[day], { input: 1000, output: 500, cacheRead: 3000, cacheWrite: 200 });
-assert.equal(folded.modelsByDay[day]["deepseek-v4-flash"].cacheRead, 3000);
+assert.equal(folded.modelsByDay[day][modelKey("deepseek-official", "deepseek-v4-flash")].cacheRead, 3000);
 assert.equal(folded.firstDay, day);
 // tier split mirrors the event's Beijing-time tier
 const t1Split = {
@@ -110,7 +111,17 @@ t1Split.input[tierAt(t1)] = 1000;
 t1Split.output[tierAt(t1)] = 500;
 t1Split.cacheRead[tierAt(t1)] = 3000;
 t1Split.cacheWrite[tierAt(t1)] = 200;
-assert.deepEqual(folded.tiersByDay[day]["deepseek-v4-flash"], t1Split, "usage lands in the correct Beijing-time tier");
+assert.deepEqual(folded.tiersByDay[day][modelKey("deepseek-official", "deepseek-v4-flash")], t1Split, "usage lands in the correct Beijing-time tier");
+// same-named models of different providers fold into distinct rows
+const sameName = foldEvents([
+  { type: "assistant/message", time: t1, data: { turn: 9, step: 1, message: { source: { provider: "a", model: "shared" } }, usage: { inputTokens: 100 } } },
+  { type: "assistant/message", time: t1, data: { turn: 10, step: 1, message: { source: { provider: "b", model: "shared" } }, usage: { inputTokens: 7 } } },
+  { type: "assistant/message", time: t1, data: { turn: 11, step: 1, message: { source: { model: "shared" } }, usage: { inputTokens: 3 } } },
+]);
+assert.equal(sameName.modelsByDay[day][modelKey("a", "shared")].input, 100, "provider a's row stays separate");
+assert.equal(sameName.modelsByDay[day][modelKey("b", "shared")].input, 7, "provider b's row stays separate");
+assert.equal(sameName.modelsByDay[day].shared.input, 3, "a provider-less event folds under the bare id");
+assert.equal(Object.keys(sameName.modelsByDay[day]).length, 3, "no same-name merging");
 // a guaranteed peak-hour event (10:00 Beijing) folds into the peak side
 const peakFolded = foldEvents([{
   type: "assistant/message", time: bj(10),
@@ -143,11 +154,11 @@ const flatHoursFolded = foldEvents([
 assert.equal(flatHoursFolded.tiersByDay[localDay(bj(10))]["m-flat"].input.peak, 0, "empty hour set: 10:00 Beijing is off-peak");
 assert.equal(flatHoursFolded.tiersByDay[localDay(bj(10))]["m-flat"].input.offpeak, 5);
 // the definition carries its stateVersion (host bumps it on peak-hour changes)
-assert.equal(pulseProjectionDefinition().stateVersion, 4);
+assert.equal(pulseProjectionDefinition().stateVersion, 5);
 assert.equal(pulseProjectionDefinition({ stateVersion: 7 }).stateVersion, 7);
 // per-hour, per-model detail for the intraday chart
 const hour = String(new Date(t1).getHours()).padStart(2, "0");
-assert.deepEqual(folded.hoursByDay[day][hour]["deepseek-v4-flash"], { input: 1000, output: 500, cacheRead: 3000, cacheWrite: 200 });
+assert.deepEqual(folded.hoursByDay[day][hour][modelKey("deepseek-official", "deepseek-v4-flash")], { input: 1000, output: 500, cacheRead: 3000, cacheWrite: 200 });
 
 // hour detail prunes beyond the retention window (HOURS_RETENTION_DAYS)
 const spanning = foldEvents([
@@ -227,6 +238,45 @@ assert.equal(blank.day, localDay(noon(0)));
 assert.equal(blank.subagent, true);
 assert.deepEqual(blank.byDay, {});
 
+// identity fields (subagent provenance) ride the window slice
+const parented = sliceRecord({
+  ...base, subagent: true, parentSession: "s0", delegationDepth: 2,
+}, daysAgo(7), today());
+assert.equal(parented.subagent, true);
+assert.equal(parented.parentSession, "s0");
+assert.equal(parented.delegationDepth, 2, "delegation depth passes through");
+assert.equal(sliceRecord({ ...base, parentSession: undefined, delegationDepth: "x" }, daysAgo(7), today()).delegationDepth, 0, "invalid depth normalizes to 0");
+assert.equal(sliceRecord({ ...base }, daysAgo(7), today()).parentSession, null, "absent parent is null");
+
+// --- timelineEvents: event-level usage timeline + turn boundaries -------------
+const tl = timelineEvents([
+  { type: "assistant/message", time: noon(-2) + 1000, data: { usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 2, cacheWriteTokens: 0 }, message: { source: { provider: "deepseek-official", model: "deepseek-v4-flash" } } } },
+  { type: "turn/start", time: noon(-2) },
+  { type: "turn/end", time: noon(-2) + 5000 },
+  { type: "assistant/message", time: noon(-2) + 2000, data: { usage: { inputTokens: 0, outputTokens: 0 } } },
+  { type: "assistant/message", time: noon(-2) + 3000, data: { usage: { inputTokens: 7, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, message: { source: { provider: "", model: "legacy" } } } },
+  { type: "assistant/message", time: null, data: { usage: { inputTokens: 99 } } },
+], { id: "s9", header: { id: "s9", createdAt: noon(-2), cwd: "/x", origin: "subagent", parentSession: "s0", delegationDepth: 2 } });
+assert.deepEqual(tl.events, [
+  { t: noon(-2) + 1000, i: 10, o: 5, cr: 2, cw: 0, key: modelKey("deepseek-official", "deepseek-v4-flash") },
+  { t: noon(-2) + 3000, i: 7, o: 0, cr: 0, cw: 0, key: "legacy" },
+], "zero-usage and untimestamped events dropped");
+assert.deepEqual(tl.turns, [{ start: noon(-2), end: noon(-2) + 5000 }], "closed turn boundary captured");
+assert.equal(tl.id, "s9");
+assert.equal(tl.header.origin, "subagent");
+assert.equal(tl.header.parentSession, "s0");
+assert.equal(tl.header.delegationDepth, 2);
+assert.equal(tl.header.cwd, "/x");
+// unordered events are sorted by time; main-origin header echoes
+const unsorted = timelineEvents([
+  { type: "assistant/message", time: 2000, data: { usage: { inputTokens: 1 } } },
+  { type: "assistant/message", time: 1000, data: { usage: { inputTokens: 2 } } },
+], { header: { id: "s8", createdAt: 0, cwd: "/y", origin: undefined } });
+assert.deepEqual(unsorted.events.map((e) => e.t), [1000, 2000]);
+assert.equal(unsorted.header.origin, "main", "absent subagent origin labels main");
+assert.deepEqual(timelineEvents(null).events, []);
+assert.deepEqual(timelineEvents(null).turns, []);
+
 // --- buildPayload: schema 3, window echo, pricing/topProjects -----------------
 const pricing = [{ model: "deepseek-v4-flash", input: 1, cacheRead: 0.02, output: 2, currency: "CNY" }];
 const payload = buildPayload({
@@ -244,6 +294,8 @@ assert.equal(payload.today, today());
 assert.equal(payload.topProjects, 12);
 assert.equal(payload.costEnabled, true, "cost enabled by default");
 assert.deepEqual(payload.pricing, pricing);
+assert.deepEqual(payload.monthly, [], "no monthly providers by default");
+assert.deepEqual(buildPayload({ records: [], monthly: ["pi-ai"] }).monthly, ["pi-ai"], "monthly provider list echoed");
 assert.equal(payload.sessions.length, 2, "null / day-less records dropped");
 assert.ok(payload.sessions.every((s) => s.day >= payload.fromDay && s.day <= payload.toDay));
 assert.equal(buildPayload({ records: [], topProjects: 0 }).topProjects, 8, "invalid cap falls back");

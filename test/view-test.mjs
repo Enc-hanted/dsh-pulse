@@ -1,8 +1,8 @@
 import { strict as assert } from "node:assert";
 import {
-  bucketOf, bucketLabel, buildView, clampSpan, costOf, costSeries, daysBetween,
-  fmtCost, heatmapCells, heatmapLevel, hourlySeries, monthKey, niceMax, rangeKeys,
-  shiftDay, weekStart,
+  bucketOf, bucketLabel, breaksSegments, buildView, clampSpan, costOf, costSeries, daysBetween,
+  fmtClockMs, fmtCost, heatmapCells, heatmapLevel, hourlySeries, monthKey, niceMax, rangeKeys,
+  sessionGroups, sessionModelRows, shiftDay, weekStart,
 } from "../src/view.js";
 
 const D = "2026-08-14"; // a Friday
@@ -127,6 +127,95 @@ assert.deepEqual(flashOnly.knownModels.sort(), ["deepseek-v4-flash", "deepseek-v
 const alphaFlash = buildView(sessions, { granularity: "day", from: "2026-08-13", to: D, project: "alpha", model: "deepseek-v4-flash", pricing: [] });
 assert.equal(alphaFlash.totals.sessions, 2);
 assert.equal(alphaFlash.totals.input, 140);
+
+// --- provider-aware rows: same-named models of different providers -----------
+// Composite `provider\u0000model` keys (the projection's shape) split into
+// distinct rows carrying `key` / `provider` / `model`.
+const dupSessions = [
+  {
+    project: "dup", day: "2026-08-13",
+    byDay: { "2026-08-13": { input: 300, output: 100, cacheRead: 0, cacheWrite: 0 } },
+    modelsByDay: {
+      "2026-08-13": {
+        "a\u0000shared": { input: 300, output: 100, cacheRead: 0, cacheWrite: 0 },
+        "b\u0000shared": { input: 30, output: 10, cacheRead: 0, cacheWrite: 0 },
+      },
+    },
+    turnsByDay: { "2026-08-13": 1 },
+    toolCallsByDay: {},
+  },
+];
+const dupView = buildView(dupSessions, { granularity: "day", from: "2026-08-13", to: "2026-08-13", pricing: [] });
+assert.equal(dupView.models.length, 2, "same-named models stay separate");
+const rowA = dupView.models.find((m) => m.provider === "a");
+const rowB = dupView.models.find((m) => m.provider === "b");
+assert.equal(rowA.model, "shared");
+assert.equal(rowA.key, "a\u0000shared");
+assert.equal(rowA.input, 300);
+assert.equal(rowB.input, 30);
+assert.equal(dupView.knownModels.join(","), "a\u0000shared,b\u0000shared", "picker options carry composite keys");
+
+// pricing: an exact provider rule wins over the wildcard default
+const dupPricing = [
+  { model: "shared", input: 1, output: 1, currency: "CNY" }, // wildcard
+  { provider: "b", model: "shared", input: 10, output: 10, currency: "CNY" }, // b-scoped
+];
+const dupCost = buildView(dupSessions, { granularity: "day", from: "2026-08-13", to: "2026-08-13", pricing: dupPricing });
+// a: 300*1 + 100*1 = 400; b: 30*10 + 10*10 = 400 → 800/1e6 = 0.0008
+assert.ok(Math.abs(dupCost.cost.total - 0.0008) < 5e-7, `got ${dupCost.cost.total}`);
+assert.equal(dupCost.cost.configured, true);
+
+// a bare model filter matches the composite rows by their model part
+const dupFiltered = buildView(dupSessions, { granularity: "day", from: "2026-08-13", to: "2026-08-13", model: "shared", pricing: [] });
+assert.equal(dupFiltered.totals.input, 330, "bare filter covers every provider's same-named model");
+assert.equal(dupFiltered.models.length, 2);
+// a composite filter narrows to one provider's row
+const dupExact = buildView(dupSessions, { granularity: "day", from: "2026-08-13", to: "2026-08-13", model: "a\u0000shared", pricing: [] });
+assert.equal(dupExact.totals.input, 300);
+assert.equal(dupExact.models.length, 1);
+assert.equal(dupExact.models[0].provider, "a");
+
+// costSeries and hourlySeries understand composite keys and filters
+const dupSeries = costSeries(dupSessions, { from: "2026-08-13", to: "2026-08-13", pricing: dupPricing });
+assert.ok(Math.abs(dupSeries[0].offpeak - 0.0008) < 5e-7, `got ${dupSeries[0].offpeak}`);
+const dupHourly = hourlySeries([{
+  hoursByDay: { "2026-08-13": { "08": { "a\u0000shared": { input: 5 }, "b\u0000shared": { input: 7 } } } },
+}], "2026-08-13", { model: "b\u0000shared" });
+assert.equal(dupHourly[8].input, 7, "composite filter selects one provider's hour detail");
+
+// a wildcard-only pricing list still prices composite rows (official defaults)
+const wildOnly = costOf([{ key: "deepseek-official\u0000deepseek-v4-flash", provider: "deepseek-official", model: "deepseek-v4-flash", input: 100, output: 50, cacheRead: 0, cacheWrite: 0 }],
+  [{ model: "deepseek-v4-flash", input: 1, output: 2, currency: "CNY" }]);
+assert.ok(Math.abs(wildOnly.total - 0.0002) < 5e-7, "wildcard rule covers a provider-scoped row");
+
+// --- monthly-paid providers: flat subscription, zero marginal cost ------------
+// A monthly provider's models price at 0 even with no rule, and are configured
+// (never "unpriced"); a leftover rule does not override the monthly flag.
+const monthlyPricing = [
+  { provider: "pi-ai", model: "shared", input: 10, output: 10, currency: "CNY" },
+];
+const monthlyCost = costOf(
+  [{ key: "pi-ai\u0000shared", provider: "pi-ai", model: "shared", input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheWrite: 0 }],
+  monthlyPricing,
+  {},
+  ["pi-ai"],
+);
+assert.equal(monthlyCost.configured, true, "monthly model counts as configured");
+assert.equal(monthlyCost.total, 0, "monthly model costs zero despite a rule");
+assert.equal((monthlyCost.unpriced.input || 0) + (monthlyCost.unpriced.output || 0), 0, "monthly model never lands in unpriced");
+// without the monthly flag the same rule prices normally
+const notMonthly = costOf(
+  [{ key: "pi-ai\u0000shared", provider: "pi-ai", model: "shared", input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }],
+  monthlyPricing,
+);
+assert.ok(Math.abs(notMonthly.total - 10) < 5e-7, "without the monthly flag the rule applies");
+
+// buildView threads monthly into the chip, and costSeries drops monthly models
+const monthlyView = buildView(dupSessions, { granularity: "day", from: "2026-08-13", to: "2026-08-13", pricing: dupPricing, monthly: ["b"] });
+assert.equal(monthlyView.cost.configured, true, "chip configured with only a monthly row present");
+assert.equal(monthlyView.cost.total, 0.0004, "only provider a's cost shows (b is monthly): 400/1e6");
+const monthlySeries = costSeries(dupSessions, { from: "2026-08-13", to: "2026-08-13", pricing: dupPricing, monthly: ["b"] });
+assert.ok(Math.abs(monthlySeries[0].offpeak - 0.0004) < 5e-7, "monthly model contributes zero to the series");
 
 // --- hourly series ------------------------------------------------------------
 const hourFixtures = [
@@ -371,5 +460,229 @@ assert.equal(fmtCost(12.34567), "12.35");
 assert.equal(fmtCost(0.000278), "0.000278");
 assert.equal(fmtCost(0.012345), "0.0123");
 assert.equal(fmtCost(1.5), "1.50");
+
+// --- fmtClockMs ---------------------------------------------------------------
+assert.match(fmtClockMs(0), /^\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+
+// --- sessionModelRows / sessionGroups: project × subagent detail ---------------
+const sgRecord = (over) => ({
+  id: "sg1", createdAt: 0, day: "2026-08-14", project: "repo", subagent: false, parentSession: null, delegationDepth: 0,
+  byDay: {
+    "2026-08-14": { input: 100, output: 50, cacheRead: 10, cacheWrite: 0 },
+    "2026-08-15": { input: 200, output: 100, cacheRead: 20, cacheWrite: 0 },
+  },
+  modelsByDay: {
+    "2026-08-14": { "deepseek-v4-flash": { input: 100, output: 50, cacheRead: 10, cacheWrite: 0 } },
+    "2026-08-15": { "deepseek-v4-flash": { input: 200, output: 100, cacheRead: 20, cacheWrite: 0 } },
+  },
+  tiersByDay: {
+    "2026-08-14": { "deepseek-v4-flash": { input: { peak: 100, offpeak: 0 }, output: { peak: 50, offpeak: 0 }, cacheRead: { peak: 0, offpeak: 10 }, cacheWrite: { peak: 0, offpeak: 0 } } },
+    "2026-08-15": { "deepseek-v4-flash": { input: { peak: 0, offpeak: 200 }, output: { peak: 0, offpeak: 100 }, cacheRead: { peak: 0, offpeak: 20 }, cacheWrite: { peak: 0, offpeak: 0 } } },
+  },
+  turnsByDay: {}, toolCallsByDay: {},
+  ...over,
+});
+const sgRows = sessionModelRows(sgRecord());
+assert.equal(sgRows.length, 1);
+assert.equal(sgRows[0].input, 300, "cross-day model totals accumulate");
+assert.equal(sgRows[0].peak.input, 100, "tier split carries across days");
+assert.equal(sgRows[0].offpeak.input, 200);
+assert.deepEqual(sessionModelRows(null), []);
+assert.deepEqual(sessionModelRows({}), []);
+
+const sgPricing = [{ model: "deepseek-v4-flash", input: 1, cacheRead: 0.02, output: 2, currency: "CNY" }];
+const sgGroups = sessionGroups([
+  sgRecord(),
+  sgRecord({ id: "sg2", project: "repo", subagent: true, parentSession: "sg1", delegationDepth: 1,
+    byDay: { "2026-08-14": { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 } },
+    modelsByDay: { "2026-08-14": { "deepseek-v4-flash": { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 } } } }),
+  sgRecord({ id: "sg3", project: "other", subagent: false }),
+], { pricing: sgPricing, fx: {}, monthly: [] });
+assert.equal(sgGroups.length, 2);
+const repo = sgGroups.find((g) => g.project === "repo");
+assert.equal(repo.mainSessions, 1);
+assert.equal(repo.subagentSessions, 1);
+assert.equal(repo.subagentTokens.input, 10, "subagent subtotal is its own tokens");
+assert.equal(repo.sessions.length, 2);
+const subRow = repo.sessions.find((s) => s.subagent);
+assert.equal(subRow.parentSession, "sg1");
+assert.equal(subRow.delegationDepth, 1);
+assert.ok(repo.subagentCost !== null && repo.subagentCost.configured, "subagent subtotal is costed");
+assert.ok(sgGroups[0].total >= sgGroups[1].total, "groups sorted by total tokens");
+assert.equal(sgGroups.find((g) => g.project === "other").subagentSessions, 0);
+assert.equal(sgGroups.find((g) => g.project === "other").subagentCost, null, "no subagents → no subagent cost");
+assert.deepEqual(sessionGroups([], {}), []);
+assert.deepEqual(sessionGroups(null, {}), []);
+// a session with no countable usage (no tokens, no model rows) is dropped
+assert.deepEqual(sessionGroups([null, { project: "x", byDay: {}, modelsByDay: {} }], {}).length, 0, "zero-usage session dropped");
+
+// a model filter narrows each session to that model and drops never-users:
+// the project detail never surfaces other models' sessions
+const filteredSessions = [
+  sgRecord(), // repo: flash, 300 input across two days
+  sgRecord({ id: "sg4", project: "repo", subagent: false,
+    byDay: { "2026-08-14": { input: 5, output: 5, cacheRead: 0, cacheWrite: 0 } },
+    modelsByDay: { "2026-08-14": { "other-model": { input: 5, output: 5, cacheRead: 0, cacheWrite: 0 } } } }),
+];
+const filteredGroups = sessionGroups(filteredSessions, { pricing: sgPricing, fx: {}, monthly: [], model: "deepseek-v4-flash" });
+assert.equal(filteredGroups.length, 1);
+const filteredRepo = filteredGroups[0];
+assert.equal(filteredRepo.sessions.length, 1, "the other-model session drops out");
+assert.equal(filteredRepo.sessions[0].id, "sg1");
+assert.equal(filteredRepo.sessions[0].tokens.input, 300, "tokens narrow to the selected model");
+assert.equal(filteredRepo.sessions[0].topModel, "deepseek-v4-flash");
+// a composite filter targets one provider's row
+const compositeFiltered = sessionGroups(filteredSessions, { pricing: sgPricing, model: "pi-ai\u0000deepseek-v4-flash" });
+assert.equal(compositeFiltered.length, 0, "no pi-ai flash rows → no groups");
+// an empty model filter keeps the unfiltered behavior (byDay totals)
+const unfiltered = sessionGroups(filteredSessions, { pricing: sgPricing });
+assert.equal(unfiltered[0].sessions.length, 2, "no model filter keeps every session");
+assert.equal(unfiltered[0].sessions[0].tokens.input, 300);
+
+// a monthly-paid session carries the badge flag and costs zero, never a 0.00
+// price; without the flag the same model prices through the wildcard rule
+const monthlyRec = sgRecord({
+  id: "sgM", project: "repo", subagent: false,
+  byDay: { "2026-08-14": { input: 1000, output: 500, cacheRead: 0, cacheWrite: 0 } },
+  modelsByDay: { "2026-08-14": { "pi-ai\u0000deepseek-v4-flash": { input: 1000, output: 500, cacheRead: 0, cacheWrite: 0 } } },
+  tiersByDay: { "2026-08-14": { "pi-ai\u0000deepseek-v4-flash": {
+    input: { peak: 0, offpeak: 1000 }, output: { peak: 0, offpeak: 500 },
+    cacheRead: { peak: 0, offpeak: 0 }, cacheWrite: { peak: 0, offpeak: 0 },
+  } } },
+});
+const monthlyGroups = sessionGroups([monthlyRec], { pricing: sgPricing, monthly: ["pi-ai"] });
+assert.equal(monthlyGroups[0].sessions[0].monthly, true, "all-monthly session flagged");
+assert.equal(monthlyGroups[0].sessions[0].cost.total, 0, "monthly session costs zero");
+const sessionNotMonthly = sessionGroups([monthlyRec], { pricing: sgPricing, monthly: [] });
+assert.equal(sessionNotMonthly[0].sessions[0].monthly, false, "not monthly without the flag");
+assert.ok(sessionNotMonthly[0].sessions[0].cost.total > 0, "wildcard rule prices it otherwise");
+// a mixed session (monthly + paid rows) is not all-monthly
+const mixed = sessionGroups([
+  monthlyRec,
+  sgRecord({ id: "sgMix", project: "repo", subagent: false,
+    byDay: { "2026-08-14": { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } },
+    modelsByDay: { "2026-08-14": { "pi-ai\u0000deepseek-v4-flash": { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, "deepseek-v4-flash": { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } } }),
+], { pricing: sgPricing, monthly: ["pi-ai"] });
+assert.equal(mixed[0].sessions.find((s) => s.id === "sgMix").monthly, false, "mixed session is not all-monthly");
+assert.equal(mixed[0].subagentMonthly, false, "no subagents → no subagent monthly flag");
+
+// per-model breakdown: each model row carries its own tokens and cost, so a
+// mixed session's price lands under the right model (monthly one → 0/badge)
+const mixedSg = mixed[0].sessions.find((s) => s.id === "sgMix");
+assert.equal(mixedSg.modelRows.length, 2, "one model row per model in a mixed session");
+const piRow = mixedSg.modelRows.find((r) => r.provider === "pi-ai");
+const offRow = mixedSg.modelRows.find((r) => r.provider !== "pi-ai");
+assert.equal(piRow.monthly, true, "monthly model row flagged");
+assert.equal(piRow.cost.total, 0, "monthly model row costs zero");
+assert.equal(offRow.monthly, false, "official model row not flagged");
+assert.ok(offRow.cost.total > 0, "official model row carries the price");
+assert.equal(piRow.tokens.input, 1, "monthly model row keeps its own tokens");
+assert.equal(offRow.tokens.input, 1, "official model row keeps its own tokens");
+assert.equal(mixedSg.modelRows.reduce((s, r) => s + r.tokens.input, 0), 2, "model rows sum to the session totals");
+
+// --- breaksSegments: clickable break slicing of a session timeline ------------
+const tlEvents = [
+  { t: 1000, i: 10, o: 0, cr: 0, cw: 0, key: "deepseek-v4-flash" },
+  { t: 2000, i: 10, o: 10, cr: 0, cw: 0, key: "deepseek-v4-flash" },
+  { t: 3000, i: 10, o: 0, cr: 0, cw: 0, key: "deepseek-v4-flash" },
+  { t: 4000, i: 10, o: 0, cr: 0, cw: 0, key: "other-model" },
+];
+assert.deepEqual(breaksSegments([], [1, 2]), []);
+assert.deepEqual(breaksSegments(null, []), []);
+const segs = breaksSegments(tlEvents, [2500], { pricing: sgPricing, fx: {}, monthly: [] });
+assert.equal(segs.length, 2, "one break → two segments");
+assert.deepEqual(segs[0].tokens, { input: 20, output: 10, cacheRead: 0, cacheWrite: 0 }, "first segment up to the break");
+assert.deepEqual(segs[1].tokens, { input: 20, output: 0, cacheRead: 0, cacheWrite: 0 }, "second segment after the break");
+assert.equal(segs[0].models.length, 1);
+assert.equal(segs[1].models.length, 2, "second segment mixes models");
+assert.ok(segs[0].cost.configured, "segment cost is configured");
+// an event exactly on the break belongs to the earlier segment only
+const onBreak = breaksSegments([{ t: 1000, i: 5, o: 0, cr: 0, cw: 0, key: "m" }, { t: 2000, i: 5, o: 0, cr: 0, cw: 0, key: "m" }, { t: 3000, i: 5, o: 0, cr: 0, cw: 0, key: "m" }], [2000], { pricing: [] });
+assert.deepEqual(onBreak[0].tokens, { input: 10, output: 0, cacheRead: 0, cacheWrite: 0 }, "break event lands in the first segment");
+assert.deepEqual(onBreak[1].tokens, { input: 5, output: 0, cacheRead: 0, cacheWrite: 0 }, "later segment keeps the rest");
+// breaks clamp into the span and cap at 3
+const clamped = breaksSegments(tlEvents, [0, 2500, 99999, 3000, 4000], { pricing: sgPricing });
+assert.equal(clamped.length, 3, "in-span marks only (0 / 99999 / 4000 clamped away)");
+const capped = breaksSegments(tlEvents, [2500, 3000, 3500, 3800], { pricing: sgPricing });
+assert.equal(capped.length, 4, "at most 3 marks → 4 segments");
+const t0 = breaksSegments(tlEvents, [], { pricing: sgPricing });
+assert.equal(t0.length, 1, "no breaks → one whole segment");
+assert.deepEqual(t0[0].tokens, { input: 40, output: 10, cacheRead: 0, cacheWrite: 0 });
+// a model filter restricts the segments to that model's events only
+const modelSegs = breaksSegments(tlEvents, [], { pricing: sgPricing, model: "deepseek-v4-flash" });
+assert.deepEqual(modelSegs[0].tokens, { input: 30, output: 10, cacheRead: 0, cacheWrite: 0 }, "other-model events excluded");
+assert.equal(modelSegs[0].models.length, 1);
+assert.equal(modelSegs[0].models[0].key, "deepseek-v4-flash");
+// composite model filter (provider\u0000model) targets one provider's row
+const compositeSegs = breaksSegments([
+  { t: 1000, i: 7, o: 0, cr: 0, cw: 0, key: "pi-ai\u0000deepseek-v4-flash" },
+  { t: 2000, i: 3, o: 0, cr: 0, cw: 0, key: "deepseek-v4-flash" },
+], [], { pricing: sgPricing, model: "pi-ai\u0000deepseek-v4-flash" });
+assert.deepEqual(compositeSegs[0].tokens, { input: 7, output: 0, cacheRead: 0, cacheWrite: 0 }, "composite filter keeps only that provider's row");
+assert.deepEqual(breaksSegments(tlEvents, [], { pricing: sgPricing, model: "nope" }), [], "no matching events → no segments");
+// an all-monthly segment carries the badge flag and costs zero; a mixed one
+// still prices the paid model
+const monthlySeg = breaksSegments([
+  { t: 1000, i: 1_000_000, o: 500_000, cr: 0, cw: 0, key: "pi-ai\u0000deepseek-v4-flash" },
+], [], { pricing: sgPricing, monthly: ["pi-ai"] });
+assert.equal(monthlySeg[0].monthly, true, "all-monthly segment flagged");
+assert.equal(monthlySeg[0].cost.total, 0, "all-monthly segment costs zero");
+const mixedSeg = breaksSegments([
+  { t: 1000, i: 1_000_000, o: 0, cr: 0, cw: 0, key: "pi-ai\u0000deepseek-v4-flash" },
+  { t: 2000, i: 1_000_000, o: 0, cr: 0, cw: 0, key: "deepseek-v4-flash" },
+], [], { pricing: sgPricing, monthly: ["pi-ai"] });
+assert.equal(mixedSeg[0].monthly, false, "mixed segment is not all-monthly");
+assert.ok(mixedSeg[0].cost.total > 0, "paid model prices the mixed segment");
+const plainSeg = breaksSegments([
+  { t: 1000, i: 1_000_000, o: 0, cr: 0, cw: 0, key: "deepseek-v4-flash" },
+], [], { pricing: sgPricing, monthly: [] });
+assert.equal(plainSeg[0].monthly, false, "no monthly flag → not flagged");
+
+// a provider-less (bare-key) model resolves its provider from the catalog's
+// unique route, so a monthly-paid bare-key session prices as monthly
+const cat = [{ provider: "pi-ai", displayName: "PI AI", models: [{ id: "DeepSeek-V4-Flash-0731", name: "DeepSeek V4 Flash 0731" }] }];
+const bareRecord = sgRecord({
+  id: "sgBare", project: "repo", subagent: false,
+  byDay: { "2026-08-14": { input: 1_000_000, output: 500_000, cacheRead: 0, cacheWrite: 0 } },
+  modelsByDay: { "2026-08-14": { "DeepSeek-V4-Flash-0731": { input: 1_000_000, output: 500_000, cacheRead: 0, cacheWrite: 0 } } },
+});
+const bareMonthly = sessionGroups([bareRecord], { pricing: sgPricing, monthly: ["pi-ai"], catalog: cat });
+assert.equal(bareMonthly[0].sessions[0].monthly, true, "bare-key session flagged monthly via catalog");
+assert.equal(bareMonthly[0].sessions[0].cost.total, 0, "bare-key monthly session costs zero");
+const bareSeg = breaksSegments([
+  { t: 1000, i: 1_000_000, o: 500_000, cr: 0, cw: 0, key: "DeepSeek-V4-Flash-0731" },
+], [], { pricing: sgPricing, monthly: ["pi-ai"], catalog: cat });
+assert.equal(bareSeg[0].monthly, true, "bare-key segment flagged monthly via catalog");
+assert.equal(bareSeg[0].cost.total, 0, "bare-key monthly segment costs zero");
+// without the catalog the bare key cannot resolve and stays unpriced
+const bareNoCat = sessionGroups([bareRecord], { pricing: sgPricing, monthly: ["pi-ai"] });
+assert.equal(bareNoCat[0].sessions[0].monthly, false, "no catalog → bare key stays unpriced-as-monthly");
+assert.equal(bareNoCat[0].sessions[0].cost.configured, false, "no rule matches the bare key without a catalog");
+
+// the same model id served by several providers: a bare key resolves to the
+// single monthly-paid route (the DeepSeek-V4-Flash-0731 scenario — official
+// route also serves `deepseek-v4-flash`, the third party is monthly-paid)
+const multiCat = [
+  { provider: "deepseek-official", displayName: "DeepSeek", models: [{ id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" }] },
+  { provider: "pi-ai", displayName: "PI AI", models: [{ id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash-0731" }] },
+];
+const bareSameId = sgRecord({
+  id: "sgSame", project: "repo", subagent: false,
+  byDay: { "2026-08-14": { input: 1_000_000, output: 500_000, cacheRead: 0, cacheWrite: 0 } },
+  modelsByDay: { "2026-08-14": { "deepseek-v4-flash": { input: 1_000_000, output: 500_000, cacheRead: 0, cacheWrite: 0 } } },
+});
+const sameIdMonthly = sessionGroups([bareSameId], { pricing: sgPricing, monthly: ["pi-ai"], catalog: multiCat });
+assert.equal(sameIdMonthly[0].sessions[0].monthly, true, "bare key resolves to the single monthly-paid route");
+assert.equal(sameIdMonthly[0].sessions[0].cost.total, 0, "resolved monthly session costs zero");
+const sameIdSeg = breaksSegments([
+  { t: 1000, i: 1_000_000, o: 500_000, cr: 0, cw: 0, key: "deepseek-v4-flash" },
+], [], { pricing: sgPricing, monthly: ["pi-ai"], catalog: multiCat });
+assert.equal(sameIdSeg[0].monthly, true, "bare-key segment resolves to the monthly route");
+assert.equal(sameIdSeg[0].cost.total, 0, "resolved monthly segment costs zero");
+// no monthly tie-break → ambiguous bare key falls back to the official
+// wildcard rule (same model id): priced, but never flagged monthly
+const sameIdAmbiguous = sessionGroups([bareSameId], { pricing: sgPricing, monthly: [], catalog: multiCat });
+assert.equal(sameIdAmbiguous[0].sessions[0].monthly, false, "ambiguous bare key without monthly tie-break");
+assert.equal(sameIdAmbiguous[0].sessions[0].cost.configured, true, "official wildcard rule prices the bare key");
 
 console.log("view-test: all assertions passed");

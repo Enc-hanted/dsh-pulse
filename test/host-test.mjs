@@ -120,6 +120,24 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
         { header: { id: "cold1", createdAt: noon(-3), cwd: "/home/x/repo", origin: "subagent" }, live: false, persisted: true },
         { header: { id: "broken1", createdAt: noon(-9), cwd: "D:\\DSH\\x" }, live: false, persisted: true },
       ],
+      readSession: async (id) => {
+        if (id === "live1" || id === "cold1") {
+          return {
+            session: {
+              id,
+              createdAt: id === "live1" ? noon(-1) : noon(-3),
+              cwd: id === "live1" ? "D:\\DSH\\demo" : "/home/x/repo",
+              origin: id === "cold1" ? "subagent" : undefined,
+            },
+            events: [
+              { type: "turn/start", time: noon(-1) },
+              { type: "assistant/message", time: noon(-1) + 1000, data: { usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 900, cacheWriteTokens: 10 }, message: { source: { provider: "deepseek-official", model: "deepseek-v4-flash" } } } },
+              { type: "turn/end", time: noon(-1) + 5000 },
+            ],
+          };
+        }
+        throw new Error("no such session");
+      },
     },
     sessions: { get: (id) => (id === "live1" ? { id } : undefined) },
     sessionProjectionCache: {
@@ -209,7 +227,7 @@ apply(env.ctx, config);
 // --- the projection unit registered with the official contract --------------
 assert.notEqual(env.unit(), null, "projection unit registered");
 assert.equal(env.unit().key, "pulseUsage");
-assert.equal(env.unit().stateVersion, 4);
+assert.equal(env.unit().stateVersion, 5);
 assert.equal(env.registerCount(), 1, "one registration at load");
 assert.deepEqual(env.unit().view(env.unit().init()), {
   byDay: {}, modelsByDay: {}, hoursByDay: {}, tiersByDay: {}, turnsByDay: {}, toolCallsByDay: {}, firstDay: null,
@@ -307,7 +325,7 @@ const peakChange = JSON.parse((await env.serve("/pulse/settings", {
 assert.equal(peakChange.ok, true);
 assert.equal(peakChange.refold, true, "peak-hours save predicts a re-fold");
 assert.equal(env.registerCount(), 2, "peak-hours change re-registers the projection");
-assert.equal(env.unit().stateVersion, 5, "bumped state version invalidates persisted rows");
+assert.equal(env.unit().stateVersion, 6, "bumped state version invalidates persisted rows");
 await new Promise((resolve) => setTimeout(resolve, 20));
 assert.ok(env.coldReads.length > coldReadsBefore, "background warm-up re-folds the cold corpus");
 
@@ -334,7 +352,53 @@ assert.equal(resetSettings.costEnabled, true);
 assert.equal(resetSettings.pricing.length, 2, "official defaults back");
 assert.deepEqual(resetSettings.fx, { usdToCny: 6.8 }, "fx re-inherits the default");
 assert.equal(env.registerCount(), 4, "reset drops the custom hours → re-fold back to official");
-assert.equal(env.unit().stateVersion, 7);
+assert.equal(env.unit().stateVersion, 8);
+
+// a provider-scoped rule coexists with the wildcard official default: same
+// model id, two effective rules, and the provider survives the round trip
+const scoped = JSON.parse((await env.serve("/pulse/settings", {
+  method: "POST",
+  body: { costEnabled: true, pricing: [{ provider: "pi-ai", model: "deepseek-v4-flash", input: 2, output: 4 }] },
+})).body);
+assert.equal(scoped.ok, true);
+assert.equal(scoped.refold, false, "a flat provider rule needs no re-fold");
+const scopedEcho = JSON.parse((await env.serve("/pulse/settings")).body);
+assert.equal(scopedEcho.pricing.length, 3, "provider rule joins the official pair");
+const scopedRule = scopedEcho.pricing.find((rule) => rule.provider === "pi-ai");
+assert.equal(scopedRule.model, "deepseek-v4-flash");
+assert.equal(scopedRule.input, 2);
+const official = scopedEcho.pricing.find((rule) => rule.model === "deepseek-v4-flash" && (rule.provider ?? "") === "");
+assert.equal(official.input, 1.5, "wildcard official default untouched by the scoped rule");
+// its peak hours are the official ones → no re-registration
+assert.equal(env.registerCount(), 4);
+// a scoped rule with custom peak hours does re-register (fold key is composite)
+const scopedPeak = JSON.parse((await env.serve("/pulse/settings", {
+  method: "POST",
+  body: { costEnabled: true, pricing: [{ provider: "pi-ai", model: "deepseek-v4-flash", input: 2, output: 4, peakHours: [10, 11] }] },
+})).body);
+assert.equal(scopedPeak.refold, true, "provider-scoped peak hours differ from official → re-fold");
+assert.equal(env.registerCount(), 5, "scoped peak-hours change re-registers the projection");
+
+// a monthly-paid provider list persists, serves back and rides the stats payload
+assert.deepEqual((JSON.parse((await env.serve("/pulse/settings")).body)).monthly, [], "no monthly providers by default");
+const monthlySave = JSON.parse((await env.serve("/pulse/settings", {
+  method: "POST",
+  body: { costEnabled: true, monthly: ["pi-ai"] },
+})).body);
+assert.equal(monthlySave.ok, true);
+assert.equal(monthlySave.refold, false, "monthly list never re-folds history");
+assert.deepEqual(env.userSection().monthlyProviders, ["pi-ai"], "monthly list persisted under the provider key");
+assert.deepEqual((JSON.parse((await env.serve("/pulse/settings")).body)).monthly, ["pi-ai"], "monthly served back to the editor");
+const monthlyStats = JSON.parse((await env.serve(`/pulse/stats?from=${daysAgo(4)}&to=${today()}`)).body);
+assert.deepEqual(monthlyStats.monthly, ["pi-ai"], "stats payload carries the monthly list");
+// currency saves leave the monthly list untouched (partial merge)
+const currencyOnly = JSON.parse((await env.serve("/pulse/settings", {
+  method: "POST",
+  body: { currency: "USD", usdToCny: 7.1 },
+})).body);
+assert.equal(currencyOnly.ok, true);
+assert.deepEqual(env.userSection().monthlyProviders, ["pi-ai"], "partial merge keeps the monthly list");
+assert.deepEqual(env.userSection().currency, "USD", "and applies the currency edit");
 
 // invalid writes are refused
 const bad = JSON.parse((await env.serve("/pulse/settings", { method: "POST", body: { costEnabled: "yes" } })).body);
@@ -487,6 +551,29 @@ assert.ok(!resultNoCost.text.includes("Estimated cost"), "cost line hidden when 
   const bare = JSON.parse((await env.serve("/pulse/balance")).body);
   assert.equal(bare.configured, false);
   assert.equal("ref" in bare, false);
+}
+
+// --- /pulse/session: event-level timeline (break-analysis source) -------------
+{
+  const env = makeCtx({ withSettings: true });
+  apply(env.ctx, config);
+  const tl = JSON.parse((await env.serve("/pulse/session?id=live1")).body);
+  assert.equal(tl.id, "live1");
+  assert.equal(tl.header.origin, "main");
+  assert.equal(tl.events.length, 1, "only the usage-bearing assistant/message lands");
+  assert.deepEqual(tl.events[0], { t: noon(-1) + 1000, i: 100, o: 50, cr: 900, cw: 10, key: "deepseek-official\u0000deepseek-v4-flash" });
+  assert.deepEqual(tl.turns, [{ start: noon(-1), end: noon(-1) + 5000 }]);
+  // the LRU cache serves the repeat with an identical shape
+  const again = JSON.parse((await env.serve("/pulse/session?id=live1")).body);
+  assert.deepEqual(again.events, tl.events);
+  // subagent header identity rides along
+  const sub = JSON.parse((await env.serve("/pulse/session?id=cold1")).body);
+  assert.equal(sub.header.origin, "subagent");
+  assert.equal(sub.header.cwd, "/home/x/repo");
+  // missing id refused; unknown session 404s
+  assert.equal((await env.serve("/pulse/session")).status, 400);
+  const missing = JSON.parse((await env.serve("/pulse/session?id=nope")).body);
+  assert.equal(missing.ok, false);
 }
 
 console.log("host-test: route, windowing, dedupe, settings surface and command all passed");

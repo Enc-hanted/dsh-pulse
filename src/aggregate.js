@@ -170,6 +170,16 @@ export const pulseUsageSchema = z.object({
   firstDay: z.string().nullable(),
 }).strict();
 
+/** Full fold-state shape of the `pulseUsage` unit: the client-visible view
+ *  plus the fold's own internals (`lastTurn`, the id of the last folded
+ *  turn). Since the 0.1.1-rc session-projection registry validates persisted
+ *  checkpoint rows against the unit's STATE schema (`stateSchema`), it must
+ *  cover every field the fold keeps — the view schema alone would reject
+ *  rows at restore and demote every cold read to a full-log replay. */
+export const pulseUsageStateSchema = pulseUsageSchema.extend({
+  lastTurn: z.number().int().nonnegative().nullable(),
+});
+
 /** Local `HH` hour key for a timestamp (e.g. "07", "23"). */
 function hourKey(timeMs) {
   return String(new Date(timeMs).getHours()).padStart(2, "0");
@@ -254,7 +264,17 @@ export function tierAt(timeMs, peakHours = PEAK_HOURS) {
  *   official windows for everything.
  * @param {number} [options.stateVersion=5] - fold-semantics version; the
  *   host bumps it when peak-hour settings change so persisted rows replay.
- * @returns {object} the projection definition (`key`, `schema`, `init`, `apply`, `view`, `stateVersion`).
+ * @returns {object} the projection definition (`key`, `stateSchema`, `wire`,
+ *   `init`, `apply`, `stateVersion`, plus the legacy `schema`/`view` pair).
+ *
+ * Registration contract: the harness's session-projection registry renamed
+ * its boundary in 0.1.1-rc — the client-visible view now nests under
+ * `wire: {viewSchema, view}` and the persisted-state boundary is its own
+ * `stateSchema`, while older hosts read the top-level `schema`/`view` pair.
+ * This definition carries BOTH shapes so one unit serves either host
+ * generation: each registry reads the fields it knows and ignores the rest
+ * (a unit without `wire` is treated as host-internal and never surfaces in
+ * snapshot values — the failure mode this dual contract exists to prevent).
  */
 export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 5 } = {}) {
   const dayOf = (event) => (num(event.time) > 0 ? localDay(event.time) : null);
@@ -285,9 +305,24 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 5 } = {
     }
     return pruned ?? hoursByDay;
   };
+  /** One client-visible cut of the fold state; shared by the legacy and the
+   *  0.1.1-rc `wire` view so both hosts serve the same shape. */
+  const viewOf = (state) => ({
+    byDay: state.byDay,
+    modelsByDay: state.modelsByDay,
+    hoursByDay: state.hoursByDay,
+    tiersByDay: state.tiersByDay,
+    turnsByDay: state.turnsByDay,
+    toolCallsByDay: state.toolCallsByDay,
+    firstDay: state.firstDay,
+  });
   return {
     key: "pulseUsage",
+    // Legacy harnesses (pre-0.1.1-rc) read the top-level `schema`/`view` pair.
     schema: pulseUsageSchema,
+    // 0.1.1-rc harnesses read `stateSchema` (full fold state, restore
+    // boundary) and `wire` (client-visible view).
+    stateSchema: pulseUsageStateSchema,
     init() {
       return {
         byDay: {}, modelsByDay: {}, hoursByDay: {}, tiersByDay: {}, turnsByDay: {}, toolCallsByDay: {}, firstDay: null, lastTurn: null,
@@ -361,17 +396,8 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 5 } = {
       }
       return state;
     },
-    view(state) {
-      return {
-        byDay: state.byDay,
-        modelsByDay: state.modelsByDay,
-        hoursByDay: state.hoursByDay,
-        tiersByDay: state.tiersByDay,
-        turnsByDay: state.turnsByDay,
-        toolCallsByDay: state.toolCallsByDay,
-        firstDay: state.firstDay,
-      };
-    },
+    view: viewOf,
+    wire: { viewSchema: pulseUsageSchema, view: viewOf },
     stateVersion,
   };
 }

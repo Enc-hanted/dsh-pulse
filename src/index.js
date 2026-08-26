@@ -53,6 +53,11 @@ export const inject = [
 const OFFICIAL_PRICING = [
   { model: "deepseek-v4-flash", input: 1.5, cacheRead: 0.05, output: 4.5,
     peak: { input: 3, cacheRead: 0.1, output: 9 }, peakHours: PEAK_HOURS, currency: "CNY" },
+  // The vision-experimental variant is served under the flash tier (same
+  // rates until the official page prices it separately; override in the
+  // profile patch or the pricing page if it differs).
+  { model: "deepseek-v4-flash-vision-exp", input: 1.5, cacheRead: 0.05, output: 4.5,
+    peak: { input: 3, cacheRead: 0.1, output: 9 }, peakHours: PEAK_HOURS, currency: "CNY" },
   { model: "deepseek-v4-pro", input: 4.5, cacheRead: 0.15, output: 13.5,
     peak: { input: 9, cacheRead: 0.3, output: 27 }, peakHours: PEAK_HOURS, currency: "CNY" },
 ];

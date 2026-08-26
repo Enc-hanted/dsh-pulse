@@ -156,6 +156,34 @@ assert.equal(flatHoursFolded.tiersByDay[localDay(bj(10))]["m-flat"].input.offpea
 // the definition carries its stateVersion (host bumps it on peak-hour changes)
 assert.equal(pulseProjectionDefinition().stateVersion, 5);
 assert.equal(pulseProjectionDefinition({ stateVersion: 7 }).stateVersion, 7);
+// --- registration contract (harness 0.1.1-rc renamed the projection boundary) --
+// The 0.1.1-rc registry reads `stateSchema` + `wire.{viewSchema,view}`; a unit
+// without `wire` is treated as host-internal and never surfaces in snapshot
+// values (the "everything is zero" failure). Legacy hosts read the top-level
+// `schema`/`view` pair. The definition must carry BOTH shapes.
+const contract = pulseProjectionDefinition();
+assert.equal(contract.key, "pulseUsage");
+assert.ok(contract.stateSchema, "0.1.1-rc contract: stateSchema present");
+assert.ok(contract.wire, "0.1.1-rc contract: wire present");
+assert.equal(typeof contract.wire.view, "function", "0.1.1-rc contract: wire.view is a function");
+assert.ok(contract.wire.viewSchema, "0.1.1-rc contract: wire.viewSchema present");
+assert.ok(contract.schema, "legacy contract: top-level schema kept");
+assert.equal(typeof contract.view, "function", "legacy contract: top-level view kept");
+// the state schema must cover the FULL fold state, not just the view shape:
+// checkpoint rows carry lastTurn, and restore validates them against it
+const contractState = contract.init();
+contractState.byDay[day] = { input: 1000, output: 500, cacheRead: 3000, cacheWrite: 200 };
+contractState.turnsByDay[day] = 1;
+contractState.firstDay = day;
+contractState.lastTurn = 7;
+assert.deepEqual(contract.stateSchema.parse(contractState), contractState, "full state (with lastTurn) validates against stateSchema");
+assert.equal(contract.stateSchema.parse(contractState).lastTurn, 7, "lastTurn survives the state boundary");
+// the wire view is a strict subset of the state (no lastTurn on the wire)
+const wireState = contract.wire.view(contractState);
+assert.equal(wireState.lastTurn, undefined, "wire view hides fold internals");
+assert.ok(contract.wire.viewSchema.parse(wireState), "wire view validates against wire.viewSchema");
+// both views agree on the client-visible shape
+assert.deepEqual(contract.wire.view(contractState), contract.view(contractState), "legacy and wire views agree");
 // per-hour, per-model detail for the intraday chart
 const hour = String(new Date(t1).getHours()).padStart(2, "0");
 assert.deepEqual(folded.hoursByDay[day][hour][modelKey("deepseek-official", "deepseek-v4-flash")], { input: 1000, output: 500, cacheRead: 3000, cacheWrite: 200 });

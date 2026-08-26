@@ -210,7 +210,7 @@ const config = { defaultDays: 30, topProjects: 8, pricing: [] };
   const fallback = JSON.parse((await env.serve("/pulse/settings")).body);
   assert.equal(fallback.writable, false, "no settings provider → not writable");
   assert.equal(fallback.costEnabled, true, "cost enabled by default");
-  assert.equal(fallback.pricing.length, 2, "official defaults merged");
+  assert.equal(fallback.pricing.length, 3, "official defaults merged (flash, flash-vision-exp, pro)");
   assert.deepEqual(fallback.catalog, [], "no llm service → empty catalog");
   assert.deepEqual(fallback.fx, { usdToCny: 6.8 }, "default fx without config");
   const denied = JSON.parse((await env.serve("/pulse/settings", { method: "POST", body: { reset: true } })).body);
@@ -268,12 +268,12 @@ assert.deepEqual(cold.turnsByDay, { [daysAgo(3)]: 1 });
 const settings = JSON.parse((await env.serve("/pulse/settings")).body);
 assert.equal(settings.writable, true);
 assert.equal(settings.costEnabled, true);
-assert.equal(settings.pricing.length, 2, "official defaults merged into the editor");
+assert.equal(settings.pricing.length, 3, "official defaults merged into the editor");
 assert.equal(settings.pricing[0].model, "deepseek-v4-flash");
 assert.equal(settings.pricing[0].peak.input, 3, "peak rates ride along");
 assert.deepEqual(settings.pricing[0].peakHours, [9, 10, 11, 14, 15, 16, 17], "normalized peak hours ride along");
 assert.deepEqual(settings.fx, { usdToCny: 6.8 }, "default fx served to the editor");
-assert.equal(settings.official.length, 2, "untouched official baseline served for per-row restore");
+assert.equal(settings.official.length, 3, "untouched official baseline served for per-row restore");
 assert.equal(settings.official[0].model, "deepseek-v4-flash");
 assert.equal(settings.catalog.length, 1, "one provider group from the llm service");
 assert.equal(settings.catalog[0].displayName, "DeepSeek");
@@ -295,9 +295,9 @@ assert.deepEqual(env.userSection(), {
 const after = JSON.parse((await env.serve("/pulse/settings")).body);
 assert.equal(after.costEnabled, false);
 assert.equal(after.fx.usdToCny, 7.05, "edited fx served back");
-assert.equal(after.pricing.length, 3, "user rule joins the official defaults");
-assert.equal(after.pricing[2].model, "my-model");
-assert.equal(after.pricing[2].input, 9);
+assert.equal(after.pricing.length, 4, "user rule joins the official defaults");
+assert.equal(after.pricing[3].model, "my-model");
+assert.equal(after.pricing[3].input, 9);
 assert.equal(env.registerCount(), 1, "price-only edits never re-register the projection");
 
 // the stats payload reflects the persisted flag (payload cache invalidated)
@@ -349,7 +349,7 @@ assert.equal(reset.refold, true, "reset drops the flat override → back to offi
 assert.deepEqual(env.userSection(), {}, "reset clears the user layer");
 const resetSettings = JSON.parse((await env.serve("/pulse/settings")).body);
 assert.equal(resetSettings.costEnabled, true);
-assert.equal(resetSettings.pricing.length, 2, "official defaults back");
+assert.equal(resetSettings.pricing.length, 3, "official defaults back");
 assert.deepEqual(resetSettings.fx, { usdToCny: 6.8 }, "fx re-inherits the default");
 assert.equal(env.registerCount(), 4, "reset drops the custom hours → re-fold back to official");
 assert.equal(env.unit().stateVersion, 8);
@@ -363,7 +363,7 @@ const scoped = JSON.parse((await env.serve("/pulse/settings", {
 assert.equal(scoped.ok, true);
 assert.equal(scoped.refold, false, "a flat provider rule needs no re-fold");
 const scopedEcho = JSON.parse((await env.serve("/pulse/settings")).body);
-assert.equal(scopedEcho.pricing.length, 3, "provider rule joins the official pair");
+assert.equal(scopedEcho.pricing.length, 4, "provider rule joins the official defaults");
 const scopedRule = scopedEcho.pricing.find((rule) => rule.provider === "pi-ai");
 assert.equal(scopedRule.model, "deepseek-v4-flash");
 assert.equal(scopedRule.input, 2);

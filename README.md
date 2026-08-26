@@ -14,6 +14,7 @@ Per-session usage and cost observatory for [dsh](https://github.com/deepseek-ai/
 - **Cost estimate**: per-model rates with peak/off-peak tiers; models without a rule are listed as unpriced
 - **Cost trend**: daily sparkline, with the official balance reconciliation line overlaid after a day of snapshots
 - **Official balance**: DeepSeek platform balance, queried with the key the host already stores, manual refresh included
+- **CSV export**: one click in the dashboard header downloads the loaded window as a UTF-8 CSV daily table — tokens, cache-hit rate, tier-aware cost and official spend per day, plus a totals row (opens directly in Excel)
 
 ## Quick start
 
@@ -59,8 +60,12 @@ Rates are **CNY per million tokens**; defaults are built in from the official pr
 |---|---|---|---|---|
 | deepseek-v4-flash | peak | 3 | 0.1 | 9 |
 | deepseek-v4-flash | off-peak | 1.5 | 0.05 | 4.5 |
+| deepseek-v4-flash-vision-exp | peak | 3 | 0.1 | 9 |
+| deepseek-v4-flash-vision-exp | off-peak | 1.5 | 0.05 | 4.5 |
 | deepseek-v4-pro | peak | 9 | 0.3 | 27 |
 | deepseek-v4-pro | off-peak | 4.5 | 0.15 | 13.5 |
+
+`deepseek-v4-flash-vision-exp` is priced at the flash tier until the official page lists it separately — override it in the pricing page or the profile patch if the experimental variant bills differently.
 
 Rules can be provider-scoped: a `provider` holds the route id and prices only that provider's same-named model (exact match wins); left empty, the rule prices the model id from any provider (the official defaults work this way). So a reseller serving `deepseek-v4-flash` can be priced separately without touching the official channel.
 
@@ -74,7 +79,7 @@ Currency: rules price in **CNY** (default) or **USD**; USD-priced models convert
 
 **Compare plans** (Settings → Usage Pulse → Compare plans) prices a usage scenario (total input, output/input ratio, cache hit rate) against the effective pricing rules (official defaults included), so rate edits show up here automatically. Temporary plans can be added; every plan can be shown or hidden. The scenario can be taken from the real usage window, or set by hand.
 
-**Display settings** (Settings → Usage Pulse → Display settings) toggle each dashboard panel (including the **session detail** panel) and the sidebar balance indicator. The **monthly budget** card on the dashboard takes a CNY budget and shows month-to-date spend, a progress bar and a run-rate month-end forecast; the balance bar shows how many days the balance lasts at the recent spend rate. All local preferences.
+**Display settings** (Settings → Usage Pulse → Display settings) toggle each dashboard panel (including the **session detail** panel) and the sidebar balance indicator, and pick a **color theme** — *blue* (the original look), *pink*, *orange* or *B&W*. Every palette carries its own light and dark variant and follows the shell's theme automatically. The **monthly budget** card on the dashboard takes a CNY budget and shows month-to-date spend, a progress bar and a run-rate month-end forecast; the balance bar shows how many days the balance lasts at the recent spend rate. All local preferences.
 
 Saves go to `$DSH_HOME/settings.yaml` (`pulse:` section), apply immediately, and survive restarts. **Restore defaults** clears the user section back to the composition config and the official defaults. Without a settings service the page is read-only.
 
@@ -120,7 +125,7 @@ Every successful query records one `{t, total}` snapshot, money only, in a rolli
 
 ## Compatibility
 
-Verified against **@deepseek-ai/dsh 0.1.0-rc.7** (Windows, Node 24.14.1); dsh requires **Node ≥ 22.15**. Older hosts without hourly tier details still render, with costs priced at off-peak rates.
+Verified against **@deepseek-ai/dsh 0.1.1-rc.2** (Windows, Node 24.14.1); dsh requires **Node ≥ 22.15**. The projection unit carries both registration contracts — the 0.1.1-rc host reads `stateSchema` + `wire`, older hosts (0.1.0-rc.x) read the legacy top-level `schema`/`view` pair — so one build serves either generation. Hosts without hourly tier details still render, with costs priced at off-peak rates.
 
 ## Development
 

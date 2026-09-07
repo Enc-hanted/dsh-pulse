@@ -1,0 +1,6 @@
+# Declare the text normalization policy for the repository: every text file
+# is stored LF in git and checked out with the platform's EOL convention
+# (CRLF on Windows with core.autocrlf=true). The 0.4.2 release was pushed
+# with CRLF blobs committed wholesale; `git add --renormalize .` after this
+# file landed converted the whole tree once, so future diffs are content-only.
+* text=auto

@@ -24,14 +24,18 @@ assert.notEqual(start, -1, "mirror region start marker missing");
 assert.notEqual(end, -1, "mirror region end marker missing");
 
 // Byte-level drift check first (markers to markers, whitespace included).
-const srcBody = readFileSync(join(root, "src", "view.js"), "utf8")
+// EOLs are normalized both sides: a Windows checkout with git's autocrlf=true
+// rewrites every file to CRLF while the repo stores LF, and the drift this
+// test guards is content, not the checkout's newline policy.
+const norm = (text) => text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+const srcBody = norm(readFileSync(join(root, "src", "view.js"), "utf8"))
   .replace(/^export function /gm, "function ")
   .replace(/^export const /gm, "const ")
   .trimEnd()
   .split("\n")
   .map((line) => (line.length > 0 ? `\t\t${line}` : line))
   .join("\n");
-const mirrorBody = bundle.slice(start + startMark.length, end)
+const mirrorBody = norm(bundle.slice(start + startMark.length, end))
   .replace(/^\n/, "")
   .replace(/\n\t\t$/, "");
 assert.equal(mirrorBody, srcBody, "lib/client.js mirror drifted from src/view.js — run `node scripts/sync-mirror.mjs`");

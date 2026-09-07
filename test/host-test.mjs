@@ -21,13 +21,17 @@ const daysAgo = (n) => localDay(noon(-n));
 /** Build a fresh stubbed harness context; `withSettings` mounts a fake
  *  `settings` service whose user layer is editable through the fake scope,
  *  `withLlm` mounts a fake `llm` service serving one provider's model
- *  catalog. `deferSettings` queues the inject callback instead of running it
- *  at apply time, simulating a settings service that mounts after the
- *  plugin. */
-function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCredentials = false, withStorageDomain = false }) {
+ *  catalog, and `legacyCache` swaps the 0.1.2-rc projection cache (sync
+ *  `coldSnapshot(meta, cut, events)` over a caller-supplied log plus the
+ *  zero-I/O `cachedSnapshot` fast path) for the pre-0.1.2 self-reading async
+ *  one, proving the plugin serves either generation. `deferSettings` queues
+ *  the inject callback instead of running it at apply time, simulating a
+ *  settings service that mounts after the plugin. */
+function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCredentials = false, withStorageDomain = false, legacyCache = false }) {
   const routes = [];
   const commands = [];
   const coldReads = [];
+  const fastReads = [];
   const settingsWatches = new Set();
   let registeredUnit = null;
   let registerCount = 0;
@@ -77,6 +81,24 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
       firstDay: daysAgo(3),
     },
   };
+  /** A second cold session served straight from the cache's stored rows (the
+   *  unseeded fast path) without any log read. */
+  const cold2Values = {
+    pulseUsage: {
+      byDay: { [daysAgo(6)]: { input: 20, output: 5, cacheRead: 100, cacheWrite: 0 } },
+      modelsByDay: { [daysAgo(6)]: { "pi-ai/large": { input: 20, output: 5, cacheRead: 100, cacheWrite: 0 } } },
+      hoursByDay: { [daysAgo(6)]: { "09": { "pi-ai/large": { input: 20, output: 5, cacheRead: 100, cacheWrite: 0 } } } },
+      tiersByDay: { [daysAgo(6)]: { "pi-ai/large": {
+        input: { peak: 20, offpeak: 0 }, output: { peak: 5, offpeak: 0 },
+        cacheRead: { peak: 100, offpeak: 0 }, cacheWrite: { peak: 0, offpeak: 0 },
+      } } },
+      turnsByDay: { [daysAgo(6)]: 1 },
+      toolCallsByDay: {},
+      firstDay: daysAgo(6),
+    },
+  };
+  /** Stored checkpoint rows behind the zero-I/O `cachedSnapshot` fast path. */
+  const coldRows = new Map([["cold2", cold2Values]]);
 
   const fakeSettings = {
     writable: true,
@@ -117,8 +139,9 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
     sessionQuery: {
       listSessions: async () => [
         { header: { id: "live1", createdAt: noon(-1), cwd: "D:\\DSH\\demo" }, live: true, persisted: true },
-        { header: { id: "cold1", createdAt: noon(-3), cwd: "/home/x/repo", origin: "subagent" }, live: false, persisted: true },
-        { header: { id: "broken1", createdAt: noon(-9), cwd: "D:\\DSH\\x" }, live: false, persisted: true },
+        { header: { id: "cold1", createdAt: noon(-3), cwd: "/home/x/repo", origin: "subagent", isSeeded: true }, live: false, persisted: true },
+        { header: { id: "broken1", createdAt: noon(-9), cwd: "D:\\DSH\\x", isSeeded: false }, live: false, persisted: true },
+        { header: { id: "cold2", createdAt: noon(-6), cwd: "/home/x/other", isSeeded: false }, live: false, persisted: true },
       ],
       readSession: async (id) => {
         if (id === "live1" || id === "cold1") {
@@ -128,7 +151,9 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
               createdAt: id === "live1" ? noon(-1) : noon(-3),
               cwd: id === "live1" ? "D:\\DSH\\demo" : "/home/x/repo",
               origin: id === "cold1" ? "subagent" : undefined,
+              isSeeded: id === "cold1",
             },
+            inheritedEventCount: id === "cold1" ? 3 : 0,
             events: [
               { type: "turn/start", time: noon(-1) },
               { type: "assistant/message", time: noon(-1) + 1000, data: { usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 900, cacheWriteTokens: 10 }, message: { source: { provider: "deepseek-official", model: "deepseek-v4-flash" } } } },
@@ -140,10 +165,26 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
       },
     },
     sessions: { get: (id) => (id === "live1" ? { id } : undefined) },
-    sessionProjectionCache: {
+    sessionProjectionCache: legacyCache === true ? {
+      // pre-0.1.2-rc generation: self-reading async coldSnapshot(id)
       coldSnapshot: async (id) => {
-        coldReads.push(id);
+        coldReads.push({ id });
         if (id === "broken1") throw new Error("no persisted log");
+        return { asOfSeq: 4, values: id === "cold2" ? cold2Values : coldValues };
+      },
+    } : {
+      // 0.1.2-rc generation: zero-I/O stored-row read plus a synchronous
+      // fold over the caller-supplied log
+      cachedSnapshot: (header, cut, keys) => {
+        fastReads.push(header.id);
+        if (header.isSeeded !== false || cut !== 0) return undefined;
+        if (keys !== undefined && !keys.includes("pulseUsage")) return undefined;
+        const values = coldRows.get(header.id);
+        return values === undefined ? undefined : { asOfSeq: 4, values };
+      },
+      coldSnapshot: (meta, inheritedEventCount, events) => {
+        coldReads.push({ id: meta.id, cut: inheritedEventCount, events: events.length });
+        if (meta.id === "broken1") throw new Error("no persisted log");
         return { asOfSeq: 4, values: coldValues };
       },
     },
@@ -189,7 +230,7 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
   }
 
   return {
-    ctx, routes, commands, coldReads, serve,
+    ctx, routes, commands, coldReads, fastReads, serve,
     unit: () => registeredUnit,
     registerCount: () => registerCount,
     userSection: () => userSection,
@@ -263,6 +304,19 @@ assert.equal(cold.subagent, true);
 assert.equal(cold.project, "repo");
 assert.equal(cold.day, daysAgo(3));
 assert.deepEqual(cold.turnsByDay, { [daysAgo(3)]: 1 });
+// the 0.1.2-rc ladder: seeded cold1 skipped its zero-I/O fast path (unknown
+// cut) and folded from the readSession body, which arrived with its exact
+// inherited cut and complete log
+assert.deepEqual(env.fastReads, ["broken1", "cold2"], "only unseeded headers touch the fast path");
+assert.deepEqual(env.coldReads[0], { id: "cold1", cut: 3, events: 3 }, "coldSnapshot receives the loaded header, cut and log");
+
+// the unseeded cold session comes straight from the stored rows — no log read
+const wide = JSON.parse((await env.serve("/pulse/stats?days=8")).body);
+assert.equal(wide.sessions.length, 3, "fast-path session joins the window");
+const cold2 = wide.sessions.find((s) => s.id === "cold2");
+assert.equal(cold2.project, "other");
+assert.equal(cold2.day, daysAgo(6));
+assert.deepEqual(cold2.byDay[daysAgo(6)], { input: 20, output: 5, cacheRead: 100, cacheWrite: 0 });
 
 // --- settings surface ----------------------------------------------------------
 const settings = JSON.parse((await env.serve("/pulse/settings")).body);
@@ -439,7 +493,7 @@ assert.ok(env.coldReads.length <= before + 3, "shared flight reads the cold corp
 // --- the command handler returns a text summary ------------------------------
 const result = await env.commands[0].handler({ signal: undefined });
 assert.equal(result.kind, "success");
-assert.ok(result.text.includes("Sessions 2"), `summary mentions sessions: ${result.text}`);
+assert.ok(result.text.includes("Sessions 3"), `summary mentions sessions: ${result.text}`);
 assert.ok(result.text.includes("Tokens in"), `summary mentions tokens: ${result.text}`);
 assert.ok(result.text.includes("Estimated cost") && result.text.includes("CNY"), `summary shows a CNY estimate: ${result.text}`);
 
@@ -574,6 +628,16 @@ assert.ok(!resultNoCost.text.includes("Estimated cost"), "cost line hidden when 
   assert.equal((await env.serve("/pulse/session")).status, 400);
   const missing = JSON.parse((await env.serve("/pulse/session?id=nope")).body);
   assert.equal(missing.ok, false);
+}
+
+// --- legacy cache generation (pre-0.1.2-rc): the self-reading async seam -------
+{
+  const env = makeCtx({ withSettings: false, legacyCache: true });
+  apply(env.ctx, config);
+  const stats = JSON.parse((await env.serve("/pulse/stats?days=9")).body);
+  assert.equal(stats.sessions.length, 3, "legacy self-reading coldSnapshot serves the cold corpus");
+  assert.ok(env.coldReads.some((entry) => entry.id === "cold1"), "legacy path folded cold1 from its id alone");
+  assert.equal(env.fastReads.length, 0, "legacy generation has no zero-I/O fast path");
 }
 
 console.log("host-test: route, windowing, dedupe, settings surface and command all passed");

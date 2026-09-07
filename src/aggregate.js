@@ -5,11 +5,12 @@
  * `pulseProjectionDefinition()` is the `pulseUsage` session-projection unit:
  * an incremental per-event fold registered on `ctx.sessionProjections` (the
  * harness drives `apply` over every committed event of every live session,
- * keeps the watermark cache warm, and the persisted projection cache
- * (`ctx.sessionProjectionCache`) serves cold sessions through its read
- * ladder), so the HTTP route reads O(1) snapshots instead of re-reading
- * whole session logs. `foldEvents` runs the same fold over a synthetic
- * event array for tests and offline use.
+ * keeps the watermark cache warm, and persisted sessions are read back
+ * through the projection cache's ladder — stored rows for unseeded sessions,
+ * a caller-driven cold fold over `sessionQuery.readSession`'s log otherwise),
+ * so the HTTP route reads O(1) snapshots instead of re-reading whole session
+ * logs. `foldEvents` runs the same fold over a synthetic event array for
+ * tests and offline use.
  *
  * The rest are pure window/payload helpers: `resolveWindow` validates and
  * clamps a request window, `sliceRecord` cuts one record's per-day maps to

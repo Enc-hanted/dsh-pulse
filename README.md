@@ -125,7 +125,7 @@ Every successful query records one `{t, total}` snapshot, money only, in a rolli
 
 ## Compatibility
 
-Verified against **@deepseek-ai/dsh 0.1.1-rc.2** (Windows, Node 24.14.1); dsh requires **Node ≥ 22.15**. The projection unit carries both registration contracts — the 0.1.1-rc host reads `stateSchema` + `wire`, older hosts (0.1.0-rc.x) read the legacy top-level `schema`/`view` pair — so one build serves either generation. Hosts without hourly tier details still render, with costs priced at off-peak rates.
+Verified against **@deepseek-ai/dsh 0.1.2-rc.1** (Windows, Node 24.14.1); dsh requires **Node ≥ 22.15**. The projection unit carries both registration contracts — the 0.1.2-rc host reads `stateSchema` + `wire`, older hosts (0.1.0-rc.x) read the legacy top-level `schema`/`view` pair — so one build serves either generation. The persisted-cache seam is served both ways too: on 0.1.2-rc the plugin drives the consumer-owned ladder itself (zero-I/O `cachedSnapshot` rows for unseeded sessions, otherwise `sessionQuery.readSession` + the synchronous `coldSnapshot(meta, inheritedEventCount, events)`), while pre-0.1.2-rc hosts keep the cache's self-reading async `coldSnapshot(id)` (detected by arity). Hosts without hourly tier details still render, with costs priced at off-peak rates.
 
 ## Development
 

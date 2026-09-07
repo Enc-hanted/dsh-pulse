@@ -127,7 +127,7 @@ DeepSeek 按峰谷时段计费：北京时间 **09:00–12:00** 与 **14:00–18
 
 ## 兼容性
 
-已在 **@deepseek-ai/dsh 0.1.1-rc.2**（Windows，Node 24.14.1）上验证；dsh 要求 **Node ≥ 22.15**。投影单元同时携带两代注册契约：0.1.1-rc 宿主读取 `stateSchema` + `wire`，旧宿主（0.1.0-rc.x）读取旧版顶层 `schema`/`view`，同一份构建两代宿主都能用。旧版宿主（不含分时明细）仍可正常显示，费用按谷价估算。
+已在 **@deepseek-ai/dsh 0.1.2-rc.1**（Windows，Node 24.14.1）上验证；dsh 要求 **Node ≥ 22.15**。投影单元同时携带两代注册契约：0.1.2-rc 宿主读取 `stateSchema` + `wire`，旧宿主（0.1.0-rc.x）读取旧版顶层 `schema`/`view`，同一份构建两代宿主都能用。持久化缓存缝同样双向兼容：在 0.1.2-rc 上插件自己走消费者读取阶梯（未播种会话用零 I/O 的 `cachedSnapshot` 行，否则 `sessionQuery.readSession` + 同步 `coldSnapshot(meta, inheritedEventCount, events)`），旧宿主（0.1.2-rc 之前）仍用缓存自读取的异步 `coldSnapshot(id)`（按形参个数识别）。旧版宿主（不含分时明细）仍可正常显示，费用按谷价估算。
 
 ## 开发
 

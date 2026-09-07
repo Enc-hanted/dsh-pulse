@@ -12,13 +12,16 @@ import { buildView, DEFAULT_USD_TO_CNY, fmtCost, modelKey, splitModelKey } from 
  * dsh-pulse — the usage & cost observatory.
  *
  * Host half: registers the `pulseUsage` session-projection unit (the
- * harness drives it incrementally over every committed event, and the
- * persisted projection cache serves cold sessions through its read ladder),
- * then serves `/pulse/stats?from=&to=` as same-origin JSON and `/pulse` as a
- * UI-plane command. Per-request work is O(corpus) lightweight reads — no
- * session log is re-folded on demand. The day/week/month/project views and
- * cost estimate are folded client-side from the windowed records. Nothing
- * here is model-visible: no prompt surface, no tools, no tokens spent.
+ * harness drives it incrementally over every committed event, and persisted
+ * sessions are served by the harness cache's read ladder — the zero-I/O
+ * stored-row read for unseeded sessions, otherwise a full-log cold fold the
+ * 0.1.2-rc cache expects its callers to drive; pre-0.1.2 caches keep their
+ * self-reading `coldSnapshot(id)`), then serves `/pulse/stats?from=&to=` as
+ * same-origin JSON and `/pulse` as a UI-plane command. Per-request work is
+ * O(corpus) lightweight reads — no session log is re-folded on demand beyond
+ * what the ladder needs. The day/week/month/project views and cost estimate
+ * are folded client-side from the windowed records. Nothing here is
+ * model-visible: no prompt surface, no tools, no tokens spent.
  *
  * @module dsh-pulse
  */
@@ -181,12 +184,11 @@ const balanceDomainSpec = defineDomain({
  * Fold the whole corpus into windowed per-session records.
  *
  * Live sessions read their O(1) watermark-cache snapshot from the projection
- * registry; persisted sessions go through the persisted-cache read ladder
- * (`coldSnapshot` — cached row plus a persistence tail read on the happy
- * path, never a full-log load). One unreadable session is skipped, never
- * fatal. Concurrent requests for the same window share one in-flight fold,
- * and a short TTL cache serves recently folded windows again so tab
- * switches and duplicate dashboard mounts stay cheap.
+ * registry; persisted sessions go through the harness cache's read ladder
+ * (below). One unreadable session is skipped, never fatal. Concurrent
+ * requests for the same window share one in-flight fold, and a short TTL
+ * cache serves recently folded windows again so tab switches and duplicate
+ * dashboard mounts stay cheap.
  *
  * @param {object} ctx - plugin context carrying the injected services.
  * @param {() => object} resolveConfig - thunk returning the authoritative
@@ -200,6 +202,50 @@ const balanceDomainSpec = defineDomain({
 const PAYLOAD_TTL_MS = 15000;
 const inflight = new Map();
 const lastServed = new Map();
+
+/**
+ * One session's `pulseUsage` projection values, across both harness cache
+ * generations.
+ *
+ * The 0.1.2-rc projection cache stopped reading the session log itself: its
+ * `coldSnapshot(meta, inheritedEventCount, events)` became a synchronous fold
+ * over a caller-supplied complete log, and a new zero-I/O
+ * `cachedSnapshot(meta, 0, keys)` serves stored rows for unseeded sessions
+ * (their checkpoint identity cut is known to be 0; a seeded header-only
+ * listing cannot know its cut, so it goes straight to the authoritative body
+ * read through `sessionQuery.readSession`, which carries the exact
+ * `inheritedEventCount`). Older caches (pre-0.1.2-rc) keep the self-reading
+ * async `coldSnapshot(id)`. The two generations are told apart by arity, so
+ * one build serves either host. Live sessions read the registry snapshot; a
+ * listed-live id that already left the store falls through to the persisted
+ * paths instead of folding to an empty record.
+ *
+ * @param {object} ctx - plugin context carrying the injected services.
+ * @param {{live: boolean, header: object}} entry - one `sessionQuery.listSessions` record.
+ * @returns {Promise<object|undefined>} the projection values map, or
+ *   `undefined` when the session has no readable projection state.
+ */
+async function projectionValuesOf(ctx, entry) {
+  const header = entry.header;
+  if (entry.live) {
+    const liveSession = ctx.sessions.get(header.id);
+    if (liveSession !== undefined) return ctx.sessionProjections.snapshot(liveSession).values;
+  }
+  const cache = ctx.sessionProjectionCache;
+  if (cache === undefined || typeof cache.coldSnapshot !== "function") return undefined;
+  if (cache.coldSnapshot.length >= 3) {
+    // 0.1.2-rc cache: synchronous fold, caller supplies the log. The fast
+    // path only claims a hit when this unit's own key came back — a row
+    // stored under an older fold version is filtered out and must refold.
+    if (header.isSeeded === false && typeof cache.cachedSnapshot === "function") {
+      const cached = cache.cachedSnapshot(header, 0, ["pulseUsage"]);
+      if (cached !== undefined && cached.values?.pulseUsage !== undefined) return cached.values;
+    }
+    const loaded = await ctx.sessionQuery.readSession(header.id);
+    return cache.coldSnapshot(loaded.session, loaded.inheritedEventCount, loaded.events).values;
+  }
+  return (await cache.coldSnapshot(header.id))?.values;
+}
 /** Cache generation: bumped on every invalidation so a fold that started
  *  before a settings change can never land its (now stale) payload in the
  *  TTL cache after the clear — the race would otherwise serve old prices for
@@ -233,15 +279,7 @@ async function aggregate(ctx, config, fromDay, toDay, snapshotsOf) {
   for (const entry of sessions) {
     try {
       const header = entry.header;
-      let values;
-      if (entry.live) {
-        const liveSession = ctx.sessions.get(header.id);
-        if (liveSession !== undefined) {
-          values = ctx.sessionProjections.snapshot(liveSession).values;
-        }
-      } else {
-        values = (await ctx.sessionProjectionCache.coldSnapshot(header.id))?.values;
-      }
+      const values = await projectionValuesOf(ctx, entry);
       const pulse = values === undefined ? undefined : values.pulseUsage;
       const record = sliceRecord({
         id: header.id,
@@ -392,12 +430,7 @@ export function apply(ctx, config) {
       const entries = await ctx.sessionQuery.listSessions();
       for (const entry of entries) {
         try {
-          if (entry.live) {
-            const liveSession = ctx.sessions.get(entry.header.id);
-            if (liveSession !== undefined) ctx.sessionProjections.snapshot(liveSession);
-          } else {
-            await ctx.sessionProjectionCache.coldSnapshot(entry.header.id);
-          }
+          await projectionValuesOf(ctx, entry);
         } catch {
           // one unreadable session: skip, the lazy path still covers it
         }

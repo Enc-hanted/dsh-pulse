@@ -54,18 +54,18 @@ The next boot drops it from `dsh.profile.bundles`. Leftovers, safe to delete: th
 
 ## Cost model
 
-Rates are **CNY per million tokens**; defaults are built in from the official price page (https://api-docs.deepseek.com/zh-cn/quick_start/pricing/, checked 2026-08-17). DeepSeek bills by peak/off-peak windows: Beijing time **09:00–12:00** and **14:00–18:00** are peak; all other hours are off-peak at half the peak rate.
+Rates are **CNY per million tokens**; defaults are built in from the official price page (https://api-docs.deepseek.com/zh-cn/quick_start/pricing/, checked 2026-09-18). DeepSeek bills by peak/off-peak windows: Beijing time **09:00–12:00** and **14:00–18:00**, **Monday to Friday only** — every other hour, including the whole weekend, is off-peak at half the peak rate.
 
 | model | tier | uncached input | cache-hit input | output |
 |---|---|---|---|---|
-| deepseek-v4-flash | peak | 3 | 0.1 | 9 |
-| deepseek-v4-flash | off-peak | 1.5 | 0.05 | 4.5 |
-| deepseek-v4-flash-vision-exp | peak | 3 | 0.1 | 9 |
-| deepseek-v4-flash-vision-exp | off-peak | 1.5 | 0.05 | 4.5 |
+| deepseek-flash | peak | 2 | 0.04 | 8 |
+| deepseek-flash | off-peak | 1 | 0.02 | 4 |
 | deepseek-v4-pro | peak | 9 | 0.3 | 27 |
 | deepseek-v4-pro | off-peak | 4.5 | 0.15 | 13.5 |
 
-`deepseek-v4-flash-vision-exp` is priced at the flash tier until the official page lists it separately — override it in the pricing page or the profile patch if the experimental variant bills differently.
+`deepseek-v4-flash` and `deepseek-v4-flash-vision-exp` are retired ids: the platform still accepts them and serves them as DeepSeek-V4.1-Flash at Flash rates, so this plugin prices those events at the Flash tier instead of listing a second, stale rate row. A provider-scoped rule always prices exactly the id it names.
+
+A rule's peak hours are weekdays-only by default. Setting `weekdaysOnly: false` on a rule bills its `peakHours` on every day of the week; an explicit empty `peakHours` list still means flat pricing.
 
 Rules can be provider-scoped: a `provider` holds the route id and prices only that provider's same-named model (exact match wins); left empty, the rule prices the model id from any provider (the official defaults work this way). So a reseller serving `deepseek-v4-flash` can be priced separately without touching the official channel.
 
@@ -111,6 +111,12 @@ Profile overrides in `cordis.patch.yml`:
             output: 2
             currency: USD
             peakHours: [0, 1, 2, 3, 4, 5]   # Beijing-time hours billed at peak
+          - model: weekend-peak    # bill those hours on every day of the week
+            input: 1
+            output: 2
+            peak: { input: 2, output: 4 }
+            peakHours: [9, 10, 11]
+            weekdaysOnly: false
           - provider: pi-ai         # prices only that provider's same-named model
             model: deepseek-v4-flash
             input: 2
@@ -125,7 +131,9 @@ Every successful query records one `{t, total}` snapshot, money only, in a rolli
 
 ## Compatibility
 
-Verified against **@deepseek-ai/dsh 0.1.2-rc.1** (Windows, Node 24.14.1); dsh requires **Node ≥ 22.15**. The projection unit carries both registration contracts — the 0.1.2-rc host reads `stateSchema` + `wire`, older hosts (0.1.0-rc.x) read the legacy top-level `schema`/`view` pair — so one build serves either generation. The persisted-cache seam is served both ways too: on 0.1.2-rc the plugin drives the consumer-owned ladder itself (zero-I/O `cachedSnapshot` rows for unseeded sessions, otherwise `sessionQuery.readSession` + the synchronous `coldSnapshot(meta, inheritedEventCount, events)`), while pre-0.1.2-rc hosts keep the cache's self-reading async `coldSnapshot(id)` (detected by arity). Hosts without hourly tier details still render, with costs priced at off-peak rates.
+Verified against **@deepseek-ai/dsh 0.1.5-rc.2** (Windows, Node 24.14.1); dsh requires **Node ≥ 22.15**. The projection unit carries both registration contracts — the 0.1.2-rc host reads `stateSchema` + `wire`, older hosts (0.1.0-rc.x) read the legacy top-level `schema`/`view` pair — so one build serves either generation. The persisted-cache seam is served both ways too: on 0.1.2-rc and later the plugin drives the consumer-owned ladder itself (zero-I/O `cachedSnapshot` rows for unseeded sessions, otherwise `sessionQuery.readSession` + the synchronous `coldSnapshot(meta, inheritedEventCount, events)`), while pre-0.1.2-rc hosts keep the cache's self-reading async `coldSnapshot(id)` (detected by arity). Hosts without hourly tier details still render, with costs priced at off-peak rates.
+
+The stats payload is **schema 4**: schema 3 plus `corpusSessions` (how many sessions exist outside the window, which is what separates "nothing recorded yet" from "nothing in this range"). The client reads schemas 2–4, so a host and a browser bundle from different releases keep working through an upgrade.
 
 ## Development
 

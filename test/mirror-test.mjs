@@ -33,7 +33,7 @@ const srcBody = norm(readFileSync(join(root, "src", "view.js"), "utf8"))
   .replace(/^export const /gm, "const ")
   .trimEnd()
   .split("\n")
-  .map((line) => (line.length > 0 ? `\t\t${line}` : line))
+  .map((line) => (line.length > 0 ? `\t\t${line}` : ""))
   .join("\n");
 const mirrorBody = norm(bundle.slice(start + startMark.length, end))
   .replace(/^\n/, "")

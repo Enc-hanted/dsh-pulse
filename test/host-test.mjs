@@ -35,6 +35,9 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
   const settingsWatches = new Set();
   let registeredUnit = null;
   let registerCount = 0;
+  /** Flips the stub corpus to empty, reproducing a harness that just booted
+   *  with no session in the store yet. */
+  let emptyCorpus = false;
   let userSection = {};
   let pendingSettingsCb = null;
   let llmSection = null;
@@ -137,12 +140,14 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
       snapshot: (session) => ({ asOfSeq: 5, values: session.id === "live1" ? liveValues : {} }),
     },
     sessionQuery: {
-      listSessions: async () => [
-        { header: { id: "live1", createdAt: noon(-1), cwd: "D:\\DSH\\demo" }, live: true, persisted: true },
-        { header: { id: "cold1", createdAt: noon(-3), cwd: "/home/x/repo", origin: "subagent", isSeeded: true }, live: false, persisted: true },
-        { header: { id: "broken1", createdAt: noon(-9), cwd: "D:\\DSH\\x", isSeeded: false }, live: false, persisted: true },
-        { header: { id: "cold2", createdAt: noon(-6), cwd: "/home/x/other", isSeeded: false }, live: false, persisted: true },
-      ],
+      listSessions: async () => (emptyCorpus
+        ? []
+        : [
+          { header: { id: "live1", createdAt: noon(-1), cwd: "D:\\DSH\\demo" }, live: true, persisted: true },
+          { header: { id: "cold1", createdAt: noon(-3), cwd: "/home/x/repo", origin: "subagent", isSeeded: true }, live: false, persisted: true },
+          { header: { id: "broken1", createdAt: noon(-9), cwd: "D:\\DSH\\x", isSeeded: false }, live: false, persisted: true },
+          { header: { id: "cold2", createdAt: noon(-6), cwd: "/home/x/other", isSeeded: false }, live: false, persisted: true },
+        ]),
       readSession: async (id) => {
         if (id === "live1" || id === "cold1") {
           return {
@@ -236,6 +241,8 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
     userSection: () => userSection,
     mountSettings: () => { const cb = pendingSettingsCb; pendingSettingsCb = null; if (cb !== null) cb(); },
     setLlmSection: (section) => { llmSection = section; },
+    setEmptyCorpus: (value) => { emptyCorpus = value === true; },
+    listSessionsProbe: () => ctx.sessionQuery.listSessions(),
     balanceState: () => balanceState,
     seedSnapshots: (snapshots) => { balanceState = { snapshots }; },
     fetchCalls,
@@ -251,7 +258,7 @@ const config = { defaultDays: 30, topProjects: 8, pricing: [] };
   const fallback = JSON.parse((await env.serve("/pulse/settings")).body);
   assert.equal(fallback.writable, false, "no settings provider → not writable");
   assert.equal(fallback.costEnabled, true, "cost enabled by default");
-  assert.equal(fallback.pricing.length, 3, "official defaults merged (flash, flash-vision-exp, pro)");
+  assert.equal(fallback.pricing.length, 2, "official defaults merged (deepseek-flash, deepseek-v4-pro)");
   assert.deepEqual(fallback.catalog, [], "no llm service → empty catalog");
   assert.deepEqual(fallback.fx, { usdToCny: 6.8 }, "default fx without config");
   const denied = JSON.parse((await env.serve("/pulse/settings", { method: "POST", body: { reset: true } })).body);
@@ -268,7 +275,7 @@ apply(env.ctx, config);
 // --- the projection unit registered with the official contract --------------
 assert.notEqual(env.unit(), null, "projection unit registered");
 assert.equal(env.unit().key, "pulseUsage");
-assert.equal(env.unit().stateVersion, 5);
+assert.equal(env.unit().stateVersion, 7);
 assert.equal(env.registerCount(), 1, "one registration at load");
 assert.deepEqual(env.unit().view(env.unit().init()), {
   byDay: {}, modelsByDay: {}, hoursByDay: {}, tiersByDay: {}, turnsByDay: {}, toolCallsByDay: {}, firstDay: null,
@@ -282,12 +289,13 @@ assert.equal(env.commands.length, 1, "/pulse command registered");
 const { status, body } = await env.serve(`/pulse/stats?from=${daysAgo(4)}&to=${today()}`);
 assert.equal(status, 200);
 const payload = JSON.parse(body);
-assert.equal(payload.schema, 3);
+assert.equal(payload.schema, 4);
 assert.equal(payload.fromDay, daysAgo(4));
 assert.equal(payload.toDay, today());
 assert.equal(payload.topProjects, 8);
 assert.equal(payload.costEnabled, true, "cost enabled by default");
 assert.equal(payload.sessions.length, 2, "broken session skipped, never fatal");
+assert.equal(payload.corpusSessions, 4, "the whole corpus is counted, not just the window");
 const live = payload.sessions.find((s) => s.id === "live1");
 const cold = payload.sessions.find((s) => s.id === "cold1");
 assert.equal(live.project, "demo");
@@ -322,13 +330,16 @@ assert.deepEqual(cold2.byDay[daysAgo(6)], { input: 20, output: 5, cacheRead: 100
 const settings = JSON.parse((await env.serve("/pulse/settings")).body);
 assert.equal(settings.writable, true);
 assert.equal(settings.costEnabled, true);
-assert.equal(settings.pricing.length, 3, "official defaults merged into the editor");
-assert.equal(settings.pricing[0].model, "deepseek-v4-flash");
-assert.equal(settings.pricing[0].peak.input, 3, "peak rates ride along");
+assert.equal(settings.pricing.length, 2, "official defaults merged into the editor");
+assert.equal(settings.pricing[0].model, "deepseek-flash");
+assert.equal(settings.pricing[0].input, 1, "the official Flash off-peak miss rate");
+assert.equal(settings.pricing[0].cacheRead, 0.02, "the official Flash cache-hit rate");
+assert.equal(settings.pricing[0].peak.input, 2, "peak rates ride along");
 assert.deepEqual(settings.pricing[0].peakHours, [9, 10, 11, 14, 15, 16, 17], "normalized peak hours ride along");
+assert.equal(settings.pricing[0].weekdaysOnly, true, "the official peak windows are weekdays only");
 assert.deepEqual(settings.fx, { usdToCny: 6.8 }, "default fx served to the editor");
-assert.equal(settings.official.length, 3, "untouched official baseline served for per-row restore");
-assert.equal(settings.official[0].model, "deepseek-v4-flash");
+assert.equal(settings.official.length, 2, "untouched official baseline served for per-row restore");
+assert.equal(settings.official[0].model, "deepseek-flash");
 assert.equal(settings.catalog.length, 1, "one provider group from the llm service");
 assert.equal(settings.catalog[0].displayName, "DeepSeek");
 assert.equal(settings.catalog[0].models.length, 3);
@@ -349,9 +360,9 @@ assert.deepEqual(env.userSection(), {
 const after = JSON.parse((await env.serve("/pulse/settings")).body);
 assert.equal(after.costEnabled, false);
 assert.equal(after.fx.usdToCny, 7.05, "edited fx served back");
-assert.equal(after.pricing.length, 4, "user rule joins the official defaults");
-assert.equal(after.pricing[3].model, "my-model");
-assert.equal(after.pricing[3].input, 9);
+assert.equal(after.pricing.length, 3, "user rule joins the official defaults");
+assert.equal(after.pricing[2].model, "my-model");
+assert.equal(after.pricing[2].input, 9);
 assert.equal(env.registerCount(), 1, "price-only edits never re-register the projection");
 
 // the stats payload reflects the persisted flag (payload cache invalidated)
@@ -379,7 +390,7 @@ const peakChange = JSON.parse((await env.serve("/pulse/settings", {
 assert.equal(peakChange.ok, true);
 assert.equal(peakChange.refold, true, "peak-hours save predicts a re-fold");
 assert.equal(env.registerCount(), 2, "peak-hours change re-registers the projection");
-assert.equal(env.unit().stateVersion, 6, "bumped state version invalidates persisted rows");
+assert.equal(env.unit().stateVersion, 8, "bumped state version invalidates persisted rows");
 await new Promise((resolve) => setTimeout(resolve, 20));
 assert.ok(env.coldReads.length > coldReadsBefore, "background warm-up re-folds the cold corpus");
 
@@ -403,10 +414,10 @@ assert.equal(reset.refold, true, "reset drops the flat override → back to offi
 assert.deepEqual(env.userSection(), {}, "reset clears the user layer");
 const resetSettings = JSON.parse((await env.serve("/pulse/settings")).body);
 assert.equal(resetSettings.costEnabled, true);
-assert.equal(resetSettings.pricing.length, 3, "official defaults back");
+assert.equal(resetSettings.pricing.length, 2, "official defaults back");
 assert.deepEqual(resetSettings.fx, { usdToCny: 6.8 }, "fx re-inherits the default");
 assert.equal(env.registerCount(), 4, "reset drops the custom hours → re-fold back to official");
-assert.equal(env.unit().stateVersion, 8);
+assert.equal(env.unit().stateVersion, 10);
 
 // a provider-scoped rule coexists with the wildcard official default: same
 // model id, two effective rules, and the provider survives the round trip
@@ -417,14 +428,18 @@ const scoped = JSON.parse((await env.serve("/pulse/settings", {
 assert.equal(scoped.ok, true);
 assert.equal(scoped.refold, false, "a flat provider rule needs no re-fold");
 const scopedEcho = JSON.parse((await env.serve("/pulse/settings")).body);
-assert.equal(scopedEcho.pricing.length, 4, "provider rule joins the official defaults");
+assert.equal(scopedEcho.pricing.length, 3, "provider rule joins the official defaults");
 const scopedRule = scopedEcho.pricing.find((rule) => rule.provider === "pi-ai");
+// A provider-scoped id is used verbatim: aliasing is an official-channel
+// concern, and a reseller's retired id must price under the id it reports.
 assert.equal(scopedRule.model, "deepseek-v4-flash");
 assert.equal(scopedRule.input, 2);
-const official = scopedEcho.pricing.find((rule) => rule.model === "deepseek-v4-flash" && (rule.provider ?? "") === "");
-assert.equal(official.input, 1.5, "wildcard official default untouched by the scoped rule");
-// its peak hours are the official ones → no re-registration
-assert.equal(env.registerCount(), 4);
+// The provider-less rule for that retired id is promoted onto the current
+// Flash row instead of shadowing it with a stale rate.
+const official = scopedEcho.pricing.find((rule) => rule.model === "deepseek-flash" && (rule.provider ?? "") === "");
+assert.equal(official.input, 1, "wildcard official default untouched by the scoped rule");
+assert.equal(scopedEcho.pricing.some((rule) => rule.model === "deepseek-v4-flash" && (rule.provider ?? "") === ""), false, "no stale alias row");
+assert.equal(env.registerCount(), 4, "its peak hours are the official ones → no re-registration");
 // a scoped rule with custom peak hours does re-register (fold key is composite)
 const scopedPeak = JSON.parse((await env.serve("/pulse/settings", {
   method: "POST",
@@ -486,9 +501,32 @@ const [a, b] = await Promise.all([
   env.serve(`/pulse/stats?from=${daysAgo(4)}&to=${today()}`),
   env.serve(`/pulse/stats?from=${daysAgo(4)}&to=${today()}`),
 ]);
-assert.equal(JSON.parse(a.body).schema, 3);
-assert.equal(JSON.parse(b.body).schema, 3);
+assert.equal(JSON.parse(a.body).schema, 4);
+assert.equal(JSON.parse(b.body).schema, 4);
 assert.ok(env.coldReads.length <= before + 3, "shared flight reads the cold corpus once");
+
+// --- an empty fold is never sticky -------------------------------------------
+// A harness that just booted lists no session until its first message commits.
+// That empty window must not be pinned by the payload TTL cache: the very next
+// request, after the session lands, has to fold and report it.
+{
+  const boot = makeCtx({ withSettings: false });
+  apply(boot.ctx, config);
+  boot.setEmptyCorpus(true);
+  const window = `from=${daysAgo(2)}&to=${today()}`;
+  const cold = JSON.parse((await boot.serve(`/pulse/stats?${window}`)).body);
+  assert.equal(cold.sessions.length, 0, "boot-time fold reports an empty window");
+  assert.equal(cold.corpusSessions, 0, "the corpus itself is reported empty");
+  boot.setEmptyCorpus(false);
+  const warm = JSON.parse((await boot.serve(`/pulse/stats?${window}`)).body);
+  assert.ok(warm.sessions.length > 0, "the same window re-folds once sessions exist");
+  assert.ok(warm.corpusSessions > 0, "the corpus count follows the store");
+  // A non-empty payload IS cached: the second read must not re-fold the corpus.
+  const readsBefore = boot.coldReads.length + boot.fastReads.length;
+  const again = JSON.parse((await boot.serve(`/pulse/stats?${window}`)).body);
+  assert.equal(again.sessions.length, warm.sessions.length, "cached window serves the same records");
+  assert.equal(boot.coldReads.length + boot.fastReads.length, readsBefore, "non-empty windows stay cached for the TTL");
+}
 
 // --- the command handler returns a text summary ------------------------------
 const result = await env.commands[0].handler({ signal: undefined });

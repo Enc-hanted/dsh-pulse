@@ -154,8 +154,28 @@ const flatHoursFolded = foldEvents([
 assert.equal(flatHoursFolded.tiersByDay[localDay(bj(10))]["m-flat"].input.peak, 0, "empty hour set: 10:00 Beijing is off-peak");
 assert.equal(flatHoursFolded.tiersByDay[localDay(bj(10))]["m-flat"].input.offpeak, 5);
 // the definition carries its stateVersion (host bumps it on peak-hour changes)
-assert.equal(pulseProjectionDefinition().stateVersion, 5);
-assert.equal(pulseProjectionDefinition({ stateVersion: 7 }).stateVersion, 7);
+assert.equal(pulseProjectionDefinition().stateVersion, 7);
+assert.equal(pulseProjectionDefinition({ stateVersion: 9 }).stateVersion, 9);
+// The official peak windows run Monday–Friday: the same 10:00 Beijing hour is
+// off-peak on a weekend. 2026-08-15 is a Saturday, 2026-08-14 a Friday. A bare
+// hour set keeps the historical all-days reading; the projection and the host
+// pass the official `{hours, weekdaysOnly: true}` scope.
+const saturday = (hh) => Date.UTC(2026, 7, 15, hh - 8, 0, 0);
+assert.equal(tierAt(saturday(10), { hours: PEAK_HOURS, weekdaysOnly: true }), "offpeak", "weekend peak hour is off-peak under the official windows");
+assert.equal(tierAt(bj(10), { hours: PEAK_HOURS, weekdaysOnly: true }), "peak", "the same hour on a weekday stays peak");
+assert.equal(tierAt(saturday(10), { hours: PEAK_HOURS, weekdaysOnly: false }), "peak", "weekdaysOnly false bills every day");
+assert.equal(tierAt(saturday(10)), "peak", "a bare hour set keeps the all-days reading");
+// The projection's DEFAULT (no peakHoursFor) is the official weekdays-only scope.
+const weekendFolded = foldEvents([{
+  type: "assistant/message", time: saturday(10),
+  data: { turn: 4, step: 1, message: { source: { model: "m-weekend" } }, usage: { inputTokens: 9 } },
+}]);
+assert.equal(weekendFolded.tiersByDay[localDay(saturday(10))]["m-weekend"].input.offpeak, 9, "a Saturday peak hour folds off-peak by default");
+const weekdayOnlyOverride = foldEvents([{
+  type: "assistant/message", time: saturday(10),
+  data: { turn: 4, step: 1, message: { source: { model: "m-weekend" } }, usage: { inputTokens: 9 } },
+}], { peakHoursFor: () => ({ hours: PEAK_HOURS, weekdaysOnly: false }) });
+assert.equal(weekdayOnlyOverride.tiersByDay[localDay(saturday(10))]["m-weekend"].input.peak, 9, "an all-days spec keeps the weekend peak");
 // --- registration contract (harness 0.1.1-rc renamed the projection boundary) --
 // The 0.1.1-rc registry reads `stateSchema` + `wire.{viewSchema,view}`; a unit
 // without `wire` is treated as host-internal and never surfaces in snapshot
@@ -305,7 +325,7 @@ assert.equal(unsorted.header.origin, "main", "absent subagent origin labels main
 assert.deepEqual(timelineEvents(null).events, []);
 assert.deepEqual(timelineEvents(null).turns, []);
 
-// --- buildPayload: schema 3, window echo, pricing/topProjects -----------------
+// --- buildPayload: schema 4, window echo, pricing/topProjects -----------------
 const pricing = [{ model: "deepseek-v4-flash", input: 1, cacheRead: 0.02, output: 2, currency: "CNY" }];
 const payload = buildPayload({
   records: [sliced, blank, null, { noDay: true }],
@@ -315,7 +335,7 @@ const payload = buildPayload({
   topProjects: 12,
   now: Date.now(),
 });
-assert.equal(payload.schema, 3);
+assert.equal(payload.schema, 4);
 assert.equal(payload.fromDay, daysAgo(7));
 assert.equal(payload.toDay, today());
 assert.equal(payload.today, today());
@@ -323,6 +343,12 @@ assert.equal(payload.topProjects, 12);
 assert.equal(payload.costEnabled, true, "cost enabled by default");
 assert.deepEqual(payload.pricing, pricing);
 assert.deepEqual(payload.monthly, [], "no monthly providers by default");
+// corpusSessions separates "never recorded" from "nothing in this window";
+// it defaults to the windowed count when the host does not supply one.
+assert.equal(buildPayload({ records: [sliced], corpusSessions: 27 }).corpusSessions, 27, "corpus count echoed");
+assert.equal(buildPayload({ records: [sliced], corpusSessions: 0 }).corpusSessions, 0, "an empty corpus is representable");
+assert.equal(buildPayload({ records: [sliced] }).corpusSessions, 1, "missing corpus count falls back to the window count");
+assert.equal(buildPayload({ records: [], corpusSessions: -3 }).corpusSessions, 0, "negative counts clamp to zero");
 assert.deepEqual(buildPayload({ records: [], monthly: ["pi-ai"] }).monthly, ["pi-ai"], "monthly provider list echoed");
 assert.equal(payload.sessions.length, 2, "null / day-less records dropped");
 assert.ok(payload.sessions.every((s) => s.day >= payload.fromDay && s.day <= payload.toDay));

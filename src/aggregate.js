@@ -14,7 +14,7 @@
  *
  * The rest are pure window/payload helpers: `resolveWindow` validates and
  * clamps a request window, `sliceRecord` cuts one record's per-day maps to
- * that window, and `buildPayload` assembles the wire payload (schema 3).
+ * that window, and `buildPayload` assembles the wire payload (schema 4).
  *
  * @module dsh-pulse/aggregate
  */
@@ -216,13 +216,26 @@ export function normalizePeakHours(hours) {
 }
 
 /** `"peak"` | `"offpeak"` pricing tier of a timestamp under the given peak
- *  hour set (Beijing time, hour granularity). Accepts an hour array or the
- *  Set the projection materializes; defaults to the official windows. */
+ *  hours (Beijing time, hour granularity). Accepts an hour array or the Set
+ *  the projection materializes; defaults to the official windows. The
+ *  official peak windows run Monday–Friday only, so `peakHours` is an object
+ *  `{hours, weekdaysOnly}` when a rule needs a specific day scope: with
+ *  `weekdaysOnly` the peak hours apply on weekdays and every hour of Saturday
+ *  and Sunday is off-peak. A bare hour array keeps the historical all-day
+ *  reading (peak hours on every day of the week). */
 export function tierAt(timeMs, peakHours = PEAK_HOURS) {
-  const hh = new Date(timeMs + BEIJING_OFFSET_MS).getUTCHours();
-  if (typeof peakHours?.has === "function") return peakHours.has(hh) ? "peak" : "offpeak";
-  const hours = Array.isArray(peakHours) ? peakHours : PEAK_HOURS;
-  return hours.includes(hh) ? "peak" : "offpeak";
+  const spec = Array.isArray(peakHours) || typeof peakHours?.has === "function"
+    ? { hours: peakHours, weekdaysOnly: false }
+    : (peakHours ?? { hours: PEAK_HOURS, weekdaysOnly: false });
+  const at = new Date(timeMs + BEIJING_OFFSET_MS);
+  if (spec.weekdaysOnly === true) {
+    const dow = at.getUTCDay();
+    if (dow === 0 || dow === 6) return "offpeak";
+  }
+  const hh = at.getUTCHours();
+  const hours = spec.hours;
+  if (typeof hours?.has === "function") return hours.has(hh) ? "peak" : "offpeak";
+  return (Array.isArray(hours) ? hours : PEAK_HOURS).includes(hh) ? "peak" : "offpeak";
 }
 
 /**
@@ -259,11 +272,11 @@ export function tierAt(timeMs, peakHours = PEAK_HOURS) {
  *   state otherwise.
  *
  * @param {object} [options]
- * @param {(model: string) => number[]} [options.peakHoursFor] - peak hour
- *   set per composite model key (`provider\u0000model`, bare id without a
- *   provider); omitted models fold at the official windows. Defaults to the
- *   official windows for everything.
- * @param {number} [options.stateVersion=5] - fold-semantics version; the
+ * @param {(model: string) => number[]|{hours: number[], weekdaysOnly?: boolean}} [options.peakHoursFor]
+ *   - peak-hour spec per composite model key (`provider\u0000model`, bare id
+ *   without a provider); omitted models fold at the official windows
+ *   (weekdays only). Defaults to the official windows for everything.
+ * @param {number} [options.stateVersion=7] - fold-semantics version; the
  *   host bumps it when peak-hour settings change so persisted rows replay.
  * @returns {object} the projection definition (`key`, `stateSchema`, `wire`,
  *   `init`, `apply`, `stateVersion`, plus the legacy `schema`/`view` pair).
@@ -277,20 +290,33 @@ export function tierAt(timeMs, peakHours = PEAK_HOURS) {
  * (a unit without `wire` is treated as host-internal and never surfaces in
  * snapshot values — the failure mode this dual contract exists to prevent).
  */
-export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 5 } = {}) {
+export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 7 } = {}) {
   const dayOf = (event) => (num(event.time) > 0 ? localDay(event.time) : null);
-  /** Per-model hour sets, materialized once (the map lives and dies with one
+  /** Per-model tier specs, materialized once (the map lives and dies with one
    *  registration, so a re-register on settings change starts it fresh). An
-   *  explicitly empty set is legal — "no peak hours", flat pricing. */
+   *  explicitly empty hour list is legal — "no peak hours", flat pricing. */
   const hourSets = new Map();
+  /** Materialize one model's tier spec from whatever the resolver returned.
+   *  `undefined`/`null` is "not configured" — the official windows, weekdays
+   *  only; a spec object carries its own scope; a bare hour array keeps the
+   *  historical all-days reading; no resolver at all is the official case. */
+  const specOf = (configured) => {
+    const isSpec = configured !== null && typeof configured === "object"
+      && !Array.isArray(configured) && typeof configured.has !== "function";
+    if (configured === undefined || configured === null) return { hours: new Set(PEAK_HOURS), weekdaysOnly: true };
+    const raw = isSpec ? configured.hours : configured;
+    const weekdaysOnly = isSpec ? configured.weekdaysOnly === true : false;
+    if (raw === undefined || raw === null) return { hours: new Set(PEAK_HOURS), weekdaysOnly: true };
+    if (typeof raw.has === "function") return { hours: raw, weekdaysOnly };
+    return { hours: new Set(Array.isArray(raw) ? raw : []), weekdaysOnly };
+  };
   const hoursOf = (model) => {
-    let set = hourSets.get(model);
-    if (set === undefined) {
-      const hours = typeof peakHoursFor === "function" ? peakHoursFor(model) : PEAK_HOURS;
-      set = new Set(Array.isArray(hours) ? hours : PEAK_HOURS);
-      hourSets.set(model, set);
+    let spec = hourSets.get(model);
+    if (spec === undefined) {
+      spec = typeof peakHoursFor === "function" ? specOf(peakHoursFor(model)) : specOf(undefined);
+      hourSets.set(model, spec);
     }
-    return set;
+    return spec;
   };
   const withFirstDay = (next, day) => {
     if (next.firstDay === null || day < next.firstDay) next.firstDay = day;
@@ -365,12 +391,14 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 5 } = {
         hourModels[key] = perHourModel;
         dayHours[hh] = hourModels;
         next.hoursByDay = { ...next.hoursByDay, [day]: dayHours };
-        // Peak/off-peak split (Beijing-time hour set, per model) per day and
-        // model, the cost estimate's tier source for any window length.
+        // Peak/off-peak split (Beijing-time hours, weekday-scoped per the
+        // rule) per day and model, the cost estimate's tier source for any
+        // window length.
         next.tiersByDay = { ...state.tiersByDay };
         const dayTiers = { ...(state.tiersByDay[day] ?? {}) };
         const modelTiers = { ...(dayTiers[key] ?? EMPTY_TIER()) };
-        addTier(modelTiers, usage, tierAt(event.time, hoursOf(key)));
+        const tierSpec = hoursOf(key);
+        addTier(modelTiers, usage, tierAt(event.time, { hours: tierSpec.hours, weekdaysOnly: tierSpec.weekdaysOnly }));
         dayTiers[key] = modelTiers;
         next.tiersByDay = { ...next.tiersByDay, [day]: dayTiers };
         withFirstDay(next, day);
@@ -574,7 +602,7 @@ function compactUsage(event) {
 }
 
 /**
- * Build the wire payload served by `/pulse/stats` (schema 3).
+ * Build the wire payload served by `/pulse/stats` (schema 4).
  *
  * @param {object} options
  * @param {Array<object>} options.records - `sliceRecord` outputs for the window.
@@ -587,10 +615,15 @@ function compactUsage(event) {
  *   CNY cost display (invalid values fall back to the built-in default).
  * @param {string[]} [options.monthly] - provider ids billed as a flat monthly
  *   subscription, echoed to the client for zero-cost pricing.
+ * @param {number} [options.corpusSessions] - total sessions known to the
+ *   corpus, independent of the window. It separates "nothing was ever
+ *   recorded" from "nothing landed in this window", which an empty `sessions`
+ *   array alone cannot express (and which a freshly booted harness hits
+ *   before its first message commits).
  * @param {number} [options.now] - clock override for tests.
  * @returns {object} the JSON payload.
  */
-export function buildPayload({ records, fromDay, toDay, pricing = [], topProjects = 8, costEnabled = true, fx = {}, monthly = [], now = Date.now() }) {
+export function buildPayload({ records, fromDay, toDay, pricing = [], topProjects = 8, costEnabled = true, fx = {}, monthly = [], corpusSessions, now = Date.now() }) {
   const today = localDay(now);
   const window = resolveWindow(
     { from: validDay(fromDay) ? fromDay : undefined, to: validDay(toDay) ? toDay : undefined },
@@ -602,8 +635,11 @@ export function buildPayload({ records, fromDay, toDay, pricing = [], topProject
   ));
   const top = Number(topProjects);
   const rate = Number(fx?.usdToCny);
+  // An explicit 0 is meaningful ("the corpus is empty"); only an absent or
+  // unparsable count falls back to what the window actually carried.
+  const corpus = corpusSessions === undefined || corpusSessions === null ? NaN : Number(corpusSessions);
   return {
-    schema: 3,
+    schema: 4,
     generatedAt: now,
     today,
     fromDay: window.fromDay,
@@ -613,6 +649,7 @@ export function buildPayload({ records, fromDay, toDay, pricing = [], topProject
     topProjects: Number.isFinite(top) && top > 0 ? Math.floor(top) : 8,
     costEnabled: costEnabled !== false,
     fx: { usdToCny: Number.isFinite(rate) && rate > 0 ? rate : DEFAULT_USD_TO_CNY },
+    corpusSessions: Number.isFinite(corpus) && corpus >= 0 ? Math.floor(corpus) : sessions.length,
     sessions,
   };
 }

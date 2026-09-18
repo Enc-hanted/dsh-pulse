@@ -6,7 +6,7 @@ import {
   balanceSpendSeries, buildPayload, localDay, normalizePeakHours, projectOf,
   pulseProjectionDefinition, resolveWindow, sliceRecord, timelineEvents, PEAK_HOURS,
 } from "./aggregate.js";
-import { buildView, DEFAULT_USD_TO_CNY, fmtCost, modelKey, splitModelKey } from "./view.js";
+import { buildView, DEFAULT_USD_TO_CNY, fmtCost, modelKey, MODEL_SEP, splitModelKey } from "./view.js";
 
 /**
  * dsh-pulse — the usage & cost observatory.
@@ -42,28 +42,41 @@ export const inject = [
 
 /**
  * Default per-model rates, from the official page:
- *  https://api-docs.deepseek.com/zh-cn/quick_start/pricing/ (checked 2026-08-17).
+ *  https://api-docs.deepseek.com/zh-cn/quick_start/pricing/ (checked 2026-09-18).
  *
- * DeepSeek now bills by peak/off-peak windows (Beijing time 09:00–12:00 and
- * 14:00–18:00 are peak; off-peak rates are half the peak rates), effective
- * 2026-08-17. The top-level `input` / `cacheRead` / `output` fields are the
- * off-peak rates; `peak` carries the peak-hour rates (omit it for a flat,
- * time-independent rate); `peakHours` lists the peak hours (Beijing time,
- * defaults to the official windows — override it per rule when a
- * third-party provider bills its own windows). Override or extend in your
- * profile patch — unmatched models stay unpriced.
+ * DeepSeek bills by peak/off-peak windows — Beijing time 09:00–12:00 and
+ * 14:00–18:00, Monday to Friday only; every other hour (including the whole
+ * weekend) is off-peak at half the peak rate. The top-level `input` /
+ * `cacheRead` / `output` fields are the off-peak rates; `peak` carries the
+ * peak-hour rates (omit it for a flat, time-independent rate); `peakHours`
+ * lists the peak hours (Beijing time, defaults to the official windows —
+ * override it per rule when a third-party provider bills its own windows).
+ * `weekdaysOnly: false` bills a rule's peak hours on every day of the week.
+ * Override or extend in your profile patch — unmatched models stay unpriced.
+ *
+ * The 2026-09 model rename is load-bearing, not cosmetic: `deepseek-v4-flash`
+ * and `deepseek-v4-flash-vision-exp` are retired ids that the platform still
+ * accepts and serves as DeepSeek-V4.1-Flash at Flash rates, so events folded
+ * under those names must price at the Flash tier. {@link LEGACY_MODEL_ALIASES}
+ * resolves them to the current rule instead of keeping a duplicate rate row.
  */
 const OFFICIAL_PRICING = [
-  { model: "deepseek-v4-flash", input: 1.5, cacheRead: 0.05, output: 4.5,
-    peak: { input: 3, cacheRead: 0.1, output: 9 }, peakHours: PEAK_HOURS, currency: "CNY" },
-  // The vision-experimental variant is served under the flash tier (same
-  // rates until the official page prices it separately; override in the
-  // profile patch or the pricing page if it differs).
-  { model: "deepseek-v4-flash-vision-exp", input: 1.5, cacheRead: 0.05, output: 4.5,
-    peak: { input: 3, cacheRead: 0.1, output: 9 }, peakHours: PEAK_HOURS, currency: "CNY" },
+  // deepseek-flash (DeepSeek-V4.1-Flash): cache-hit 0.02/0.04, miss 1/2, out 4/8 (CNY per MTok)
+  { model: "deepseek-flash", input: 1, cacheRead: 0.02, output: 4,
+    peak: { input: 2, cacheRead: 0.04, output: 8 }, peakHours: PEAK_HOURS, currency: "CNY" },
   { model: "deepseek-v4-pro", input: 4.5, cacheRead: 0.15, output: 13.5,
     peak: { input: 9, cacheRead: 0.3, output: 27 }, peakHours: PEAK_HOURS, currency: "CNY" },
 ];
+
+/** Retired model ids the platform still serves, mapped to the current id
+ *  whose rule prices them (official page, 2026-09-18). Aliases are specific
+ *  to the official channel: a provider-scoped rule always wins, and an
+ *  explicit rule for the alias id is honored as written.
+ *  @type {Map<string, string>} */
+const LEGACY_MODEL_ALIASES = new Map([
+  ["deepseek-v4-flash", "deepseek-flash"],
+  ["deepseek-v4-flash-vision-exp", "deepseek-flash"],
+]);
 
 /** One pricing rule (top-level rates are off-peak; `peak` holds the
  *  peak-hour rates when the model bills by time of day; `peakHours` lists
@@ -80,7 +93,8 @@ const pricingRuleSchema = z.object({
     cacheRead: z.number().description("price per million cache-hit input tokens in peak hours (defaults to peak `input` when omitted)"),
     output: z.number().default(0).description("price per million output tokens in peak hours"),
   }).description("peak-hour rates; omit for a flat rate"),
-  peakHours: z.array(z.number().step(1).min(0).max(23)).description("peak hours in Beijing time (0–23); defaults to the official 09:00–12:00 and 14:00–18:00 windows"),
+  peakHours: z.array(z.number().step(1).min(0).max(23)).description("peak hours in Beijing time (0–23); omit to inherit, or pass [] for flat pricing (defaults to the official 09:00–12:00 and 14:00–18:00 windows)"),
+  weekdaysOnly: z.boolean().description("bill the peak hours Monday–Friday only, as the official windows do; omit to inherit, or pass `false` to apply them every day of the week"),
   currency: z.union(["CNY", "USD"]).default("CNY").description("currency the rates are denominated in; USD-priced models convert to CNY through `usdToCny` for the unified display"),
 });
 
@@ -101,43 +115,109 @@ export const Config = z.object({
  *  every rule prices in the one global currency — per-rule `currency` values
  *  from older configs are superseded). Rules are keyed by `provider\u0000model`
  *  (bare model id when provider-less), so a provider-scoped rule coexists
- *  with the wildcard default for the same model id. */
+ *  with the wildcard default for the same model id.
+ *
+ *  A config rule whose model id is a retired alias is promoted onto the
+ *  current id's wildcard rule, so one row covers the model and its old names
+ *  instead of shadowing the official default with a stale rate. Rules
+ *  configured under a provider are never aliased.
+ *
+ *  Tier scope is resolved to concrete values for display, and
+ *  {@link effectivePricing.inherited} records whether that resolution came
+ *  from the official default rather than from the deployment — a distinction
+ *  only the refold predictor needs, because a row that merely restates the
+ *  official windows must not be mistaken for a tier-scope change. */
 function effectivePricing(config) {
   const rules = new Map();
   const currency = config.currency === "USD" ? "USD" : "CNY";
   for (const rule of OFFICIAL_PRICING) {
     const key = modelKey("", rule.model);
-    rules.set(key, { ...rule, provider: "", peakHours: normalizePeakHours(rule.peakHours), currency });
+    rules.set(key, {
+      ...rule, provider: "",
+      peakHours: normalizePeakHours(rule.peakHours ?? PEAK_HOURS),
+      weekdaysOnly: rule.weekdaysOnly !== false,
+      inherited: true,
+      currency,
+    });
   }
   for (const rule of Array.isArray(config.pricing) ? config.pricing : []) {
     const model = typeof rule?.model === "string" && rule.model !== "" ? rule.model : null;
     if (model === null) continue;
     const provider = typeof rule?.provider === "string" && rule.provider.length > 0 ? rule.provider : "";
-    const key = modelKey(provider, model);
+    // Only the official channel's retired ids alias: a provider-scoped rule
+    // prices exactly the id it names (a reseller may serve that id itself).
+    const canonical = provider === "" ? (LEGACY_MODEL_ALIASES.get(model) ?? model) : model;
+    const key = modelKey(provider, canonical);
     const prev = rules.get(key) ?? {};
+    // Only a rule that actually SPEAKS to tier scope inherits it from its
+    // predecessor row; one that stays silent keeps the official default (and
+    // stays tier-neutral however the previous row was scoped).
+    const speaksPeak = rule.peakHours !== undefined || typeof rule.weekdaysOnly === "boolean";
     rules.set(key, {
-      ...prev, ...rule, provider,
-      peakHours: normalizePeakHours(rule.peakHours ?? prev.peakHours),
+      ...prev, ...rule, provider, model: canonical,
+      peakHours: normalizePeakHours(rule.peakHours ?? (prev.inherited === true ? PEAK_HOURS : prev.peakHours) ?? PEAK_HOURS),
+      weekdaysOnly: typeof rule.weekdaysOnly === "boolean"
+        ? rule.weekdaysOnly
+        : (prev.inherited === true || prev.weekdaysOnly === undefined ? true : prev.weekdaysOnly === true),
+      inherited: !speaksPeak,
       currency,
     });
   }
-  return [...rules.values()].map((rule) => ({ ...rule, currency }));
+  return [...rules.values()].map(({ inherited, ...rule }) => ({ ...rule, currency }));
 }
 
-/** Canonical model→peak-hours map of the effective pricing, the fold's
- *  input. Only models whose normalized hours differ from the official
- *  windows appear (everything else folds at the official windows anyway), so
- *  deep-equality over this map decides whether changing settings requires
- *  re-folding history (re-registering the projection unit at a bumped state
- *  version); price-only edits and new flat rules never trigger a replay.
- *  Wildcard (provider-less) rules index the bare model id so events folded
- *  under a `provider\u0000model` key still hit them. */
+/** Canonical model→tier-spec map of the effective pricing, the fold's input.
+ *  Only models whose tier scope is NOT the official default (the official
+ *  hours, weekdays only) appear — everything else folds at that default
+ *  anyway — so deep-equality over this map decides whether changing settings
+ *  requires re-folding history (re-registering the projection unit at a bumped
+ *  state version); price-only edits and new flat rules never trigger a replay.
+ *  Wildcard (provider-less) rules index the bare model id, and the retired
+ *  alias ids are indexed alongside their current id, so events folded under
+ *  either name hit the same spec. */
 function peakMapOf(config) {
   const map = new Map();
-  for (const rule of effectivePricing(config)) {
-    if (rule.peakHours.join() !== PEAK_HOURS.join()) {
-      const provider = rule.provider ?? "";
-      map.set(provider === "" ? rule.model : modelKey(provider, rule.model), rule.peakHours);
+  const currency = config.currency === "USD" ? "USD" : "CNY";
+  const rows = new Map();
+  for (const rule of OFFICIAL_PRICING) {
+    rows.set(modelKey("", rule.model), {
+      ...rule, provider: "",
+      peakHours: normalizePeakHours(rule.peakHours ?? PEAK_HOURS),
+      weekdaysOnly: rule.weekdaysOnly !== false,
+      inherited: true,
+      currency,
+    });
+  }
+  for (const rule of Array.isArray(config.pricing) ? config.pricing : []) {
+    const model = typeof rule?.model === "string" && rule.model !== "" ? rule.model : null;
+    if (model === null) continue;
+    const provider = typeof rule?.provider === "string" && rule.provider.length > 0 ? rule.provider : "";
+    const canonical = provider === "" ? (LEGACY_MODEL_ALIASES.get(model) ?? model) : model;
+    const key = modelKey(provider, canonical);
+    const prev = rows.get(key) ?? {};
+    const speaksPeak = rule.peakHours !== undefined || typeof rule.weekdaysOnly === "boolean";
+    rows.set(key, {
+      ...prev, ...rule, provider, model: canonical,
+      peakHours: normalizePeakHours(rule.peakHours ?? (prev.inherited === true ? PEAK_HOURS : prev.peakHours) ?? PEAK_HOURS),
+      weekdaysOnly: typeof rule.weekdaysOnly === "boolean"
+        ? rule.weekdaysOnly
+        : (prev.inherited === true || prev.weekdaysOnly === undefined ? true : prev.weekdaysOnly === true),
+      inherited: !speaksPeak,
+      currency,
+    });
+  }
+  /** The official tier scope is the fold's default, so it needs no entry. */
+  const isOfficialScope = (rule) => rule.inherited === true
+    || (rule.peakHours.join() === PEAK_HOURS.join() && rule.weekdaysOnly === true);
+  for (const rule of rows.values()) {
+    if (isOfficialScope(rule)) continue;
+    const spec = { hours: rule.peakHours, weekdaysOnly: rule.weekdaysOnly === true };
+    const provider = rule.provider ?? "";
+    map.set(provider === "" ? rule.model : modelKey(provider, rule.model), spec);
+    if (provider === "") {
+      for (const [alias, canonical] of LEGACY_MODEL_ALIASES) {
+        if (canonical === rule.model) map.set(alias, spec);
+      }
     }
   }
   return map;
@@ -252,29 +332,71 @@ async function projectionValuesOf(ctx, entry) {
  *  up to one TTL window. */
 let serveEpoch = 0;
 
+/** One folded payload that landed after the corpus moved — see
+ *  {@link buildStats}. Empty payloads are also never cached: a window with
+ *  no activity is what a freshly opened harness reports before its first
+ *  message commits, and pinning that for a TTL would show "no sessions" to a
+ *  user who plainly has sessions. */
+function isCachable(payload) {
+  return Array.isArray(payload?.sessions) && payload.sessions.length > 0;
+}
+
 async function buildStats(ctx, resolveConfig, input, snapshotsOf) {
   const config = resolveConfig();
   const { fromDay, toDay } = resolveWindow(input, config.defaultDays);
-  const key = `${fromDay}:${toDay}`;
-  const fresh = lastServed.get(key);
-  if (fresh !== undefined && Date.now() - fresh.at < PAYLOAD_TTL_MS) return fresh.payload;
-  const existing = inflight.get(key);
-  if (existing !== undefined) return existing;
+  // The served window is stable under the TTL, but the corpus behind it is
+  // not: a session created or written between two reads changes what the same
+  // window contains. The corpus count is therefore part of the cache key, so a
+  // payload folded before that write can never be served as if it were after.
+  // Only the newest count is remembered — the cache is a warm-read shortcut,
+  // not a history of windows.
+  const base = `${fromDay}:${toDay}`;
+  let corpus = (await listCorpus(ctx)).length;
+  const fresh = lastServed.get(base);
+  if (fresh !== undefined && fresh.corpus === corpus && Date.now() - fresh.at < PAYLOAD_TTL_MS) return fresh.payload;
   const epochAtStart = serveEpoch;
   // The fold runs to completion regardless of requester sockets: an aborted
   // HTTP wait must never truncate the fold, or the TTL cache would serve a
   // partial window (rapid range switching aborted folds mid-loop). A retry
   // shares this still-running flight instead of restarting it.
-  const flight = aggregate(ctx, config, fromDay, toDay, snapshotsOf).finally(() => inflight.delete(key));
-  inflight.set(key, flight);
+  const existing = inflight.get(base);
+  const flight = existing !== undefined
+    ? existing
+    : aggregate(ctx, config, fromDay, toDay, snapshotsOf, corpus).finally(() => inflight.delete(base));
+  inflight.set(base, flight);
   const payload = await flight;
-  if (epochAtStart === serveEpoch) lastServed.set(key, { payload, at: Date.now() });
+  // A fold that started before a settings change must never land its now-stale
+  // prices in the cache: the epoch guard is what keeps the clear authoritative.
+  if (epochAtStart !== serveEpoch) return payload;
+  // An empty payload is never cached: a window with no activity is exactly what
+  // a freshly opened harness reports before its first message commits, and
+  // pinning that for a TTL would show "no sessions" to a user who plainly has
+  // sessions.
+  if (isCachable(payload)) {
+    if (Number.isFinite(payload.corpusSessions)) corpus = payload.corpusSessions;
+    lastServed.set(base, { payload, corpus, at: Date.now() });
+  } else if (lastServed.get(base)?.payload === payload) {
+    lastServed.delete(base);
+  }
   return payload;
 }
 
-async function aggregate(ctx, config, fromDay, toDay, snapshotsOf) {
+/** Session count of the corpus, through the query service's listing. One
+ *  unreadable listing reports zero rather than failing the whole read: the
+ *  payload then re-folds on the next request instead of erroring the
+ *  dashboard. */
+async function listCorpus(ctx) {
+  try {
+    const sessions = await ctx.sessionQuery.listSessions();
+    return Array.isArray(sessions) ? sessions : [];
+  } catch {
+    return [];
+  }
+}
+
+async function aggregate(ctx, config, fromDay, toDay, snapshotsOf, corpusSessions) {
   const pricing = effectivePricing(config);
-  const sessions = await ctx.sessionQuery.listSessions();
+  const sessions = Array.isArray(corpusSessions) ? corpusSessions : await listCorpus(ctx);
   const records = [];
   for (const entry of sessions) {
     try {
@@ -311,6 +433,7 @@ async function aggregate(ctx, config, fromDay, toDay, snapshotsOf) {
     costEnabled: config.costEnabled !== false,
     fx: { usdToCny: effectiveUsdToCny(config) },
     monthly: Array.isArray(config.monthlyProviders) ? config.monthlyProviders : [],
+    corpusSessions: sessions.length,
   });
   // The reconciliation overlay rides along when the storage domain (and
   // therefore snapshot history) is available; otherwise the key stays absent
@@ -410,11 +533,13 @@ export function apply(ctx, config) {
    *  rows of every older epoch are invalid by construction. */
   let epoch = 0;
   let peakMap = peakMapOf(config);
-  /** Peak hours for a composite fold key (`provider\u0000model`), falling back
-   *  to a provider-less (wildcard) rule's hours and then the official ones. */
-  const peakHoursFor = (model) => peakMap.get(model) ?? peakMap.get(splitModelKey(model).model) ?? PEAK_HOURS;
+  /** Tier scope for a composite fold key (`provider\u0000model`), falling back
+   *  to a provider-less (wildcard) rule's spec and then the official default
+   *  (the official hours, weekdays only). */
+  const OFFICIAL_TIER = { hours: PEAK_HOURS, weekdaysOnly: true };
+  const peakHoursFor = (model) => peakMap.get(model) ?? peakMap.get(splitModelKey(model).model) ?? OFFICIAL_TIER;
   let disposeProjection = ctx.sessionProjections.register(
-    pulseProjectionDefinition({ peakHoursFor, stateVersion: 5 + epoch }),
+    pulseProjectionDefinition({ peakHoursFor, stateVersion: 7 + epoch }),
   );
   ctx.effect(() => () => disposeProjection(), "dsh-pulse: projection fallback");
   /** After a re-register every session must re-fold (persisted rows no
@@ -445,7 +570,7 @@ export function apply(ctx, config) {
     epoch += 1;
     disposeProjection();
     disposeProjection = ctx.sessionProjections.register(
-      pulseProjectionDefinition({ peakHoursFor, stateVersion: 5 + epoch }),
+      pulseProjectionDefinition({ peakHoursFor, stateVersion: 7 + epoch }),
     );
     void warmUpRefolds();
   };
@@ -638,19 +763,25 @@ export function apply(ctx, config) {
   };
 
   /** Predict, at POST time and independent of watch timing, whether the
-   *  submitted section changes any model's peak hours — the editor shows a
+   *  submitted section changes any model's tier scope — the editor shows a
    *  "history is re-folding" note only when it actually does. Partial merges
    *  (a POST that omits `pricing`, e.g. currency or monthly-only saves) keep
-   *  the current pricing in the prediction. */
+   *  the current pricing in the prediction.
+   *
+   *  The comparison is over the EFFECTIVE rules, not over the submitted rows:
+   *  the fold keys off every model id an event can carry, so a submit that
+   *  only drops a now-redundant alias row (or an untouched model whose official
+   *  default already says what the row said) changes the stored section without
+   *  changing a single tier assignment — and must not claim a replay. */
   const predictRefold = (parsed) => {
     const current = resolveConfig();
     const next = parsed.reset === true ? config : {
       ...current,
-      costEnabled: parsed.costEnabled ?? true,
+      costEnabled: parsed.costEnabled ?? current.costEnabled !== false,
       usdToCny: parsed.usdToCny ?? effectiveUsdToCny(current),
       pricing: Array.isArray(parsed.pricing) ? parsed.pricing : current.pricing,
     };
-    return peakMapKey(peakMapOf(next)) !== peakMapKey(peakMap);
+    return peakMapKey(peakMapOf(next)) !== peakMapKey(peakMapOf(current));
   };
 
   ctx.effect(() => ctx.commands.register({

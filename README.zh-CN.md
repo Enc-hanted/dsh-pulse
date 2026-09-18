@@ -55,19 +55,19 @@ dsh plugin --profile web remove -w dsh-pulse
 ## 费用模型
 
 单价为**每百万 token 的 CNY 金额**，默认值来自官方价格页
-https://api-docs.deepseek.com/zh-cn/quick_start/pricing/（核对于 2026-08-17）。
-DeepSeek 按峰谷时段计费：北京时间 **09:00–12:00** 与 **14:00–18:00** 为高峰，其余时段谷价 = 峰价的一半。
+https://api-docs.deepseek.com/zh-cn/quick_start/pricing/（核对于 2026-09-18）。
+DeepSeek 按峰谷时段计费：北京时间 **09:00–12:00** 与 **14:00–18:00** 为高峰，且**仅周一至周五**；其余时段（含整个周末）谷价 = 峰价的一半。
 
 | 模型 | 时段 | 未缓存输入 | 缓存命中 | 输出 |
 |---|---|---|---|---|
-| deepseek-v4-flash | 高峰 | 3 | 0.1 | 9 |
-| deepseek-v4-flash | 谷时 | 1.5 | 0.05 | 4.5 |
-| deepseek-v4-flash-vision-exp | 高峰 | 3 | 0.1 | 9 |
-| deepseek-v4-flash-vision-exp | 谷时 | 1.5 | 0.05 | 4.5 |
+| deepseek-flash | 高峰 | 2 | 0.04 | 8 |
+| deepseek-flash | 谷时 | 1 | 0.02 | 4 |
 | deepseek-v4-pro | 高峰 | 9 | 0.3 | 27 |
 | deepseek-v4-pro | 谷时 | 4.5 | 0.15 | 13.5 |
 
-`deepseek-v4-flash-vision-exp` 在官方页面单独标价前按 flash 档默认计价；若实验变体价格不同，可在定价页或 profile patch 中覆盖。
+`deepseek-v4-flash` 与 `deepseek-v4-flash-vision-exp` 是已下线的旧模型名：平台仍接受调用，但实际由 DeepSeek-V4.1-Flash 提供服务并按 Flash 价计费，因此本插件把这些历史事件按 Flash 档计价，而不是再列一行过期单价。按供应商限定的规则始终按它写的那个 id 计价。
+
+规则的高峰时段默认**仅工作日**生效；把某条规则设为 `weekdaysOnly: false` 可让它的 `peakHours` 每天都算高峰，`peakHours: []` 仍表示平价。
 
 规则可按供应商限定：`provider` 填供应商 route id 时只对该供应商的同名模型生效（精确匹配优先），留空则通配该模型 id 的所有供应商（官方默认如此）。这让你能给「代理商也卖 deepseek-v4-flash」这类情况单独定价，而不影响官方渠道。
 
@@ -113,6 +113,12 @@ DeepSeek 按峰谷时段计费：北京时间 **09:00–12:00** 与 **14:00–18
             output: 2
             currency: USD
             peakHours: [0, 1, 2, 3, 4, 5]   # 按北京时间计峰的小时
+          - model: weekend-peak    # 这些小时每天都算高峰（含周末）
+            input: 1
+            output: 2
+            peak: { input: 2, output: 4 }
+            peakHours: [9, 10, 11]
+            weekdaysOnly: false
           - provider: pi-ai         # 只对该供应商的同名模型生效
             model: deepseek-v4-flash
             input: 2
@@ -127,7 +133,9 @@ DeepSeek 按峰谷时段计费：北京时间 **09:00–12:00** 与 **14:00–18
 
 ## 兼容性
 
-已在 **@deepseek-ai/dsh 0.1.2-rc.1**（Windows，Node 24.14.1）上验证；dsh 要求 **Node ≥ 22.15**。投影单元同时携带两代注册契约：0.1.2-rc 宿主读取 `stateSchema` + `wire`，旧宿主（0.1.0-rc.x）读取旧版顶层 `schema`/`view`，同一份构建两代宿主都能用。持久化缓存缝同样双向兼容：在 0.1.2-rc 上插件自己走消费者读取阶梯（未播种会话用零 I/O 的 `cachedSnapshot` 行，否则 `sessionQuery.readSession` + 同步 `coldSnapshot(meta, inheritedEventCount, events)`），旧宿主（0.1.2-rc 之前）仍用缓存自读取的异步 `coldSnapshot(id)`（按形参个数识别）。旧版宿主（不含分时明细）仍可正常显示，费用按谷价估算。
+已在 **@deepseek-ai/dsh 0.1.5-rc.2**（Windows，Node 24.14.1）上验证；dsh 要求 **Node ≥ 22.15**。投影单元同时携带两代注册契约：0.1.2-rc 宿主读取 `stateSchema` + `wire`，旧宿主（0.1.0-rc.x）读取旧版顶层 `schema`/`view`，同一份构建两代宿主都能用。持久化缓存缝同样双向兼容：在 0.1.2-rc 及以后插件自己走消费者读取阶梯（未播种会话用零 I/O 的 `cachedSnapshot` 行，否则 `sessionQuery.readSession` + 同步 `coldSnapshot(meta, inheritedEventCount, events)`），旧宿主（0.1.2-rc 之前）仍用缓存自读取的异步 `coldSnapshot(id)`（按形参个数识别）。旧版宿主（不含分时明细）仍可正常显示，费用按谷价估算。
+
+统计载荷为 **schema 4**：在 schema 3 之上增加 `corpusSessions`（窗口之外还有多少会话），用来区分「从未记录过」和「该区间内没有用量」。客户端可读 schema 2–4，因此升级过程中宿主与浏览器 bundle 版本不一致也能继续工作。
 
 ## 开发
 

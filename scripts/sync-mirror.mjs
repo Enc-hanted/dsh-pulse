@@ -25,7 +25,7 @@ const bundlePath = join(root, "lib", "client.js");
 const startMark = "//#region view model (mirror of src/view.js — keep both in sync)";
 const endMark = "//#endregion";
 
-const src = readFileSync(srcPath, "utf8");
+const src = readFileSync(srcPath, "utf8").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 const bundle = readFileSync(bundlePath, "utf8");
 const start = bundle.indexOf(startMark);
 const end = bundle.indexOf(endMark, start);
@@ -39,7 +39,9 @@ const body = src
   .replace(/^export const /gm, "const ")
   .trimEnd()
   .split("\n")
-  .map((line) => (line.length > 0 ? `\t\t${line}` : line))
+  // Blank lines stay blank: indenting them would leave trailing-whitespace-only
+  // lines in the bundle and drift from the region the test compares against.
+  .map((line) => (line.length > 0 ? `\t\t${line}` : ""))
   .join("\n");
 
 const next = `${bundle.slice(0, start)}${startMark}\n${body}\n\t\t${endMark}${bundle.slice(end + endMark.length)}`;

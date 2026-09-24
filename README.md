@@ -6,15 +6,17 @@ Per-session usage and cost observatory for [dsh](https://github.com/deepseek-ai/
 
 ## Features
 
-- **Usage trend**: hourly line chart for today, daily bars for 7/30 days, GitHub-style heatmap for 90 days/1 year, custom date ranges up to 30 days
+- **Panel structure**: the two first-row KPI cards (cache-ring gauge, cost sparkline) are the view tabs — click the ring for the usage trend, click the cost card for the cost trend; the grip in the card row's bottom-right corner resizes that row's height only, double-click restores it, and the preference stays browser-local
+- **Usage trend**: hourly line chart for today, daily bars for 7/30 days, GitHub-style heatmap for 90 days/1 year, custom date ranges up to 30 days. The bar chart drills two levels: click a day to sweep that day full width by model, click a model for its input/cache/output token split, then click empty space or press Esc to unwind one level at a time
 - **Project / model filters**: two searchable dropdowns restrict the whole dashboard to one workspace and/or one model
 - **Cross-provider model distinction**: models are labeled as `provider · display name` from the Models config; the provider prefix appears only when several providers serve the same-named model, otherwise just the name. Selecting a third-party (non-official) model hides the official balance; an unpriced third-party model also hides the cost estimate and the monthly budget
 - **Model distribution / project ranking**: share bars and a ranked table
 - **Session detail & subagent attribution**: sessions grouped by project, with a subagent subtotal (count / tokens / cost) and every session's own break analysis — expand a session, click its cumulative-consumption curve to place up to three breaks, and read per-segment tokens and cost at second accuracy (a task's research / thinking / summary stages)
-- **Cost estimate**: per-model rates with peak/off-peak tiers; models without a rule are listed as unpriced
+- **Cost estimate**: per-model rates priced by the official tier schedule, including the off-peak/peak epochs from 2025-08-17; models without a rule are listed as unpriced
 - **Cost trend**: daily sparkline, with the official balance reconciliation line overlaid after a day of snapshots
-- **Official balance**: DeepSeek platform balance, queried with the key the host already stores, manual refresh included
+- **Status bar**: official balance, runway in days, window activity (sessions / turns / tool calls) and the update clock, queried with the key the host already stores and refreshable by hand; clicking it expands the merged cost-estimate + monthly-budget panel
 - **CSV export**: one click in the dashboard header downloads the loaded window as a UTF-8 CSV daily table — tokens, cache-hit rate, tier-aware cost and official spend per day, plus a totals row (opens directly in Excel)
+- **Panel-relative sizing**: card and plot heights derive from the panel's own width (`aspect-ratio` plus min/max bounds), so they never follow the browser window; themes cover light / dark / pink / orange with a custom accent, and the build stamp beside the title (`0.5.0`) tells you which revision is rendering
 
 ## Quick start
 

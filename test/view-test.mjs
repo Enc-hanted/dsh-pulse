@@ -92,16 +92,24 @@ assert.ok(Math.abs(dayView.totals.cacheHitRate - 900 / (900 + 2140 + 30)) < 1e-1
 assert.equal(dayView.buckets[0].input, 100);
 assert.equal(dayView.buckets[1].input, 2040);
 
+// model dimension: per-day per-model matrix aligned with the buckets
+assert.equal(dayView.modelBuckets.length, 2, "matrix rows align with buckets");
+assert.equal(dayView.modelBuckets[0].get("deepseek-v4-flash").input, 100);
+assert.equal(dayView.modelBuckets[1].get("deepseek-v4-flash").input, 40);
+assert.equal(dayView.modelBuckets[1].get("deepseek-v4-pro").input, 2000, "per-day models accumulate across sessions");
+
 // narrow range excludes alpha's 08-13 activity but keeps 08-14 everything
 const todayOnly = buildView(sessions, { granularity: "day", from: D, to: D, pricing: [] });
 assert.equal(todayOnly.totals.input, 40 + 2000);
 assert.equal(todayOnly.totals.turns, 2, "only in-range turns counted");
 assert.equal(todayOnly.models.length, 2);
+assert.equal(todayOnly.modelBuckets[0].get("deepseek-v4-pro").input, 2000, "the matrix respects the window");
 
 // week granularity merges the two days
 const weekView = buildView(sessions, { granularity: "week", from: "2026-08-13", to: D, pricing: [] });
 assert.equal(weekView.buckets.length, 1, "both days fall in the week of 08-10");
 assert.equal(weekView.buckets[0].input, 2140);
+assert.equal(weekView.modelBuckets[0].get("deepseek-v4-pro").output, 1000, "week granularity merges the day matrix");
 
 // month granularity
 const monthView = buildView(sessions, { granularity: "month", from: "2026-08-01", to: D, pricing: [] });
@@ -121,6 +129,7 @@ assert.equal(flashOnly.totals.input, 140, "pro model's 2000 input excluded");
 assert.equal(flashOnly.models.length, 1);
 assert.equal(flashOnly.models[0].model, "deepseek-v4-flash");
 assert.equal(flashOnly.buckets[1].input, 40);
+assert.equal(flashOnly.modelBuckets[1].get("deepseek-v4-flash").input, 40, "model-filtered views keep the matrix on the matched model");
 assert.deepEqual(flashOnly.knownModels.sort(), ["deepseek-v4-flash", "deepseek-v4-pro"], "picker options ignore the filter");
 
 // project + model compose

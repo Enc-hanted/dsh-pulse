@@ -84,6 +84,14 @@ export function monthKey(day) {
 }
 
 /** Bucket key for one day under a granularity (`day` | `week` | `month`). */
+/** Accumulate one model's day tokens into a bucket row of the per-day
+ *  per-model matrix (`modelBuckets` inside {@link buildView}). */
+function addModelBucket(dayMatrix, modelName, tokens) {
+  const acc = dayMatrix.get(modelName) ?? EMPTY_TOKENS();
+  addTokens(acc, tokens);
+  dayMatrix.set(modelName, acc);
+}
+
 export function bucketOf(granularity, day) {
   if (granularity === "week") return weekStart(day);
   if (granularity === "month") return monthKey(day);
@@ -182,6 +190,11 @@ export function buildView(sessions, { granularity = "day", from, to, project = "
   const keys = rangeKeys(granularity, from, to);
   const index = new Map(keys.map((key, i) => [key, i]));
   const buckets = keys.map((key) => ({ key, sessions: 0, ...EMPTY_TOKENS() }));
+  /** Per-day per-model token matrix for the usage trend's model dimension:
+   *  same index as `buckets`, each a Map of model key → tokens. Tokens the
+   *  fold could not attribute to a model (schema-2 records) land under the
+   *  '' key so a model stack still totals its day. */
+  const modelBuckets = keys.map(() => new Map());
   const totals = { sessions: 0, subagents: 0, turns: 0, toolCalls: 0, ...EMPTY_TOKENS() };
   const models = new Map();
   const projects = new Map();
@@ -225,11 +238,22 @@ export function buildView(sessions, { granularity = "day", from, to, project = "
         addTokens(inRange, dayTokens);
         const idx = index.get(bucketOf(granularity, day));
         if (idx !== undefined) addTokens(buckets[idx], dayTokens);
-        if (dayModels === undefined) continue;
+        if (dayModels === undefined) {
+          if (idx !== undefined) addModelBucket(modelBuckets[idx], "", dayTokens);
+          continue;
+        }
+        const attributed = EMPTY_TOKENS();
         for (const [modelName, tokens] of Object.entries(dayModels)) {
           const row = inRangeModels.get(modelName) ?? EMPTY_MODEL_ROW();
           addDayModel(row, tokens, record.tiersByDay?.[day]?.[modelName]);
           inRangeModels.set(modelName, row);
+          if (idx !== undefined) addModelBucket(modelBuckets[idx], modelName, tokens);
+          addTokens(attributed, tokens);
+        }
+        if (idx !== undefined) {
+          const rest = EMPTY_TOKENS();
+          for (const field of ["input", "output", "cacheRead", "cacheWrite"]) rest[field] = (dayTokens[field] || 0) - (attributed[field] || 0);
+          if (rest.input || rest.output || rest.cacheRead || rest.cacheWrite) addModelBucket(modelBuckets[idx], "", rest);
         }
       } else {
         // Model-filtered: only the selected model's tokens flow anywhere,
@@ -244,6 +268,7 @@ export function buildView(sessions, { granularity = "day", from, to, project = "
           addTokens(inRange, filtered);
           const idx = index.get(bucketOf(granularity, day));
           if (idx !== undefined) addTokens(buckets[idx], filtered);
+          if (idx !== undefined) addModelBucket(modelBuckets[idx], key, filtered);
           const row = inRangeModels.get(key) ?? EMPTY_MODEL_ROW();
           addDayModel(row, filtered, record.tiersByDay?.[day]?.[key]);
           inRangeModels.set(key, row);
@@ -298,6 +323,7 @@ export function buildView(sessions, { granularity = "day", from, to, project = "
   const grandTotal = totals.input + totals.output + totals.cacheRead + totals.cacheWrite;
   return {
     buckets,
+    modelBuckets,
     totals,
     models: modelsArr,
     projects: projectsArr,

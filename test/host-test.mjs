@@ -766,10 +766,24 @@ assert.ok(!resultNoCost.text.includes("Estimated cost"), "cost line hidden when 
 
 // --- volatile Config fields: display edits never re-fold, pricing does ----------
 {
-  for (const key of ["currency", "topProjects", "projectDepth", "defaultDays", "costEnabled", "usdToCny", "monthlyProviders"]) {
+  for (const key of ["currency", "topProjects", "projectDepth", "defaultDays", "costEnabled", "usdToCny", "monthlyProviders", "modelColors"]) {
     assert.equal(Config.dict[key].meta.volatile, true, `${key} is volatile (live edit, no restart)`);
   }
   assert.notEqual(Config.dict.pricing.meta.volatile, true, "pricing stays ordinary: peak-hour edits must re-fold via restart");
+}
+
+// --- v0.5 model accent colors: sanitization + the wire surfaces ----------------
+{
+  const env = makeCtx({ withSettings: "forms" });
+  apply(env.ctx, { ...config, modelColors: { "deepseek-flash": "#4D6BFE", junk: "red" } });
+  const surface = JSON.parse((await env.serve("/pulse/settings")).body);
+  assert.deepEqual(surface.modelColors, { "deepseek-flash": "#4d6bfe" }, "GET exposes the accent map, sanitized (junk dropped, hex lowercased)");
+  const stats = JSON.parse((await env.serve("/pulse/stats?days=9")).body);
+  assert.deepEqual(stats.modelColors, { "deepseek-flash": "#4d6bfe" }, "the stats payload carries the accent overrides for the client charts");
+  const saved = await env.serve("/pulse/settings", { method: "POST", body: { modelColors: { "glm-5.3-flash": "#2F6BFF", "": "#123456", bad: "not-a-color" }, revision: 4 } });
+  assert.equal(saved.status, 200, "an accent write lands with the observed revision");
+  const call = env.formCalls[env.formCalls.length - 1];
+  assert.deepEqual(call.patch, { modelColors: { "glm-5.3-flash": "#2f6bff" } }, "the accent patch is sanitized: empty ids and non-color values dropped");
 }
 
 // --- 0.1.7 SettingsForms generation: revision-guarded writes through the seam ---

@@ -113,12 +113,13 @@ export const Config = z.object({
   costEnabled: z.boolean().default(true).description("show cost estimates; off hides the cost chip and the /pulse command cost line").volatile(),
   usdToCny: z.number().default(DEFAULT_USD_TO_CNY).description("USD→CNY rate converting USD-priced models into the unified CNY estimate").volatile(),
   monthlyProviders: z.array(z.string()).default([]).description("provider route ids billed as a flat monthly subscription — their models cost 0 marginal and need no per-model rates").volatile(),
+  modelColors: z.dict(z.string()).default({}).description("per-model accent colors for the model charts, keyed by model id; '' restores the automatic vendor/hue assignment").volatile(),
   pricing: z.array(pricingRuleSchema).default([]).description("per-model rates; empty disables cost estimation"),
 });
 
 /** The Config keys marked `.volatile()` — the only fields the harness may
  *  hand over as live references instead of plain values. */
-const VOLATILE_KEYS = ["currency", "topProjects", "projectDepth", "defaultDays", "costEnabled", "usdToCny", "monthlyProviders"];
+const VOLATILE_KEYS = ["currency", "topProjects", "projectDepth", "defaultDays", "costEnabled", "usdToCny", "monthlyProviders", "modelColors"];
 
 /** Unwrap one live reference (a volatile value implements `.get()`) while
  *  letting plain values through, so one reader serves every host generation. */
@@ -132,6 +133,24 @@ function liveConfig(source) {
   return out;
 }
 
+/** Wire filter for the per-model accent map: only string ids of bounded
+ *  length and `#rgb`/`#rrggbb` colors (or '' = automatic) survive, so a
+ *  hand-edited patch can neither inject junk into the client's CSS custom
+ *  properties nor grow the map unboundedly. */
+const MODEL_COLOR_RE = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/;
+function sanitizeModelColors(value) {
+  const out = {};
+  if (value === null || typeof value !== "object") return out;
+  for (const [id, color] of Object.entries(value)) {
+    if (typeof id !== "string" || id === "" || id.length > 120) continue;
+    if (typeof color !== "string") continue;
+    const trimmed = color.trim().toLowerCase();
+    if (trimmed !== "" && MODEL_COLOR_RE.test(trimmed) === false) continue;
+    out[id] = trimmed;
+  }
+  return out;
+}
+
 /** POST body → the patch merged into the user section / entry config. A body
  *  that omits a field must not clear it, so only present keys map through
  *  (`monthly` is the wire name of the `monthlyProviders` config field). */
@@ -142,6 +161,7 @@ function settingsPatchOf(body) {
     ...(body.pricing !== undefined ? { pricing: body.pricing } : {}),
     ...(body.currency !== undefined ? { currency: body.currency } : {}),
     ...(body.monthly !== undefined ? { monthlyProviders: body.monthly } : {}),
+    ...(body.modelColors !== undefined ? { modelColors: sanitizeModelColors(body.modelColors) } : {}),
   };
 }
 
@@ -489,6 +509,10 @@ async function aggregate(ctx, config, fromDay, toDay, snapshotsOf, corpusSession
     const snaps = await snapshotsOf();
     if (snaps !== null) payload.balanceSeries = balanceSpendSeries(snaps, fromDay, toDay);
   }
+  // Per-model accent overrides ride along like the balance series: display
+  // config, not aggregated data, and present on every host (additive field —
+  // older clients ignore it, older payloads leave the map empty → all auto).
+  payload.modelColors = sanitizeModelColors(unwrapVolatile(config.modelColors) ?? {});
   return payload;
 }
 
@@ -1041,6 +1065,7 @@ function serveSettings(ctx, resolveConfig, getSettings, getLlm, invalidate, pred
         costEnabled: config.costEnabled !== false,
         pricing: effectivePricing(config),
         monthly: Array.isArray(config.monthlyProviders) ? config.monthlyProviders : [],
+        modelColors: sanitizeModelColors(unwrapVolatile(config.modelColors) ?? {}),
         fx: { usdToCny: effectiveUsdToCny(config) },
         official: OFFICIAL_PRICING,
         catalog,

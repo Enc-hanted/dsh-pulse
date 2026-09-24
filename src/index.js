@@ -6,7 +6,7 @@ import {
   balanceSpendSeries, buildPayload, localDay, normalizePeakHours, projectOf,
   pulseProjectionDefinition, resolveWindow, sliceRecord, timelineEvents, PEAK_HOURS,
 } from "./aggregate.js";
-import { buildView, DEFAULT_USD_TO_CNY, fmtCost, modelKey, MODEL_SEP, splitModelKey } from "./view.js";
+import { buildView, DEFAULT_USD_TO_CNY, fmtCost, modelKey, MODEL_SEP, OFFICIAL_PRICE_SCHEDULES, splitModelKey } from "./view.js";
 
 /**
  * dsh-pulse — the usage & cost observatory.
@@ -59,14 +59,12 @@ export const inject = [
  * accepts and serves as DeepSeek-V4.1-Flash at Flash rates, so events folded
  * under those names must price at the Flash tier. {@link LEGACY_MODEL_ALIASES}
  * resolves them to the current rule instead of keeping a duplicate rate row.
+ *
+ * The rules are the CURRENT schedule of the official price timeline
+ * ({@link OFFICIAL_PRICE_SCHEDULES} in the view model); historical windows
+ * reprice through earlier schedules at view time.
  */
-const OFFICIAL_PRICING = [
-  // deepseek-flash (DeepSeek-V4.1-Flash): cache-hit 0.02/0.04, miss 1/2, out 4/8 (CNY per MTok)
-  { model: "deepseek-flash", input: 1, cacheRead: 0.02, output: 4,
-    peak: { input: 2, cacheRead: 0.04, output: 8 }, peakHours: PEAK_HOURS, currency: "CNY" },
-  { model: "deepseek-v4-pro", input: 4.5, cacheRead: 0.15, output: 13.5,
-    peak: { input: 9, cacheRead: 0.3, output: 27 }, peakHours: PEAK_HOURS, currency: "CNY" },
-];
+const OFFICIAL_PRICING = OFFICIAL_PRICE_SCHEDULES[0].rules;
 
 /** Retired model ids the platform still serves, mapped to the current id
  *  whose rule prices them (official page, 2026-09-18). Aliases are specific

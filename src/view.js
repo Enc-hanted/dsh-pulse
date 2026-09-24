@@ -85,11 +85,80 @@ export function monthKey(day) {
 
 /** Bucket key for one day under a granularity (`day` | `week` | `month`). */
 /** Accumulate one model's day tokens into a bucket row of the per-day
- *  per-model matrix (`modelBuckets` inside {@link buildView}). */
-function addModelBucket(dayMatrix, modelName, tokens) {
-  const acc = dayMatrix.get(modelName) ?? EMPTY_TOKENS();
-  addTokens(acc, tokens);
+ *  per-model matrix (`modelBuckets` inside {@link buildView}). The row keeps
+ *  the peak/off-peak tier split so each day can price under the official
+ *  schedule that was in effect. */
+function addModelBucket(dayMatrix, modelName, tokens, tier) {
+  const acc = dayMatrix.get(modelName) ?? EMPTY_MODEL_ROW();
+  addDayModel(acc, tokens, tier);
   dayMatrix.set(modelName, acc);
+}
+
+/** Official DeepSeek API price schedules for the built-in deepseek-* models,
+ *  most recent first — a usage day prices under the first schedule whose
+ *  `from` is <= that day, so historical windows reprice at the rates that
+ *  were actually in effect instead of today's. Numbers are CNY per million
+ *  tokens, transcribed from the official pricing page and release notes
+ *  (api-docs.deepseek.com: V4-Pro GA 2026-08-13 introduced peak/off-peak
+ *  billing effective 2026-08-17; V4.1-Flash release 2026-09-10 cut the Flash
+ *  rates). Extend the array when DeepSeek changes prices again. */
+export const OFFICIAL_PRICE_SCHEDULES = [
+  {
+    from: "2026-09-10",
+    rules: [
+      { model: "deepseek-flash", input: 1, cacheRead: 0.02, output: 4,
+        peak: { input: 2, cacheRead: 0.04, output: 8 }, peakHours: [9, 10, 11, 14, 15, 16, 17], weekdaysOnly: true, currency: "CNY" },
+      { model: "deepseek-v4-pro", input: 4.5, cacheRead: 0.15, output: 13.5,
+        peak: { input: 9, cacheRead: 0.3, output: 27 }, peakHours: [9, 10, 11, 14, 15, 16, 17], weekdaysOnly: true, currency: "CNY" },
+    ],
+  },
+  {
+    from: "2026-08-17",
+    rules: [
+      { model: "deepseek-v4-flash", input: 1.5, cacheRead: 0.05, output: 4.5,
+        peak: { input: 3, cacheRead: 0.1, output: 9 }, peakHours: [9, 10, 11, 14, 15, 16, 17], weekdaysOnly: true, currency: "CNY" },
+      { model: "deepseek-v4-flash-vision-exp", input: 1.5, cacheRead: 0.05, output: 4.5,
+        peak: { input: 3, cacheRead: 0.1, output: 9 }, peakHours: [9, 10, 11, 14, 15, 16, 17], weekdaysOnly: true, currency: "CNY" },
+      { model: "deepseek-v4-pro", input: 4.5, cacheRead: 0.15, output: 13.5,
+        peak: { input: 9, cacheRead: 0.3, output: 27 }, peakHours: [9, 10, 11, 14, 15, 16, 17], weekdaysOnly: true, currency: "CNY" },
+    ],
+  },
+];
+
+/** The official rules a given usage day billed under (empty before the first
+ *  schedule — the V3.2-era flat pricing that predates peak/off-peak is not
+ *  modeled; those days fall back to user rules or the unpriced note). */
+export function officialRulesFor(day) {
+  for (const schedule of OFFICIAL_PRICE_SCHEDULES) {
+    if (day >= schedule.from) return schedule.rules;
+  }
+  return [];
+}
+
+/** Chinese public holidays (State Council calendar) — official billing keeps
+ *  the whole day off-peak on these dates even when they fall on weekdays.
+ *  Extend the set as new years are announced. */
+const CN_HOLIDAYS = new Set([
+  "2025-01-01", "2025-01-28", "2025-01-29", "2025-01-30", "2025-01-31", "2025-02-01", "2025-02-02", "2025-02-03", "2025-02-04",
+  "2025-04-04", "2025-04-05", "2025-04-06",
+  "2025-05-01", "2025-05-02", "2025-05-03", "2025-05-04", "2025-05-05",
+  "2025-05-31", "2025-06-01", "2025-06-02",
+  "2025-10-01", "2025-10-02", "2025-10-03", "2025-10-04", "2025-10-05", "2025-10-06", "2025-10-07", "2025-10-08",
+  "2026-01-01", "2026-01-02", "2026-01-03",
+  "2026-02-15", "2026-02-16", "2026-02-17", "2026-02-18", "2026-02-19", "2026-02-20", "2026-02-21",
+  "2026-04-04", "2026-04-05", "2026-04-06",
+  "2026-05-01", "2026-05-02", "2026-05-03", "2026-05-04", "2026-05-05",
+  "2026-06-19", "2026-06-20", "2026-06-21",
+  "2026-09-25", "2026-09-26", "2026-09-27",
+  "2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05", "2026-10-06", "2026-10-07",
+  "2027-01-01", "2027-01-02", "2027-01-03",
+]);
+
+/** True when the day bills entirely at off-peak rates: weekends and Chinese
+ *  public holidays under the official weekday-only peak windows. */
+export function isOffPeakDay(day) {
+  const weekday = new Date(`${day}T00:00:00Z`).getUTCDay();
+  return weekday === 0 || weekday === 6 || CN_HOLIDAYS.has(day);
 }
 
 export function bucketOf(granularity, day) {
@@ -191,10 +260,71 @@ export function buildView(sessions, { granularity = "day", from, to, project = "
   const index = new Map(keys.map((key, i) => [key, i]));
   const buckets = keys.map((key) => ({ key, sessions: 0, ...EMPTY_TOKENS() }));
   /** Per-day per-model token matrix for the usage trend's model dimension:
-   *  same index as `buckets`, each a Map of model key → tokens. Tokens the
-   *  fold could not attribute to a model (schema-2 records) land under the
-   *  '' key so a model stack still totals its day. */
+   *  same index as `buckets`, each a Map of model key → row (with the
+   *  peak/off-peak tier split so each day can price under the official
+   *  schedule that was in effect). Tokens the fold could not attribute to a
+   *  model (schema-2 records) land under the '' key so a model stack still
+   *  totals its day. */
   const modelBuckets = keys.map(() => new Map());
+  /** Epoch-aware pricing: each usage day prices under the official schedule
+   *  in effect that day (see {@link OFFICIAL_PRICE_SCHEDULES}), with the
+   *  caller's own rules overlaid — rules that arrive already merged with the
+   *  official table are marked `inherited` and skipped here so today's copy
+   *  of the official rates never double-books history. */
+  const userRules = (Array.isArray(pricing) ? pricing : []).filter((rule) => rule?.inherited !== true);
+  const dayRuleMaps = new Map();
+  const rulesOn = (day) => {
+    let maps = dayRuleMaps.get(day);
+    if (maps === undefined) {
+      maps = ruleMaps([...officialRulesFor(day), ...userRules]);
+      dayRuleMaps.set(day, maps);
+    }
+    return maps;
+  };
+  const monthlySet = new Set(Array.isArray(monthly) ? monthly : []);
+  const usdToCny = Number(fx?.usdToCny) > 0 ? Number(fx.usdToCny) : DEFAULT_USD_TO_CNY;
+  /** Per-day cost for the cost trend panel: peak / off-peak contributions,
+   *  a per-model cost map for the drill, and the day's unpriced tokens. */
+  const bucketCosts = keys.map((key) => ({ key, peak: 0, offpeak: 0, byModel: new Map(), unpriced: { input: 0, output: 0 } }));
+  const costAcc = { configured: false, total: 0, converted: 0, unpriced: { input: 0, output: 0 } };
+  /** Price one (day, model) token bucket under that day's schedule.
+   *  Weekends and Chinese public holidays flatten to off-peak for
+   *  weekday-only rules — the official windows bill those days entirely
+   *  off-peak. Accumulates into the chip cost and the day's bucket cost. */
+  const addDayCost = (idx, day, modelName, tokens, tier) => {
+    const bare = splitModelKey(modelName).model;
+    const provider = splitModelKey(modelName).provider;
+    if (monthlySet.has(provider)) { costAcc.configured = true; return; }
+    const rule = ruleFor(rulesOn(day), modelName);
+    const dayBucket = bucketCosts[idx];
+    if (rule === undefined) {
+      const inputSide = (tokens.input || 0) + (tokens.cacheRead || 0) + (tokens.cacheWrite || 0);
+      costAcc.unpriced.input += inputSide;
+      costAcc.unpriced.output += tokens.output || 0;
+      if (dayBucket !== undefined) {
+        dayBucket.unpriced.input += inputSide;
+        dayBucket.unpriced.output += tokens.output || 0;
+      }
+      return;
+    }
+    costAcc.configured = true;
+    const rates = resolveRates(rule);
+    const conv = rule.currency === "USD" ? usdToCny : 1;
+    const flatOff = rule.weekdaysOnly !== false && isOffPeakDay(day);
+    const offSide = flatOff || tier === null || tier === undefined ? tokens : tierSide(tier, "offpeak");
+    const peakSide = flatOff || tier === null || tier === undefined ? EMPTY_TOKENS() : tierSide(tier, "peak");
+    const offPart = priceTier(offSide, rates, "offpeak");
+    const peakPart = priceTier(peakSide, rates, "peak");
+    const cny = (offPart + peakPart) * conv;
+    costAcc.total += cny;
+    if (conv !== 1) costAcc.converted += cny;
+    if (dayBucket === undefined) return;
+    dayBucket.peak += peakPart * conv;
+    dayBucket.offpeak += offPart * conv;
+    const bm = dayBucket.byModel.get(modelName) ?? { model: bare, provider, cost: 0 };
+    bm.cost += cny;
+    dayBucket.byModel.set(modelName, bm);
+  };
   const totals = { sessions: 0, subagents: 0, turns: 0, toolCalls: 0, ...EMPTY_TOKENS() };
   const models = new Map();
   const projects = new Map();
@@ -239,7 +369,10 @@ export function buildView(sessions, { granularity = "day", from, to, project = "
         const idx = index.get(bucketOf(granularity, day));
         if (idx !== undefined) addTokens(buckets[idx], dayTokens);
         if (dayModels === undefined) {
-          if (idx !== undefined) addModelBucket(modelBuckets[idx], "", dayTokens);
+          if (idx !== undefined) {
+            addModelBucket(modelBuckets[idx], "", dayTokens, undefined);
+            addDayCost(idx, day, "", dayTokens, undefined);
+          }
           continue;
         }
         const attributed = EMPTY_TOKENS();
@@ -247,13 +380,19 @@ export function buildView(sessions, { granularity = "day", from, to, project = "
           const row = inRangeModels.get(modelName) ?? EMPTY_MODEL_ROW();
           addDayModel(row, tokens, record.tiersByDay?.[day]?.[modelName]);
           inRangeModels.set(modelName, row);
-          if (idx !== undefined) addModelBucket(modelBuckets[idx], modelName, tokens);
+          if (idx !== undefined) {
+            addModelBucket(modelBuckets[idx], modelName, tokens, record.tiersByDay?.[day]?.[modelName]);
+            addDayCost(idx, day, modelName, tokens, record.tiersByDay?.[day]?.[modelName]);
+          }
           addTokens(attributed, tokens);
         }
         if (idx !== undefined) {
           const rest = EMPTY_TOKENS();
           for (const field of ["input", "output", "cacheRead", "cacheWrite"]) rest[field] = (dayTokens[field] || 0) - (attributed[field] || 0);
-          if (rest.input || rest.output || rest.cacheRead || rest.cacheWrite) addModelBucket(modelBuckets[idx], "", rest);
+          if (rest.input || rest.output || rest.cacheRead || rest.cacheWrite) {
+            addModelBucket(modelBuckets[idx], "", rest, undefined);
+            addDayCost(idx, day, "", rest, undefined);
+          }
         }
       } else {
         // Model-filtered: only the selected model's tokens flow anywhere,
@@ -268,7 +407,10 @@ export function buildView(sessions, { granularity = "day", from, to, project = "
           addTokens(inRange, filtered);
           const idx = index.get(bucketOf(granularity, day));
           if (idx !== undefined) addTokens(buckets[idx], filtered);
-          if (idx !== undefined) addModelBucket(modelBuckets[idx], key, filtered);
+          if (idx !== undefined) {
+            addModelBucket(modelBuckets[idx], key, filtered, record.tiersByDay?.[day]?.[key]);
+            addDayCost(idx, day, key, filtered, record.tiersByDay?.[day]?.[key]);
+          }
           const row = inRangeModels.get(key) ?? EMPTY_MODEL_ROW();
           addDayModel(row, filtered, record.tiersByDay?.[day]?.[key]);
           inRangeModels.set(key, row);
@@ -324,10 +466,23 @@ export function buildView(sessions, { granularity = "day", from, to, project = "
   return {
     buckets,
     modelBuckets,
+    bucketCosts,
     totals,
     models: modelsArr,
     projects: projectsArr,
-    cost: costOf(modelsArr, pricing, fx, monthly),
+    // Epoch-accurate window cost: every day priced under the official
+    // schedule in effect, user rules overlaid — same numbers as the cost
+    // trend panel's days sum to.
+    cost: costAcc.configured
+      ? {
+        configured: true,
+        total: Math.round(costAcc.total * 1e6) / 1e6,
+        currency: "CNY",
+        usdToCny,
+        convertedFromUsd: Math.round(costAcc.converted * 1e6) / 1e6,
+        unpriced: costAcc.unpriced,
+      }
+      : { configured: false, total: null, currency: null, usdToCny, convertedFromUsd: 0, unpriced: costAcc.unpriced },
     hasData: grandTotal > 0 || totals.sessions > 0,
     knownProjects: [...seenProjects].filter((p) => p !== "").sort(),
     knownModels: [...seenModels].sort(),
@@ -483,7 +638,18 @@ export function costOf(models, pricing, fx = {}, monthly = []) {
  * @returns {Array<{key: string, peak: number, offpeak: number}>} one entry per day, `total = peak + offpeak`.
  */
 export function costSeries(sessions, { from, to, project = "", model = "", pricing = [], fx = {}, monthly = [] }) {
-  const maps = ruleMaps(pricing);
+  // Epoch-aware: each day prices under the official schedule in effect that
+  // day, with the caller's own (non-inherited) rules overlaid.
+  const userRules = (Array.isArray(pricing) ? pricing : []).filter((rule) => rule?.inherited !== true);
+  const dayRuleMaps = new Map();
+  const rulesOn = (day) => {
+    let maps = dayRuleMaps.get(day);
+    if (maps === undefined) {
+      maps = ruleMaps([...officialRulesFor(day), ...userRules]);
+      dayRuleMaps.set(day, maps);
+    }
+    return maps;
+  };
   const monthlySet = new Set(Array.isArray(monthly) ? monthly : []);
   const usdToCny = Number(fx?.usdToCny) > 0 ? Number(fx.usdToCny) : DEFAULT_USD_TO_CNY;
   const keys = rangeKeys("day", from, to);
@@ -497,6 +663,7 @@ export function costSeries(sessions, { from, to, project = "", model = "", prici
     for (const [day, dayModels] of Object.entries(record.modelsByDay ?? {})) {
       const idx = index.get(day);
       if (idx === undefined || dayModels === null || typeof dayModels !== "object") continue;
+      const maps = rulesOn(day);
       for (const [modelName, tokens] of Object.entries(dayModels)) {
         if (modelFilter !== null) {
           const matches = filterComposite
@@ -511,7 +678,9 @@ export function costSeries(sessions, { from, to, project = "", model = "", prici
         const rates = resolveRates(rule);
         const conv = rule.currency === "USD" ? usdToCny : 1;
         const tier = record.tiersByDay?.[day]?.[modelName];
-        if (tier === null || tier === undefined) {
+        // Weekends and holidays bill entirely off-peak under weekday-only rules.
+        const flatOff = rule.weekdaysOnly !== false && isOffPeakDay(day);
+        if (tier === null || tier === undefined || flatOff) {
           days[idx].offpeak += priceTier(tokens, rates, "offpeak") * conv;
         } else {
           days[idx].peak += priceTier(tierSide(tier, "peak"), rates, "peak") * conv;

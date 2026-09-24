@@ -693,5 +693,47 @@ assert.equal(sameIdSeg[0].cost.total, 0, "resolved monthly segment costs zero");
 const sameIdAmbiguous = sessionGroups([bareSameId], { pricing: sgPricing, monthly: [], catalog: multiCat });
 assert.equal(sameIdAmbiguous[0].sessions[0].monthly, false, "ambiguous bare key without monthly tie-break");
 assert.equal(sameIdAmbiguous[0].sessions[0].cost.configured, true, "official wildcard rule prices the bare key");
+// --- epoch pricing: each day prices under the official schedule in effect ----
+// 08-17 schedule: v4-flash 1.5/3.0 miss, 4.5/9.0 out; 09-10 schedule:
+// deepseek-flash 1/2.0 miss, 4/8.0 out. 2026-09-26 is a holiday Saturday.
+{
+  const tiers = (iPeak, iOff, oPeak, oOff) => ({
+    input: { peak: iPeak, offpeak: iOff },
+    output: { peak: oPeak, offpeak: oOff },
+    cacheRead: { peak: 0, offpeak: 0 },
+    cacheWrite: { peak: 0, offpeak: 0 },
+  });
+  const day = (key, model, tokens, tier) => ({
+    project: "p", day: key,
+    byDay: { [key]: tokens },
+    modelsByDay: { [key]: { [model]: tokens } },
+    tiersByDay: { [key]: { [model]: tier } },
+    turnsByDay: {}, toolCallsByDay: {},
+  });
+  const epochSessions = [
+    day("2026-08-20", "deepseek-v4-flash",
+      { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheWrite: 0 }, tiers(1_000_000, 0, 0, 1_000_000)),
+    day("2026-09-11", "deepseek-flash",
+      { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheWrite: 0 }, tiers(1_000_000, 0, 0, 1_000_000)),
+    day("2026-09-26", "deepseek-flash",
+      { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, tiers(1_000_000, 0, 0, 0)),
+  ];
+  const epochView = buildView(epochSessions, { granularity: "day", from: "2026-08-20", to: "2026-09-26", pricing: [] });
+  const costByDay = new Map(epochView.bucketCosts.map((row) => [row.key, row]));
+  assert.equal(costByDay.get("2026-08-20").peak + costByDay.get("2026-08-20").offpeak, 7.5, "08-20 prices under the 08-17 schedule (peak 3 + offpeak 4.5)");
+  assert.equal(costByDay.get("2026-09-11").peak, 2, "09-11 peak input at the cut rate");
+  assert.equal(costByDay.get("2026-09-11").offpeak, 4, "09-11 offpeak output at the cut rate");
+  assert.equal(costByDay.get("2026-09-26").peak, 0, "holiday Saturday flattens to off-peak");
+  assert.equal(costByDay.get("2026-09-26").offpeak, 1, "holiday Saturday input at the off-peak rate");
+  assert.equal(costByDay.get("2026-09-11").byModel.get("deepseek-flash").cost, 6, "per-model drill costs accumulate under the day's schedule");
+  assert.equal(epochView.cost.total, 14.5, "the window cost sums the epoch day costs");
+  assert.equal(epochView.cost.configured, true);
+  assert.equal(epochView.modelBuckets[0].get("deepseek-v4-flash").peak.input, 1_000_000, "matrix rows keep the tier split for pricing");
+  const overridden = buildView([epochSessions[1]], {
+    granularity: "day", from: "2026-09-11", to: "2026-09-11",
+    pricing: [{ model: "deepseek-flash", input: 10, cacheRead: 10, output: 10, peak: { input: 10, cacheRead: 10, output: 10 } }],
+  });
+  assert.equal(overridden.cost.total, 20, "user rules overlay the schedule base (peak 1M in + offpeak 1M out at 10/M)");
+}
 
 console.log("view-test: all assertions passed");

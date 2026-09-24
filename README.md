@@ -36,8 +36,8 @@ With a stored `DEEPSEEK_API_KEY`, the dashboard also shows the official balance 
 # from the npm registry
 dsh plugin --profile web add -w dsh-pulse
 
-# from a packed tarball
-dsh plugin --profile web add -w /abs/path/to/dsh-pulse-0.4.1.tgz
+# from a packed tarball (the published version is 0.5.0)
+dsh plugin --profile web add -w /abs/path/to/dsh-pulse-0.5.0.tgz
 
 # from a source checkout (development)
 dsh plugin --profile web add -w link:/abs/path/to/dsh-pulse
@@ -46,7 +46,7 @@ dsh plugin --profile web add -w link:/abs/path/to/dsh-pulse
 dsh plugin --profile web add -w git+https://github.com/Enc-hanted/dsh-pulse
 ```
 
-…or add `"dsh-pulse": "link:/abs/path/to/dsh-pulse"` to `~/.dsh/profiles/web/package.json` and run `pnpm install` there. Restart `dsh web` afterwards (adding the plugin hot-loads; editing its code requires a restart).
+…or add `"dsh-pulse": "link:/abs/path/to/dsh-pulse"` to `~/.dsh/profiles/web/package.json` and run `pnpm install` there. Restart `dsh web` afterwards (adding the plugin hot-loads; an edited bundle is republished by the host's watcher, and the build stamp beside the panel title says which revision the page is running — hard-reload the page if it lags).
 
 ```bash
 dsh plugin --profile web remove -w dsh-pulse

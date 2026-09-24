@@ -36,8 +36,8 @@ dsh plugin --profile web add -w dsh-pulse
 # 从 npm registry
 dsh plugin --profile web add -w dsh-pulse
 
-# 从打包的 tarball
-dsh plugin --profile web add -w /abs/path/to/dsh-pulse-0.4.1.tgz
+# 从打包的 tarball（当前发布版本 0.5.0）
+dsh plugin --profile web add -w /abs/path/to/dsh-pulse-0.5.0.tgz
 
 # 从源码检出（开发）
 dsh plugin --profile web add -w link:/abs/path/to/dsh-pulse
@@ -46,7 +46,7 @@ dsh plugin --profile web add -w link:/abs/path/to/dsh-pulse
 dsh plugin --profile web add -w git+https://github.com/Enc-hanted/dsh-pulse
 ```
 
-……或手动在 `~/.dsh/profiles/web/package.json` 的 dependencies 里加 `"dsh-pulse": "link:/abs/path/to/dsh-pulse"`，再到 profile 目录里 `pnpm install`。之后重启 `dsh web`（新增插件热加载；改代码需要重启）。
+……或手动在 `~/.dsh/profiles/web/package.json` 的 dependencies 里加 `"dsh-pulse": "link:/abs/path/to/dsh-pulse"`，再到 profile 目录里 `pnpm install`。之后重启 `dsh web`（新增插件热加载；改动的 bundle 会由宿主的 watcher 重新发布，面板标题旁的构建戳会显示页面在跑哪个版本——如果没跟上就整页重载）。
 
 ```bash
 dsh plugin --profile web remove -w dsh-pulse

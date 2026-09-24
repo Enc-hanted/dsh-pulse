@@ -6,7 +6,7 @@
  */
 
 import { strict as assert } from "node:assert";
-import { apply } from "../src/index.js";
+import { apply, Config } from "../src/index.js";
 import { localDay } from "../src/aggregate.js";
 
 const DAY = 86400000;
@@ -21,13 +21,15 @@ const daysAgo = (n) => localDay(noon(-n));
 /** Build a fresh stubbed harness context; `withSettings` mounts a fake
  *  `settings` service whose user layer is editable through the fake scope,
  *  `withLlm` mounts a fake `llm` service serving one provider's model
- *  catalog, and `legacyCache` swaps the 0.1.2-rc projection cache (sync
+ *  catalog, `legacyCache` swaps the 0.1.2-rc projection cache (sync
  *  `coldSnapshot(meta, cut, events)` over a caller-supplied log plus the
  *  zero-I/O `cachedSnapshot` fast path) for the pre-0.1.2 self-reading async
- *  one, proving the plugin serves either generation. `deferSettings` queues
+ *  one, and `alphaCache` swaps in the 0.1.7-alpha generation instead (the
+ *  explicit cut is gone from `cachedSnapshot(meta, keys)`), proving the
+ *  plugin serves every generation. `deferSettings` queues
  *  the inject callback instead of running it at apply time, simulating a
  *  settings service that mounts after the plugin. */
-function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCredentials = false, withStorageDomain = false, legacyCache = false }) {
+function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCredentials = false, withStorageDomain = false, legacyCache = false, alphaCache = false }) {
   const routes = [];
   const commands = [];
   const coldReads = [];
@@ -123,6 +125,46 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
     },
   };
 
+  /** The 0.1.7+ SettingsForms generation: the plugin's Config lives on its
+   *  loader entry; describe() carries live values plus a per-write revision,
+   *  update()/replace() write the profile patch and refuse stale revisions
+   *  with the stable SETTINGS_CONFLICT code. */
+  const formCalls = [];
+  const formRows = [{
+    ns: "pulse",
+    schema: Config,
+    autoGenerate: true,
+    value: { ...config },
+    revision: 4,
+  }];
+  const fakeForms = {
+    writable: true,
+    describe: () => formRows.map((row) => ({ ...row, value: { ...row.value } })),
+    update: async (ns, patch, rev) => {
+      formCalls.push({ op: "update", ns, patch: { ...patch }, rev });
+      const row = formRows.find((entry) => entry.ns === ns);
+      if (row === undefined) throw new Error("no such entry");
+      if (rev !== undefined && rev !== row.revision) {
+        throw Object.assign(new Error("conflict"), { code: "SETTINGS_CONFLICT", expected: rev, actual: row.revision });
+      }
+      row.value = { ...row.value, ...patch };
+      row.revision += 1;
+    },
+    replace: async (ns, section, rev) => {
+      formCalls.push({ op: "replace", ns, section: { ...section }, rev });
+      const row = formRows.find((entry) => entry.ns === ns);
+      if (row === undefined) throw new Error("no such entry");
+      if (rev !== undefined && rev !== row.revision) {
+        throw Object.assign(new Error("conflict"), { code: "SETTINGS_CONFLICT", expected: rev, actual: row.revision });
+      }
+      row.value = { ...section };
+      row.revision += 1;
+    },
+  };
+
+  /** `settings/document-updated` listeners registered by the plugin. */
+  const docFeeds = new Set();
+
   const fakeLlm = {
     listProviders: () => [{ id: "deepseek-official", name: "DeepSeek" }],
     listModels: async (provider) => (provider === "deepseek-official"
@@ -177,6 +219,24 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
         if (id === "broken1") throw new Error("no persisted log");
         return { asOfSeq: 4, values: id === "cold2" ? cold2Values : coldValues };
       },
+    } : alphaCache === true ? {
+      // 0.1.7-alpha generation: `cachedSnapshot(meta, keys)` dropped the
+      // explicit cut (arity 2), while coldSnapshot keeps the synchronous
+      // caller-supplied fold. A stray legacy 3-arg call would land the
+      // numeric cut in `keys`; like the real registry's `new Set(keys)` it
+      // must throw, never pass silently.
+      cachedSnapshot: (header, keys) => {
+        fastReads.push(header.id);
+        if (header.isSeeded !== false) return undefined;
+        if (keys !== undefined && !keys.includes("pulseUsage")) return undefined;
+        const values = coldRows.get(header.id);
+        return values === undefined ? undefined : { asOfSeq: 4, values };
+      },
+      coldSnapshot: (meta, inheritedEventCount, events) => {
+        coldReads.push({ id: meta.id, cut: inheritedEventCount, events: events.length });
+        if (meta.id === "broken1") throw new Error("no persisted log");
+        return { asOfSeq: 4, values: coldValues };
+      },
     } : {
       // 0.1.2-rc generation: zero-I/O stored-row read plus a synchronous
       // fold over the caller-supplied log
@@ -204,12 +264,21 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
     logger: { warn: () => {} },
     inject: (deps, callback) => {
       const services = {};
-      if (withSettings && Array.isArray(deps) && deps.includes("settings")) services.settings = fakeSettings;
+      if (withSettings && Array.isArray(deps) && deps.includes("settings")) {
+        services.settings = withSettings === "forms" ? fakeForms : fakeSettings;
+      }
       if (withLlm && Array.isArray(deps) && deps.includes("llm")) services.llm = fakeLlm;
       if (Object.keys(services).length === 0) return undefined;
       const sub = {
         ...services,
         effect: (fn) => { const disposer = fn(); return () => { if (typeof disposer === "function") disposer(); }; },
+        on: (event, callback) => {
+          if (event === "settings/document-updated") {
+            docFeeds.add(callback);
+            return () => docFeeds.delete(callback);
+          }
+          return () => {};
+        },
       };
       const run = () => callback(sub);
       if (deferSettings && services.settings !== undefined) {
@@ -246,6 +315,8 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
     balanceState: () => balanceState,
     seedSnapshots: (snapshots) => { balanceState = { snapshots }; },
     fetchCalls,
+    formCalls,
+    fireDocumentUpdated: (ns) => { for (const callback of [...docFeeds]) callback(ns); },
   };
 }
 
@@ -676,6 +747,78 @@ assert.ok(!resultNoCost.text.includes("Estimated cost"), "cost line hidden when 
   assert.equal(stats.sessions.length, 3, "legacy self-reading coldSnapshot serves the cold corpus");
   assert.ok(env.coldReads.some((entry) => entry.id === "cold1"), "legacy path folded cold1 from its id alone");
   assert.equal(env.fastReads.length, 0, "legacy generation has no zero-I/O fast path");
+}
+
+// --- 0.1.7-alpha cache generation: the zero-I/O read drops the explicit cut -----
+// `days=10`, not the legacy block's `days=9`: the payload TTL cache is
+// module-level and keyed by window, so an equal window would serve the
+// previous environment's folded payload and never touch this ctx.
+{
+  const env = makeCtx({ withSettings: false, alphaCache: true });
+  apply(env.ctx, config);
+  const stats = JSON.parse((await env.serve("/pulse/stats?days=10")).body);
+  assert.equal(stats.sessions.length, 3, "alpha cache serves the same corpus shape");
+  const cold2 = stats.sessions.find((s) => s.id === "cold2");
+  assert.deepEqual(cold2.byDay[daysAgo(6)], { input: 20, output: 5, cacheRead: 100, cacheWrite: 0 }, "alpha zero-I/O rows serve the unseeded session through the 2-arg call");
+  assert.deepEqual(env.fastReads, ["broken1", "cold2"], "alpha fast path still claims only unseeded headers");
+  assert.deepEqual(env.coldReads.map((entry) => entry.id), ["cold1"], "seeded session still folds from its log on the alpha host");
+}
+
+// --- volatile Config fields: display edits never re-fold, pricing does ----------
+{
+  for (const key of ["currency", "topProjects", "projectDepth", "defaultDays", "costEnabled", "usdToCny", "monthlyProviders"]) {
+    assert.equal(Config.dict[key].meta.volatile, true, `${key} is volatile (live edit, no restart)`);
+  }
+  assert.notEqual(Config.dict.pricing.meta.volatile, true, "pricing stays ordinary: peak-hour edits must re-fold via restart");
+}
+
+// --- 0.1.7 SettingsForms generation: revision-guarded writes through the seam ---
+{
+  const env = makeCtx({ withSettings: "forms" });
+  apply(env.ctx, config);
+  const surface = JSON.parse((await env.serve("/pulse/settings")).body);
+  assert.equal(surface.writable, true, "forms host reports the editor writable");
+  assert.equal(surface.revision, 4, "GET carries the entry revision for optimistic concurrency");
+  assert.equal(surface.pricing.length, 2, "effective pricing still merges the official defaults");
+
+  const saved = await env.serve("/pulse/settings", { method: "POST", body: { usdToCny: 7.2, revision: 4 } });
+  assert.equal(saved.status, 200, "a write carrying the observed revision lands");
+  assert.deepEqual(JSON.parse(saved.body), { ok: true, refold: false });
+  assert.equal(env.formCalls.length, 1, "exactly one forms write");
+  assert.equal(env.formCalls[0].op, "update");
+  assert.equal(env.formCalls[0].ns, "pulse");
+  assert.equal(env.formCalls[0].rev, 4, "the observed revision rides the write");
+  assert.deepEqual(env.formCalls[0].patch, { usdToCny: 7.2 }, "only present fields are merged");
+
+  const stale = await env.serve("/pulse/settings", { method: "POST", body: { usdToCny: 8, revision: 4 } });
+  assert.equal(stale.status, 409, "a stale revision is refused");
+  const refused = JSON.parse(stale.body);
+  assert.equal(refused.ok, false);
+  assert.deepEqual(refused.conflict, { expected: 4, actual: 5 }, "the conflict payload names both revisions");
+
+  const reset = await env.serve("/pulse/settings", { method: "POST", body: { reset: true, revision: 5 } });
+  assert.equal(reset.status, 200, "reset lands with the fresh revision");
+  // formCalls also holds the refused stale attempt; the reset is the last one.
+  assert.equal(env.formCalls[env.formCalls.length - 1].op, "replace", "reset maps to replace, not update");
+
+  // The document-updated feed: our own writes and host-page edits fire it;
+  // it must invalidate the payload without disturbing the fold.
+  env.fireDocumentUpdated("pulse");
+  env.fireDocumentUpdated("some-other-entry");
+  const after = await env.serve("/pulse/stats?days=10");
+  assert.equal(after.status, 200, "stats serve fine after change-feed events");
+}
+
+// --- classic generation regression: the seam keeps the scope behavior ----------
+{
+  const env = makeCtx({ withSettings: true });
+  apply(env.ctx, config);
+  const surface = JSON.parse((await env.serve("/pulse/settings")).body);
+  assert.equal(surface.writable, true, "classic host keeps the editor writable");
+  assert.equal(surface.revision, undefined, "classic hosts carry no revision");
+  const saved = JSON.parse((await env.serve("/pulse/settings", { method: "POST", body: { usdToCny: 7.4 } })).body);
+  assert.equal(saved.ok, true, "classic write lands without a revision");
+  assert.equal(env.userSection().usdToCny, 7.4, "the user layer received the patch");
 }
 
 console.log("host-test: route, windowing, dedupe, settings surface and command all passed");

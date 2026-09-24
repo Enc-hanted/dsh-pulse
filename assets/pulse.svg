@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="dsh-pulse">
+  <rect x="1" y="1" width="30" height="30" rx="7" fill="#0f1115"/>
+  <polyline points="5,17 10,17 13,9 17,24 20,13 22,17 27,17" fill="none" stroke="#4ade80" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="27" cy="17" r="1.6" fill="#4ade80"/>
+</svg>

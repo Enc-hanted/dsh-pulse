@@ -1,11 +1,12 @@
 {
   "name": "dsh-pulse",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "Cross-session usage & cost observatory for dsh — daily token charts, cache hit ring, 90d/1y heatmaps, model and project breakdowns, adaptive color themes and CSV export in the web UI",
   "type": "module",
   "main": "src/index.js",
   "engines": {
-    "node": ">=22.15"
+    "node": ">=22.15",
+    "dsh": ">=0.1.5-rc.0 || >=0.1.7-alpha.0"
   },
   "repository": {
     "type": "git",
@@ -27,6 +28,7 @@
     "lib/client.js",
     "scripts/sync-mirror.mjs",
     "test",
+    "assets/pulse.svg",
     "cordis.patch.yml",
     "README.md",
     "README.zh-CN.md",
@@ -42,20 +44,28 @@
     "heatmap"
   ],
   "license": "MIT",
+  "scripts": {
+    "test": "node test/host-test.mjs && node test/aggregate-test.mjs && node test/view-test.mjs && node test/mirror-test.mjs"
+  },
   "dependencies": {
-    "@deepseek-ai/dsh-credentials": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-storage-domain": "^0.1.0-rc.6",
-    "@deepseek-ai/schemastery": "^3.18.1",
+    "@deepseek-ai/dsh-credentials": "^0.1.0-rc.6 || ^0.1.7-alpha.0",
+    "@deepseek-ai/dsh-storage-domain": "^0.1.0-rc.6 || ^0.1.7-alpha.0",
+    "@deepseek-ai/schemastery": "^3.18.4",
     "zod": "^4.4.3"
   },
   "dsh": {
+    "manifestVersion": 1,
     "bundle": {
       "patch": "cordis.patch.yml"
     },
     "client": {
       "platform": "web",
       "inject": [],
-      "immediately": false
+      "immediately": false,
+      "external": [
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-client-store"
+      ]
     }
   }
 }

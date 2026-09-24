@@ -50,7 +50,7 @@ dsh plugin --profile web add -w git+https://github.com/Enc-hanted/dsh-pulse
 dsh plugin --profile web remove -w dsh-pulse
 ```
 
-下次启动时它会从 `dsh.profile.bundles` 移除。可选残留，均可安全删除：`~/.dsh/settings.yaml` 里的 `pulse` 节，以及 `~/.dsh/storages/pulse_balance.json`。本插件从不存储密钥。
+下次启动时它会从 `dsh.profile.bundles` 移除。可选残留，均可安全删除：`~/.dsh/settings.yaml` 里的 `pulse` 节（0.1.6 及以前的宿主），或活跃 profile patch 里的 `pulse` 行（0.1.7+ 宿主的设置存在那里），以及 `~/.dsh/storages/pulse_balance.json`。本插件从不存储密钥。
 
 ## 费用模型
 
@@ -83,7 +83,7 @@ DeepSeek 按峰谷时段计费：北京时间 **09:00–12:00** 与 **14:00–18
 
 **显示设置**（设置 → 用量观测台 → 显示设置）控制仪表盘各面板的显隐（含**会话明细**面板）、侧栏按钮的余额显示，并可选择**配色**——**蓝色**（即原作默认外观）、**粉色**、**橘色**或**黑白**。每套配色自带亮/暗两版，自动跟随宿主的亮暗主题。仪表盘上的**月度预算**卡片可设定 CNY 预算，显示本月已用、进度条和按日均速率推算的月底预测；余额栏会按近期扣费速率显示余额可撑天数。均为本地偏好。
 
-保存写入 `$DSH_HOME/settings.yaml`（`pulse:` 节），立即生效，重启后仍在。**恢复内置默认**把用户节清回组合配置与官方默认。没有设置服务时页面只读。
+保存立即生效，重启后仍在。0.1.6 及以前的宿主写入 `$DSH_HOME/settings.yaml`（`pulse:` 节，作为组合 base 之上的用户层）；0.1.7+ 宿主通过设置服务把 `pulse` 条目的配置写进活跃 profile patch，并带读取版本号守卫——与其他窗口的保存撞车时会返回 409，编辑器自动刷新本地副本以便重试。显示类字段（汇率、币种、面板开关等）声明为 *volatile*，修改它们不会重启插件；修改某条规则的峰时窗口才会重折叠一次历史。**恢复内置默认**把用户节清回组合配置与官方默认。没有设置服务时页面只读。
 
 按 profile 在 `cordis.patch.yml` 覆盖：
 
@@ -131,9 +131,43 @@ DeepSeek 按峰谷时段计费：北京时间 **09:00–12:00** 与 **14:00–18
 
 每次成功查询记录一条 `{t, total}` 快照（只有金额）到滚动 30 天的存储（`pulse_balance`，上限 1000 条、5 分钟去重）。每日官方扣费由余额序列推算，算不出来的日子（充值掩盖、缺少前序快照、超出最新快照）记为 `null`。费用火花线把它画成第三条细线。注意这是那把 key 的总扣费：别的工具共用同一把 key 时也会算进来。
 
+## 扩展仪表盘（面向插件作者）
+
+在 0.1.7+ 宿主上，仪表盘是一个 **Component Factory**（`pulse.dashboard`，root 作用域，locale `dsh-pulse`，带 **store seat**），声明了三个子槽位：
+
+| 槽位 | 类型 | 渲染位置 |
+| --- | --- | --- |
+| `pulse.dashboard.chip` | `list` | 内置 chip 之后的 KPI 卡片 |
+| `pulse.dashboard.filter` | `list` | 工具栏中项目/模型选择器之后的控件 |
+| `pulse.dashboard.panel` | `list` | 内置面板之后（仅在数据加载完成且非空的视图中） |
+
+注入方式：
+
+```js
+ctx.slots.inject("pulse.dashboard.panel", () => ctx.slots.register({
+  name: "pulse.dashboard.panel", id: "my-panel",
+}, MyPanel));
+```
+
+条目会收到工厂 locale 提供的 `t`、**store seat**——`useStore((s) => s)` 选择 `{data, view, busy}` 且跨窗口切换/重折叠保持实时（仪表盘每次变化都会同步），以及写回用的 `actions.sync(data, view, busy)`——外加渲染点 props `{data, view, busy}` 作为同帧快照。面板逐个受监督——某个面板崩溃只会上报并移除自身，不会拖垮仪表盘。任何插件也可以用 `renderFactorySlot("pulse.dashboard", { … })` 把整个仪表盘挂到别处（接受可选的 `floatActions` / `headerExtra` / `onConfigure` 仪表盘 props，支持 `fallback` 选项）。在没有 Factory API 的宿主上插件全部直渲染，扩展点自动休眠。
+
+## 插件管理器与设置页席位
+
+除仪表盘外，插件还向宿主自身的席位贡献内容（席位缺失时静默降级）：
+
+- **`plugins.row.config`**（键 `dsh-pulse#pulse`）——完整定价编辑器渲染在插件管理器的 bundle 详情页（`view: "page"`），列表中显示一行摘要（`view: "summary"`）。
+- **`plugins.detail.badge` / `plugins.detail.section`**——详情页标题旁的标签与页面内容下的介绍卡片。
+- **`settings.general.item`**（id `pulse-foot-balance`）——侧栏余额指示器作为「通用」设置页的原生开关，与面板页共用同一偏好 store（需要 store 引擎；旧宿主上隐藏）。
+
 ## 兼容性
 
-已在 **@deepseek-ai/dsh 0.1.5-rc.2**（Windows，Node 24.14.1）上验证；dsh 要求 **Node ≥ 22.15**。投影单元同时携带两代注册契约：0.1.2-rc 宿主读取 `stateSchema` + `wire`，旧宿主（0.1.0-rc.x）读取旧版顶层 `schema`/`view`，同一份构建两代宿主都能用。持久化缓存缝同样双向兼容：在 0.1.2-rc 及以后插件自己走消费者读取阶梯（未播种会话用零 I/O 的 `cachedSnapshot` 行，否则 `sessionQuery.readSession` + 同步 `coldSnapshot(meta, inheritedEventCount, events)`），旧宿主（0.1.2-rc 之前）仍用缓存自读取的异步 `coldSnapshot(id)`（按形参个数识别）。旧版宿主（不含分时明细）仍可正常显示，费用按谷价估算。
+已在 **@deepseek-ai/dsh 0.1.5-rc.3 与 0.1.7-alpha.2**（Windows，Node 24.14.1）上验证；dsh 要求 **Node ≥ 22.15**。同一份构建覆盖所有代际，各接缝在运行时探测：
+
+- **投影注册**：0.1.2-rc 宿主读取 `stateSchema` + `wire`，旧宿主（0.1.0-rc.x）读取旧版顶层 `schema`/`view`。
+- **持久化缓存**：在 0.1.2-rc 及以后插件自己走消费者读取阶梯（未播种会话用零 I/O 的 `cachedSnapshot` 行——0.1.7 之前带显式 cut、之后仅凭 header 身份——否则 `sessionQuery.readSession` + 同步 `coldSnapshot(meta, inheritedEventCount, events)`），旧宿主（0.1.2-rc 之前）仍用缓存自读取的异步 `coldSnapshot(id)`（按形参个数识别）。
+- **设置**：经典宿主在 `SettingsProvider` 上注册独立命名空间；0.1.7+ 宿主经 `SettingsForms` 写入条目配置并带版本号守卫（过期写入返回 HTTP 409）。展示类字段声明为 volatile，修改它们不会重启插件。
+- **客户端**：0.1.7 的图标改名（`IconXOutline16` → `IconXOutlineMedium`）已做桥接；仪表盘工厂只在 `slots.registerFactory` 存在的宿主上注册。旧版宿主（不含分时明细）仍可正常显示，费用按谷价估算。
+- **仅 0.1.7 的席位**：store 引擎（`dsh-client-store`）通过特性检测 + try/catch 引入——缺失时 store 席位、通用设置开关和侧栏实时同步退场，普通仪表盘照常工作。插件管理器席位（`plugins.row.config`、`plugins.detail.badge`、`plugins.detail.section`）与每个工厂注册各自独立拒绝，宿主拒绝任何一个未知槽位都不会拖垮其余注册。
 
 统计载荷为 **schema 4**：在 schema 3 之上增加 `corpusSessions`（窗口之外还有多少会话），用来区分「从未记录过」和「该区间内没有用量」。客户端可读 schema 2–4，因此升级过程中宿主与浏览器 bundle 版本不一致也能继续工作。
 

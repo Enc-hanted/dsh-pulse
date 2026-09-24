@@ -98,17 +98,52 @@ const pricingRuleSchema = z.object({
   currency: z.union(["CNY", "USD"]).default("CNY").description("currency the rates are denominated in; USD-priced models convert to CNY through `usdToCny` for the unified display"),
 });
 
-/** Schemastery validation with deployment-friendly defaults. */
+/** Schemastery validation with deployment-friendly defaults. Display fields
+ *  are `.volatile()`: the harness hands them to `apply` as live references
+ *  and commits edits to them in place — no plugin restart, no fold epoch
+ *  reset. `pricing` deliberately stays ordinary: its peak-hour half must
+ *  re-fold history, and the entry restart an ordinary edit triggers is
+ *  exactly that boundary (persisted rows keyed by the pre-restart
+ *  `stateVersion` mismatch and replay once). */
 export const Config = z.object({
-  currency: z.union(["CNY", "USD"]).default("CNY").description("global pricing currency; every effective rule prices in it and USD rates convert to the unified CNY total"),
-  topProjects: z.number().default(8).description("how many project rows to keep in the breakdown"),
-  projectDepth: z.number().default(1).description("path segments kept in a project label (1..3; deeper disambiguates same-named directories)"),
-  defaultDays: z.number().default(30).description("day window served when the client sends no range"),
-  costEnabled: z.boolean().default(true).description("show cost estimates; off hides the cost chip and the /pulse command cost line"),
-  usdToCny: z.number().default(DEFAULT_USD_TO_CNY).description("USD→CNY rate converting USD-priced models into the unified CNY estimate"),
-  monthlyProviders: z.array(z.string()).default([]).description("provider route ids billed as a flat monthly subscription — their models cost 0 marginal and need no per-model rates"),
+  currency: z.union(["CNY", "USD"]).default("CNY").description("global pricing currency; every effective rule prices in it and USD rates convert to the unified CNY total").volatile(),
+  topProjects: z.number().default(8).description("how many project rows to keep in the breakdown").volatile(),
+  projectDepth: z.number().default(1).description("path segments kept in a project label (1..3; deeper disambiguates same-named directories)").volatile(),
+  defaultDays: z.number().default(30).description("day window served when the client sends no range").volatile(),
+  costEnabled: z.boolean().default(true).description("show cost estimates; off hides the cost chip and the /pulse command cost line").volatile(),
+  usdToCny: z.number().default(DEFAULT_USD_TO_CNY).description("USD→CNY rate converting USD-priced models into the unified CNY estimate").volatile(),
+  monthlyProviders: z.array(z.string()).default([]).description("provider route ids billed as a flat monthly subscription — their models cost 0 marginal and need no per-model rates").volatile(),
   pricing: z.array(pricingRuleSchema).default([]).description("per-model rates; empty disables cost estimation"),
 });
+
+/** The Config keys marked `.volatile()` — the only fields the harness may
+ *  hand over as live references instead of plain values. */
+const VOLATILE_KEYS = ["currency", "topProjects", "projectDepth", "defaultDays", "costEnabled", "usdToCny", "monthlyProviders"];
+
+/** Unwrap one live reference (a volatile value implements `.get()`) while
+ *  letting plain values through, so one reader serves every host generation. */
+const unwrapVolatile = (value) => (value !== null && typeof value === "object" && typeof value.get === "function" ? value.get() : value);
+
+/** A shallow copy of the config with every volatile reference resolved to
+ *  its current plain value — the read face of the config, always current. */
+function liveConfig(source) {
+  const out = { ...source };
+  for (const key of VOLATILE_KEYS) if (key in out) out[key] = unwrapVolatile(out[key]);
+  return out;
+}
+
+/** POST body → the patch merged into the user section / entry config. A body
+ *  that omits a field must not clear it, so only present keys map through
+ *  (`monthly` is the wire name of the `monthlyProviders` config field). */
+function settingsPatchOf(body) {
+  return {
+    ...(body.costEnabled !== undefined ? { costEnabled: body.costEnabled } : {}),
+    ...(body.usdToCny !== undefined ? { usdToCny: body.usdToCny } : {}),
+    ...(body.pricing !== undefined ? { pricing: body.pricing } : {}),
+    ...(body.currency !== undefined ? { currency: body.currency } : {}),
+    ...(body.monthly !== undefined ? { monthlyProviders: body.monthly } : {}),
+  };
+}
 
 /** Resolve the effective pricing rules (config wins, official defaults fill
  *  in; `peakHours` normalized so the editor and the fold see clean lists;
@@ -295,8 +330,10 @@ const lastServed = new Map();
  * listing cannot know its cut, so it goes straight to the authoritative body
  * read through `sessionQuery.readSession`, which carries the exact
  * `inheritedEventCount`). Older caches (pre-0.1.2-rc) keep the self-reading
- * async `coldSnapshot(id)`. The two generations are told apart by arity, so
- * one build serves either host. Live sessions read the registry snapshot; a
+ * async `coldSnapshot(id)`, and 0.1.7-alpha caches drop the explicit cut from
+ * `cachedSnapshot(meta, keys)` — lifecycle identity rides the header alone.
+ * Both seams are told apart by arity, so one build serves every host. Live
+ * sessions read the registry snapshot; a
  * listed-live id that already left the store falls through to the persisted
  * paths instead of folding to an empty record.
  *
@@ -318,7 +355,17 @@ async function projectionValuesOf(ctx, entry) {
     // path only claims a hit when this unit's own key came back — a row
     // stored under an older fold version is filtered out and must refold.
     if (header.isSeeded === false && typeof cache.cachedSnapshot === "function") {
-      const cached = cache.cachedSnapshot(header, 0, ["pulseUsage"]);
+      // The zero-I/O read lost its explicit cut in 0.1.7-alpha:
+      // `cachedSnapshot(meta, keys)` (arity 2) matches the stored record by
+      // header-borne lifecycle identity, while the 0.1.2-rc signature
+      // `cachedSnapshot(meta, cut, keys)` (arity 3) needs the cut spelled
+      // out. Feeding the new signature a numeric cut throws inside the
+      // registry (`new Set(0)`) and the per-session guard would silently
+      // drop every unseeded session from the dashboard — so the call shapes
+      // must be told apart here, by arity.
+      const cached = cache.cachedSnapshot.length >= 3
+        ? cache.cachedSnapshot(header, 0, ["pulseUsage"])
+        : cache.cachedSnapshot(header, ["pulseUsage"]);
       if (cached !== undefined && cached.values?.pulseUsage !== undefined) return cached.values;
     }
     const loaded = await ctx.sessionQuery.readSession(header.id);
@@ -586,14 +633,19 @@ export function apply(ctx, config) {
     });
   }
 
-  // Authoritative config: the composition entry by default; the `pulse`
-  // settings namespace (edited from the web settings panel, persisted by the
-  // settings provider) once the settings service is present. Resolution
-  // order is schema defaults → composition base → user section.
-  let resolveConfig = () => config;
-  let settingsScope = null;
+  // Authoritative config. Serve-time fields stay live: `liveConfig` resolves
+  // the volatile references the harness hands `apply`, so display edits take
+  // effect without touching this fiber. Persistent writes ride the settings
+  // seam — classic hosts register a per-plugin namespace with the
+  // SettingsProvider; 0.1.7+ hosts write this entry's config through the
+  // schema-driven SettingsForms under revision checks.
+  let resolveConfig = () => liveConfig(config);
+  let settingsSeam = null;
   let settingsProvider = null;
   const invalidatePayload = () => { lastServed.clear(); serveEpoch += 1; };
+  // The module-level TTL cache outlives a loader restart (only the fiber is
+  // recycled), so every (re)application starts from a clean payload slate.
+  invalidatePayload();
   const onSettingsChanged = () => {
     invalidatePayload();
     const next = peakMapOf(resolveConfig());
@@ -604,14 +656,66 @@ export function apply(ctx, config) {
   };
   if (typeof ctx.inject === "function") {
     ctx.inject(["settings"], (sctx) => {
-      const scope = sctx.settings.register("pulse", Config, { base: config });
-      settingsScope = scope;
-      settingsProvider = sctx.settings;
-      resolveConfig = () => scope.get();
+      const forms = sctx.settings;
+      if (forms !== null && typeof forms === "object" && typeof forms.describe === "function" && typeof forms.update === "function") {
+        // 0.1.7+ SettingsForms generation. The entry row is located by Config
+        // identity (the loader exposes the very schema object this module
+        // exports) with the patch id as a fallback; describe() carries the
+        // live revision that turns every editor save into an
+        // optimistic-concurrency write against the active profile patch.
+        let entryNs = null;
+        const findRow = () => {
+          const row = forms.describe().find((candidate) => candidate.schema === Config || candidate.ns === "pulse");
+          if (row !== undefined) entryNs = row.ns;
+          return row ?? null;
+        };
+        settingsSeam = {
+          writable: () => forms.writable === true,
+          revision: () => findRow()?.revision,
+          write: (body) => {
+            const row = findRow();
+            if (row === null) return Promise.reject(new Error("the pulse entry is not active in this profile"));
+            return body.reset === true
+              ? forms.replace(row.ns, {}, body.revision)
+              : forms.update(row.ns, settingsPatchOf(body), body.revision);
+          },
+        };
+        // Bridge the connection facts the classic path read through the
+        // provider (`settingsProvider.get("llm-deepseek")`): describe() shows
+        // every active entry's live config, redacted.
+        settingsProvider = { get: (ns) => forms.describe().find((row) => row.ns === ns)?.value };
+        // The forms service emits one event for any entry's revision change —
+        // our own writes and the host settings page's land here. Peak-hour
+        // changes normally arrive through the entry restart instead, so this
+        // feed mostly invalidates the payload TTL early; the peak comparison
+        // stays as a same-generation belt for hosts that hot-swap configs.
+        if (typeof sctx.on === "function") {
+          const disposeFeed = sctx.on("settings/document-updated", (ns) => {
+            if (entryNs === null || ns === entryNs) onSettingsChanged();
+          });
+          sctx.effect(() => () => {
+            if (typeof disposeFeed === "function") disposeFeed();
+          }, "dsh-pulse: settings feed");
+        }
+        return;
+      }
+      if (typeof forms?.register !== "function") return;
+      // Classic SettingsProvider generation: a per-plugin namespace whose
+      // user layer the provider persists (settings.yaml).
+      const scope = forms.register("pulse", Config, { base: config });
+      settingsProvider = forms;
+      settingsSeam = {
+        writable: () => settingsProvider?.writable === true,
+        revision: () => undefined,
+        write: (body) => body.reset === true
+          ? Promise.resolve(scope.replace({}))
+          : Promise.resolve(scope.update(settingsPatchOf(body))),
+      };
+      resolveConfig = () => liveConfig(scope.get());
       sctx.effect(() => () => {
-        settingsScope = null;
         settingsProvider = null;
-        resolveConfig = () => config;
+        settingsSeam = null;
+        resolveConfig = () => liveConfig(config);
         invalidatePayload();
         // The user layer is gone; re-derive the fold from the composition base.
         onSettingsChanged();
@@ -807,7 +911,7 @@ export function apply(ctx, config) {
         const url = new URL(req.url ?? "/", "http://x");
         const pathname = decodeURIComponent(url.pathname);
         if (pathname === "/pulse/settings") {
-          await serveSettings(ctx, resolveConfig, () => ({ scope: settingsScope, provider: settingsProvider }), () => llmService, invalidatePayload, predictRefold, req, res);
+          await serveSettings(ctx, resolveConfig, () => settingsSeam, () => llmService, invalidatePayload, predictRefold, req, res);
           return;
         }
         if (pathname === "/pulse/session") {
@@ -918,16 +1022,20 @@ async function serveSession(ctx, url, req, res) {
  *  cost-enabled flag, USD→CNY rate and pricing rules (official defaults
  *  merged), the untouched official baseline (for per-row "restore official
  *  rates"), the current model catalog from the `llm` service (the editor's
- *  row source), plus whether the settings provider can persist edits.
+ *  row source), whether the settings seam accepts writes, and — on hosts
+ *  with revisioned settings (0.1.7+) — the entry revision the editor must
+ *  echo back on POST for optimistic concurrency.
  *  `POST /pulse/settings` replaces the user section
  *  (`{costEnabled, usdToCny, pricing}`, or `{reset: true}` to re-inherit the
  *  composition base and official defaults); the reply carries `refold: true`
- *  when the section changes any model's peak hours (history re-folds). */
+ *  when the section changes any model's peak hours (history re-folds). A
+ *  stale `revision` is refused with 409 and a machine-readable `conflict`
+ *  payload. */
 function serveSettings(ctx, resolveConfig, getSettings, getLlm, invalidate, predictRefold, req, res) {
   if (req.method === "GET" || req.method === "HEAD") {
     return catalogOf(getLlm()).then((catalog) => {
       const config = resolveConfig();
-      const settings = getSettings();
+      const seam = getSettings();
       const body = {
         currency: config.currency === "USD" ? "USD" : "CNY",
         costEnabled: config.costEnabled !== false,
@@ -936,8 +1044,10 @@ function serveSettings(ctx, resolveConfig, getSettings, getLlm, invalidate, pred
         fx: { usdToCny: effectiveUsdToCny(config) },
         official: OFFICIAL_PRICING,
         catalog,
-        writable: settings.provider?.writable === true,
+        writable: seam !== null && typeof seam.writable === "function" && seam.writable() === true,
       };
+      const revision = seam !== null && typeof seam.revision === "function" ? seam.revision() : undefined;
+      if (typeof revision === "number") body.revision = revision;
       const raw = Buffer.from(JSON.stringify(body), "utf8");
       res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
       res.end(req.method === "HEAD" ? undefined : raw);
@@ -968,6 +1078,7 @@ function serveSettings(ctx, resolveConfig, getSettings, getLlm, invalidate, pred
       currency: z.union(["CNY", "USD"]),
       monthly: z.array(z.string()),
       reset: z.boolean(),
+      revision: z.number(),
     });
     try {
       body(parsed);
@@ -975,34 +1086,35 @@ function serveSettings(ctx, resolveConfig, getSettings, getLlm, invalidate, pred
       json(res, 400, { ok: false, error: `invalid settings: ${String(error?.message ?? error)}` });
       return;
     }
-    const settings = getSettings();
-    if (settings.scope === null) {
+    const seam = getSettings();
+    if (seam === null || typeof seam.write !== "function") {
       json(res, 503, { ok: false, error: "settings storage is not available in this environment" });
       return;
     }
-    // Predicted before persisting: the watch (and the re-register it may
-    // trigger) can fire before the write resolves, which would otherwise
+    // Predicted before persisting: the change feed (and the re-register it
+    // may trigger) can fire before the write resolves, which would otherwise
     // compare the new map against itself.
     const refold = predictRefold(parsed) === true;
-    const persist = parsed.reset === true
-      ? settings.scope.replace({})
-      // Partial merge: each present field lands in the user section and
-      // everything else re-inherits the composition base — the pricing page,
-      // the currency settings and the monthly-provider list save independently.
-      : settings.scope.update({
-        ...(parsed.costEnabled !== undefined ? { costEnabled: parsed.costEnabled } : {}),
-        ...(parsed.usdToCny !== undefined ? { usdToCny: parsed.usdToCny } : {}),
-        ...(parsed.pricing !== undefined ? { pricing: parsed.pricing } : {}),
-        ...(parsed.currency !== undefined ? { currency: parsed.currency } : {}),
-        ...(parsed.monthly !== undefined ? { monthlyProviders: parsed.monthly } : {}),
-      });
-    return persist
+    // Deferred so even a seam that throws synchronously (a hostile or stubbed
+    // implementation) settles through the same conflict/error mapping as the
+    // real async service.
+    Promise.resolve().then(() => seam.write(parsed))
       .then(() => {
         invalidate();
         invalidateCatalog();
         json(res, 200, { ok: true, refold });
       })
       .catch((error) => {
+        if (error !== null && typeof error === "object" && error.code === "SETTINGS_CONFLICT") {
+          // The stable machine code of both settings generations' conflict
+          // error — the editor refreshes its copy and retries.
+          json(res, 409, {
+            ok: false,
+            error: `settings were changed elsewhere (expected revision ${String(error.expected)}, current ${String(error.actual)})`,
+            conflict: { expected: error.expected, actual: error.actual },
+          });
+          return;
+        }
         ctx.logger.warn(error);
         json(res, 400, { ok: false, error: `could not persist settings: ${String(error?.message ?? error)}` });
       });

@@ -50,7 +50,7 @@ dsh plugin --profile web add -w git+https://github.com/Enc-hanted/dsh-pulse
 dsh plugin --profile web remove -w dsh-pulse
 ```
 
-The next boot drops it from `dsh.profile.bundles`. Leftovers, safe to delete: the `pulse` section in `~/.dsh/settings.yaml` and `~/.dsh/storages/pulse_balance.json`. The plugin never stores secrets.
+The next boot drops it from `dsh.profile.bundles`. Leftovers, safe to delete: the `pulse` section in `~/.dsh/settings.yaml` (hosts up to 0.1.6) or the `pulse` row in the active profile patch (0.1.7+ hosts store settings there), and `~/.dsh/storages/pulse_balance.json`. The plugin never stores secrets.
 
 ## Cost model
 
@@ -81,7 +81,7 @@ Currency: rules price in **CNY** (default) or **USD**; USD-priced models convert
 
 **Display settings** (Settings → Usage Pulse → Display settings) toggle each dashboard panel (including the **session detail** panel) and the sidebar balance indicator, and pick a **color theme** — *blue* (the original look), *pink*, *orange* or *B&W*. Every palette carries its own light and dark variant and follows the shell's theme automatically. The **monthly budget** card on the dashboard takes a CNY budget and shows month-to-date spend, a progress bar and a run-rate month-end forecast; the balance bar shows how many days the balance lasts at the recent spend rate. All local preferences.
 
-Saves go to `$DSH_HOME/settings.yaml` (`pulse:` section), apply immediately, and survive restarts. **Restore defaults** clears the user section back to the composition config and the official defaults. Without a settings service the page is read-only.
+Saves apply immediately and survive restarts. On hosts up to 0.1.6 they go to `$DSH_HOME/settings.yaml` (`pulse:` section, user layer over the composition base); on 0.1.7+ hosts the plugin writes the `pulse` entry's config in the active profile patch through the settings service, under a read-revision guard — a save that races another window is refused (HTTP 409) and the editor refreshes itself for a clean retry. Display fields (rate, currency, budget toggles) are declared *volatile*, so editing them does not restart the plugin; editing a rule's peak hours re-folds history once. **Restore defaults** clears the user section back to the composition config and the official defaults. Without a settings service the page is read-only.
 
 Profile overrides in `cordis.patch.yml`:
 
@@ -129,9 +129,43 @@ Profile overrides in `cordis.patch.yml`:
 
 Every successful query records one `{t, total}` snapshot, money only, in a rolling 30-day storage (`pulse_balance`, capped at 1000 entries, 5-minute dedupe). Per-day official spend is derived from the balance series; days where it can't be known (a top-up masks the spend, no prior snapshot, past the newest snapshot) are `null`. The cost sparkline draws this as a third line. Note that it is that key's total spend: if other tools share the key, it includes them.
 
+## Extending the dashboard (for plugin authors)
+
+On 0.1.7+ hosts the dashboard is a **Component Factory** (`pulse.dashboard`, root scope, locale `dsh-pulse`, with a **store seat**) declaring three child slots:
+
+| slot | kind | rendered |
+| --- | --- | --- |
+| `pulse.dashboard.chip` | `list` | KPI tiles after the built-in chips |
+| `pulse.dashboard.filter` | `list` | controls after the project/model pickers in the toolbar |
+| `pulse.dashboard.panel` | `list` | panels after the built-in ones, in the loaded non-empty view |
+
+Inject a component:
+
+```js
+ctx.slots.inject("pulse.dashboard.panel", () => ctx.slots.register({
+  name: "pulse.dashboard.panel", id: "my-panel",
+}, MyPanel));
+```
+
+Entries receive the factory's `t` (the `dsh-pulse` locale), the **store seat** — `useStore((s) => s)` selects `{data, view, busy}` and stays live across range switches and refolds (the dashboard syncs it on every change), plus `actions.sync(data, view, busy)` for write-back — and the render-site props `{data, view, busy}` as a same-tick snapshot. Panels are supervised individually — a crashing panel is reported and removed without taking the dashboard down. Any plugin can also mount the whole dashboard elsewhere with `renderFactorySlot("pulse.dashboard", { … })` (accepts the optional `floatActions` / `headerExtra` / `onConfigure` dashboard props; a `fallback` option is honored). On hosts without the factory API the plugin renders everything directly and the extension points stay dormant.
+
+## Plugin-manager and settings-page seats
+
+Beyond the dashboard, the plugin contributes to the shell's own seats (all degrade silently when a seat is missing):
+
+- **`plugins.row.config`** keyed `dsh-pulse#pulse` — the full pricing editor rendered on the bundle's Plugins-page detail (`view: "page"`) and a one-line summary in the rows list (`view: "summary"`).
+- **`plugins.detail.badge` / `plugins.detail.section`** — a tag beside the detail title and an intro card under the page content.
+- **`settings.general.item`** id `pulse-foot-balance` — the sidebar-balance indicator as a native General-settings toggle, wired to the same preference store as the panels page (requires the store engine; hidden on older hosts).
+
 ## Compatibility
 
-Verified against **@deepseek-ai/dsh 0.1.5-rc.2** (Windows, Node 24.14.1); dsh requires **Node ≥ 22.15**. The projection unit carries both registration contracts — the 0.1.2-rc host reads `stateSchema` + `wire`, older hosts (0.1.0-rc.x) read the legacy top-level `schema`/`view` pair — so one build serves either generation. The persisted-cache seam is served both ways too: on 0.1.2-rc and later the plugin drives the consumer-owned ladder itself (zero-I/O `cachedSnapshot` rows for unseeded sessions, otherwise `sessionQuery.readSession` + the synchronous `coldSnapshot(meta, inheritedEventCount, events)`), while pre-0.1.2-rc hosts keep the cache's self-reading async `coldSnapshot(id)` (detected by arity). Hosts without hourly tier details still render, with costs priced at off-peak rates.
+Verified against **@deepseek-ai/dsh 0.1.5-rc.3 and 0.1.7-alpha.2** (Windows, Node 24.14.1); dsh requires **Node ≥ 22.15**. One build serves every generation — the seams are detected at runtime:
+
+- **Projection registration**: the 0.1.2-rc host reads `stateSchema` + `wire`, older hosts (0.1.0-rc.x) read the legacy top-level `schema`/`view` pair.
+- **Persisted cache**: on 0.1.2-rc and later the plugin drives the consumer-owned ladder itself (zero-I/O `cachedSnapshot` — with the explicit cut before 0.1.7, header-only identity after — otherwise `sessionQuery.readSession` + the synchronous `coldSnapshot(meta, inheritedEventCount, events)`), while pre-0.1.2-rc hosts keep the cache's self-reading async `coldSnapshot(id)` (detected by arity).
+- **Settings**: classic hosts register a per-plugin namespace on the `SettingsProvider`; 0.1.7+ hosts write the entry's config through `SettingsForms` under revision checks (stale writes get HTTP 409). Display fields are declared volatile, so those edits never restart the plugin.
+- **Client**: the 0.1.7 icon rename (`IconXOutline16` → `IconXOutlineMedium`) is bridged, and the dashboard factory registers only where `slots.registerFactory` exists. Hosts without hourly tier details still render, with costs priced at off-peak rates.
+- **0.1.7-only seats**: the store engine (`dsh-client-store`) is required via a feature-detected, try-caught lookup — without it the store seats, the General-settings toggle and the live footer sync drop out while the plain dashboard keeps working. The plugin-manager seats (`plugins.row.config`, `plugins.detail.badge`, `plugins.detail.section`) and every factory registration refuse alone, so a host that rejects one unknown slot never takes down the rest of the registration batch.
 
 The stats payload is **schema 4**: schema 3 plus `corpusSessions` (how many sessions exist outside the window, which is what separates "nothing recorded yet" from "nothing in this range"). The client reads schemas 2–4, so a host and a browser bundle from different releases keep working through an upgrade.
 

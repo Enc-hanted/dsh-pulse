@@ -11,8 +11,10 @@
 # the unified CNY total through `usdToCny`.
 # `costEnabled: false` hides the cost chip and the /pulse command cost line.
 # All of this is also editable live from the settings page (Settings →
-# 用量观测台 → 定价与费用), which persists to `$DSH_HOME/settings.yaml`; this
-# patch stays the composition `base` layer under those user edits.
+# 用量观测台 → 定价与费用): hosts up to 0.1.6 persist those edits to
+# `$DSH_HOME/settings.yaml`; 0.1.7+ hosts edit this patch's entry config
+# directly (the plugin re-applies with the fresh values). This patch stays
+# the composition `base` layer under the older hosts' user edits.
 #
 # `defaultDays` names the window served when the client sends no range; the
 # client normally requests an explicit `from`/`to`. The host half also

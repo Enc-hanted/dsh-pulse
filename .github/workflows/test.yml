@@ -1,0 +1,19 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      # host-test stubs three harness cache generations (pre-0.1.2, 0.1.2-rc
+      # and 0.1.7-alpha) plus both settings generations, so every push
+      # re-proves the cross-generation contracts the plugin depends on.
+      - run: npm test

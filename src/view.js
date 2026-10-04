@@ -4,11 +4,9 @@
  * (day / week / month), filtered totals, per-model splits, cost estimates,
  * and the GitHub-style heatmap cells used by the 90-day / 1-year views.
  *
- * The same code is mirrored into the browser bundle (lib/client.js) because
- * a dsh client half is a single self-registering file that cannot require
- * node-side modules. `scripts/sync-mirror.mjs` regenerates the mirrored
- * region from this file and `test/mirror-test.mjs` fails on drift - edit
- * this file, then run `node scripts/sync-mirror.mjs`.
+ * The browser bundle (lib/client.js) is built from src/client/ by
+ * `scripts/build-client.mjs` (esbuild), which imports this file directly —
+ * there is no mirrored copy to keep in sync; edit here, then rebuild.
  *
  * @module dsh-pulse/view
  */
@@ -1434,11 +1432,6 @@ function accentCandidates(spec) {
  */
 export function accentFillOf(id) {
   return accentSpecPaint(accentSpecOf(id)).css;
-}
-
-/** The canonical OKLab of one model id (see {@link accentFillOf}). */
-export function accentLabOf(id) {
-  return accentSpecPaint(accentSpecOf(id)).lab;
 }
 
 /**

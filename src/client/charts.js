@@ -989,10 +989,6 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntry
 			] });
 		}
 
-		/** Official DeepSeek balance: availability dot, total with the
-		 *  granted/topped-up split, last-updated time and a manual refresh.
-		 *  Hidden entirely while the host reports no configured credential
-		 *  (the card is pure add-on, never a setup nag). */
 		/** Runway: balance total divided by the average of the most recent
 		 *  known daily spends (≤7 days of the official reconciliation
 		 *  series). CNY only — a foreign-currency balance can't be compared

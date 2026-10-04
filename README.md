@@ -229,8 +229,8 @@ ctx.slots.inject("pulse.dashboard.panel", () => ctx.slots.register({
 ## 开发
 
 ```bash
-npm test                       # host / aggregate / view / mirror / manifest 五个套件
-node scripts/sync-mirror.mjs   # 改 src/view.js 后重新生成 bundle 镜像
+npm test                    # host / aggregate / view / tui / golden / style / manifest 七个套件
+npm run build               # 改 src/ 后重新构建 lib/client.js（esbuild）
 ```
 
 特别致谢 [Linux Do](https://linux.do/) 社区。
@@ -469,8 +469,8 @@ The stats payload is **schema 4**: schema 3 plus `corpusSessions` (how many sess
 ## Development
 
 ```bash
-npm test                       # host / aggregate / view / mirror / manifest suites
-node scripts/sync-mirror.mjs   # regenerate the bundle mirror after editing src/view.js
+npm test                    # host / aggregate / view / tui / golden / style / manifest suites
+npm run build               # rebuild lib/client.js from src/ (esbuild)
 ```
 
 Special thanks to the [Linux Do](https://linux.do/) community.

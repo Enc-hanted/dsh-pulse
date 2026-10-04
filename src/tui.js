@@ -55,7 +55,7 @@ import { join } from "node:path";
 import { foldEvents, projectOf, localDay, dayStart } from "./aggregate.js";
 import {
 	costOf, officialRulesFor, officialEstimateRulesFor,
-	fmtCost, shiftDay, DEFAULT_USD_TO_CNY, MODEL_SEP,
+	fmtCost, shiftDay, DEFAULT_USD_TO_CNY, splitModelKey,
 } from "./view.js";
 
 export const name = "pulse-tui";
@@ -111,17 +111,6 @@ export function eqId(a, b) {
 	if (!a || !b) return false;
 	const x = String(a), y = String(b);
 	return x === y || x.endsWith(y) || y.endsWith(x);
-}
-
-/** Split a composite model key (`provider${MODEL_SEP}model`) locally — the
- *  classification needs the provider for the 包月 check without dragging
- *  view.js internals across the mirror boundary. */
-function splitKey(key) {
-	const k = String(key ?? "");
-	const idx = k.indexOf(MODEL_SEP);
-	return idx === -1
-		? { provider: "", model: k }
-		: { provider: k.slice(0, idx), model: k.slice(idx + MODEL_SEP.length) };
 }
 
 /** Display width of a string (CJK and full-width forms count 2) —
@@ -380,7 +369,7 @@ function dayEstimatedOf(record, day, pricing) {
  *  未定价. Shared by the model list and the CSV's pricing column so the
  *  spreadsheet tells the same story as the screen. Exported for tests. */
 export function pricingLabelOf(row, day, pricing) {
-	if (pricing.monthlySet.has(splitKey(row.key).provider)) return "包月";
+	if (pricing.monthlySet.has(splitModelKey(row.key).provider)) return "包月";
 	let full;
 	try {
 		full = costOf([row], pricing.fullFor(day), pricing.fx, pricing.monthly);
@@ -557,7 +546,7 @@ export function viewSlice(record, days, pricing) {
 				&& (strict.total === null || full.total - strict.total > 1e-9);
 			if (dayEstimated) estimatedDays += 1;
 			for (const row of dayRows) {
-				const meta = splitKey(row.key);
+				const meta = splitModelKey(row.key);
 				const entry = classByModel.get(row.key) ?? {
 					key: row.key, model: meta.model, provider: meta.provider,
 					state: "priced", cost: 0, tok: 0, estimated: false,
@@ -1005,7 +994,7 @@ function renderScene(kit, { close, ctx, entryConfig, channel }) {
 				];
 				for (const day of days) {
 					for (const row of dayModelRows(data.record, day)) {
-						const meta = splitKey(row.key);
+						const meta = splitModelKey(row.key);
 						const tokens = (row.input ?? 0) + (row.output ?? 0) + (row.cacheRead ?? 0) + (row.cacheWrite ?? 0);
 						if (tokens === 0) continue;
 						const c = cost ? costOf([row], pricing.fullFor(day), pricing.fx, pricing.monthly).total : null;

@@ -411,7 +411,7 @@ import { AUX_MODEL_KEY, ROUTE_FAMILIES, auxCalibration, buildView, clampSpan, co
 						jsx(primitives.IconWarningOutline16, { size: 22, className: "dp_stateIcon" }),
 						jsx("span", { className: "dp_stateTitle", children: t("errorTitle") }),
 						jsx("span", { className: "dp_stateBody", children: `${t("errorBody")} (${stats.error})` }),
-						jsx("div", { className: "dp_retryRow", children: jsx(primitives.Button, { variant: "outline", size: "sm", onClick: () => stats.reload(), children: t("retry") }) }),
+						jsx("div", { className: "dp_retryRow", children: jsx(Btn, { fallbackClass: "dp_miniBtn", variant: "outline", size: "sm", onClick: () => stats.reload(), children: t("retry") }) }),
 					] }),
 				] });
 			}

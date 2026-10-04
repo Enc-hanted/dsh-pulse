@@ -30,7 +30,7 @@ import { buildView, cacheHitRateOf, costOf, fmtCost, localDay, sessionModelRows,
 				["compare", t("compare")],
 				["panels", t("panels")],
 			];
-			const tabButtons = tabs.map(([target, label], i) => jsx(primitives.Button, {
+			const tabButtons = tabs.map(([target, label], i) => jsx(Btn, { fallbackClass: "dp_miniBtn",
 				variant: target === page ? "primary" : "outline", size: "sm",
 				style: i === 0 ? { marginLeft: "auto" } : undefined,
 				onClick: () => setPage(target),
@@ -59,26 +59,26 @@ import { buildView, cacheHitRateOf, costOf, fmtCost, localDay, sessionModelRows,
 					? renderFactorySlot("pulse.dashboard", {
 						onConfigure: () => setPage("pricing"),
 						headerExtra: jsxs("div", { className: "dp_headerRow", children: [
-							jsx(primitives.Button, { variant: "outline", size: "sm", onClick: () => setPage("pricing"), children: t("configure") }),
-							jsx(primitives.Button, { variant: "outline", size: "sm", onClick: () => setPage("compare"), children: t("compare") }),
-							jsx(primitives.Button, { variant: "outline", size: "sm", onClick: () => setPage("panels"), children: t("panels") }),
+							jsx(Btn, { fallbackClass: "dp_miniBtn", variant: "outline", size: "sm", onClick: () => setPage("pricing"), children: t("configure") }),
+							jsx(Btn, { fallbackClass: "dp_miniBtn", variant: "outline", size: "sm", onClick: () => setPage("compare"), children: t("compare") }),
+							jsx(Btn, { fallbackClass: "dp_miniBtn", variant: "outline", size: "sm", onClick: () => setPage("panels"), children: t("panels") }),
 						] }),
 					}, { fallback: jsx(PulseDashboard, {
 						t,
 						onConfigure: () => setPage("pricing"),
 						headerExtra: jsxs("div", { className: "dp_headerRow", children: [
-							jsx(primitives.Button, { variant: "outline", size: "sm", onClick: () => setPage("pricing"), children: t("configure") }),
-							jsx(primitives.Button, { variant: "outline", size: "sm", onClick: () => setPage("compare"), children: t("compare") }),
-							jsx(primitives.Button, { variant: "outline", size: "sm", onClick: () => setPage("panels"), children: t("panels") }),
+							jsx(Btn, { fallbackClass: "dp_miniBtn", variant: "outline", size: "sm", onClick: () => setPage("pricing"), children: t("configure") }),
+							jsx(Btn, { fallbackClass: "dp_miniBtn", variant: "outline", size: "sm", onClick: () => setPage("compare"), children: t("compare") }),
+							jsx(Btn, { fallbackClass: "dp_miniBtn", variant: "outline", size: "sm", onClick: () => setPage("panels"), children: t("panels") }),
 						] }),
 					}) })
 					: jsx(PulseDashboard, {
 						t,
 						onConfigure: () => setPage("pricing"),
 						headerExtra: jsxs("div", { className: "dp_headerRow", children: [
-							jsx(primitives.Button, { variant: "outline", size: "sm", onClick: () => setPage("pricing"), children: t("configure") }),
-							jsx(primitives.Button, { variant: "outline", size: "sm", onClick: () => setPage("compare"), children: t("compare") }),
-							jsx(primitives.Button, { variant: "outline", size: "sm", onClick: () => setPage("panels"), children: t("panels") }),
+							jsx(Btn, { fallbackClass: "dp_miniBtn", variant: "outline", size: "sm", onClick: () => setPage("pricing"), children: t("configure") }),
+							jsx(Btn, { fallbackClass: "dp_miniBtn", variant: "outline", size: "sm", onClick: () => setPage("compare"), children: t("compare") }),
+							jsx(Btn, { fallbackClass: "dp_miniBtn", variant: "outline", size: "sm", onClick: () => setPage("panels"), children: t("panels") }),
 						] }),
 					}),
 			] });
@@ -302,7 +302,7 @@ import { buildView, cacheHitRateOf, costOf, fmtCost, localDay, sessionModelRows,
 					] }),
 				] }),
 				jsxs("div", { className: "dp_cmdFoot", children: [
-					jsx(primitives.Button, {
+					jsx(Btn, { fallbackClass: "dp_miniBtn",
 						variant: "outline", size: "sm",
 						onClick: () => (typeof onOpenFull === "function" ? onOpenFull() : openOverlay("full", focusSession)),
 						children: t("cmdOpen"),

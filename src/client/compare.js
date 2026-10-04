@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef, useSyncExternalStore, jsx, jsxs }
 import { resolveRates } from "../view.js";
 import { catalogNames, fetchSettings, fill, loadStats, statsState, subscribeStats } from "./stores.js";
 import { quotaEntryName } from "./quota.js";
-import { Input, PillBtn, Seg, primitives } from "./adapter.js";
+import { Btn, Input, PillBtn, Seg } from "./adapter.js";
 import { DEFAULT_USD_TO_CNY, buildView, fmtCost, localDay, modelKey, niceMax, quotaMonthlyFee, shiftDay } from "./../view.js";
 		//#region compare page
 		/** Preset usage scenarios (total input in millions, output/input %,
@@ -474,7 +474,7 @@ import { DEFAULT_USD_TO_CNY, buildView, fmtCost, localDay, modelKey, niceMax, qu
 							? jsx("span", { className: "dp_setMsg dp_setMsgErr", children: fill(t("setFailed"), { err: settings.error }) })
 							: rows.map(rowView),
 					jsxs("div", { className: "dp_setActions", children: [
-						jsx(primitives.Button, { variant: "outline", size: "sm", onClick: addManual, children: t("cmpAdd") }),
+						jsx(Btn, { fallbackClass: "dp_miniBtn", variant: "outline", size: "sm", onClick: addManual, children: t("cmpAdd") }),
 						jsx("button", { type: "button", className: "dp_setLink", onClick: showAll, children: t("cmpShowAll") }),
 						jsx("span", { className: "dp_costNote", children: t("cmpHint") }),
 					] }),

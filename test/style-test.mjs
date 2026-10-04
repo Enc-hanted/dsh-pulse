@@ -221,6 +221,15 @@ test("every cross-module reference is imported (no silent globals)", () => {
   assert.deepEqual(offenders, [], `cross-module references without imports: ${offenders.join("; ")}`);
 });
 
+test("host Button is reached only through the adapter's Btn wrapper", () => {
+  // A direct `primitives.Button` render crashes old hosts (the proxy yields
+  // undefined) — the adapter's Btn is the only door, fallbackClass included.
+  const offenders = [...corpus]
+    .filter(([f, text]) => f !== "adapter.js" && text.includes("primitives.Button"))
+    .map(([f]) => f);
+  assert.deepEqual(offenders, [], `primitives.Button used outside adapter.js: ${offenders.join(", ")}`);
+});
+
 /** Card-layout sizes come from the content or the container (em / cqw / % /
  *  shared tokens) — never from a pixel tuned to one screen. Typography
  *  (font-size, line-height), hairline borders and element-intrinsic geometry

@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useSyncExternalStore, jsx, jsxs } from "./react.js";
 import { fetchSettings, fill, invalidateSettings, loadStats, payloadCache, statsState, subscribeStats } from "./stores.js";
-import { Input, PillBtn, primitives } from "./adapter.js";
+import { Btn, Input, PillBtn } from "./adapter.js";
 import { DEFAULT_USD_TO_CNY, accentEntryOf, buildView, daysBetween, familyRouteOf, fmtCost, localDay, modelAccentMap, modelKey, providerLabelOf, shiftDay } from "./../view.js";
 		//#region settings page
 		/** Official default peak hours (Beijing time) — the editor's fallback
@@ -536,19 +536,19 @@ import { DEFAULT_USD_TO_CNY, accentEntryOf, buildView, daysBetween, familyRouteO
 						}),
 					] }),
 					jsxs("div", { className: "dp_setActions", children: [
-						jsx(primitives.Button, {
+						jsx(Btn, { fallbackClass: "dp_miniBtn",
 							variant: "primary", size: "sm",
 							disabled: !state.writable || state.saving,
 							onClick: save,
 							children: t("setSave"),
 						}),
-						jsx(primitives.Button, {
+						jsx(Btn, { fallbackClass: "dp_miniBtn",
 							variant: "outline", size: "sm",
 							disabled: !state.writable || state.saving,
 							onClick: reset,
 							children: t("setReset"),
 						}),
-						jsx(primitives.Button, {
+						jsx(Btn, { fallbackClass: "dp_miniBtn",
 							variant: "outline", size: "sm",
 							disabled: state.saving,
 							onClick: load,

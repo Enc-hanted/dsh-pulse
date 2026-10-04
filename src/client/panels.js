@@ -2,7 +2,7 @@ import { useState, useEffect, jsx, jsxs } from "./react.js";
 import { DP_BUILD } from "./css.js";
 import { THEMES, fetchSettings, fill, invalidateSettings, loadPanels, loadStats, payloadCache, savePanels, setTheme, statsState, useQuota } from "./stores.js";
 import { quotaWindowLabel } from "./quota.js";
-import { Checkbox, HoverCardPrim, Input, Seg, TooltipPrim, primitives } from "./adapter.js";
+import { Btn, Checkbox, HoverCardPrim, Input, Seg, TooltipPrim } from "./adapter.js";
 import { DEFAULT_USD_TO_CNY } from "./../view.js";
 		//#region panels page
 		/** Display settings — which observatory panels render, plus the
@@ -68,7 +68,7 @@ import { DEFAULT_USD_TO_CNY } from "./../view.js";
 				jsxs("div", { className: "dp_setRow dp_setRowMid", children: [
 					jsx("span", { className: "dp_aboutVersion", children: `dsh-pulse ${DP_BUILD}` }),
 					line !== null && jsx("span", { className: cls, children: line }),
-					jsx(primitives.Button, {
+					jsx(Btn, { fallbackClass: "dp_miniBtn",
 						variant: "outline", size: "sm",
 						disabled: state.kind === "checking",
 						onClick: check,
@@ -241,7 +241,7 @@ import { DEFAULT_USD_TO_CNY } from "./../view.js";
 								onChange: (e) => setCurrency((s) => ({ ...s, usdToCny: e.target.value, saved: false })),
 							}),
 						] }),
-						jsx(primitives.Button, {
+						jsx(Btn, { fallbackClass: "dp_miniBtn",
 							variant: "primary", size: "sm",
 							disabled: currency.status !== "ready" || !currency.writable || currency.saving,
 							onClick: saveCurrency,

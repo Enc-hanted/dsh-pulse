@@ -33,7 +33,7 @@ const cssSource = readFileSync(join(root, "src", "client", "css.js"), "utf8");
  *  appear inside (the style suite forbids them), so a lazy match to the
  *  closing backtick is exact. */
 const sheets = [];
-for (const name of ["css", "themeCss", "rowCss", "chartCss", "quotaCss"]) {
+for (const name of ["css", "themeCss", "rowCss", "chartCss", "quotaCss", "floatCss"]) {
 	const m = cssSource.match(new RegExp(`export const ${name} = \`([\\s\\S]*?)\`;`));
 	if (m === null) throw new Error(`sheet ${name} not found in src/client/css.js`);
 	sheets.push(m[1]);

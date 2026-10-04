@@ -17,8 +17,8 @@
  * emits `dp_hcL1…4`, and a JS token that is a prefix of a declared class is
  * that family's base name.
  *
- * The sheet region is the concatenated `css + themeCss + rowCss + chartCss +
- * quotaCss` literal block, so a class named only inside a CSS comment does NOT
+ * The sheet region is every `export const <name>Css` template literal in
+ * css.js joined, so a class named only inside a CSS comment does NOT
  * count as used.
  */
 
@@ -32,12 +32,17 @@ import fs from "node:fs";
 const clientDir = new URL("../src/client/", import.meta.url);
 const moduleText = (name) => fs.readFileSync(new URL(name, clientDir), "utf8");
 const cssSource = moduleText("css.js");
-const CSS_START = cssSource.indexOf("const css = `");
-const CSS_END = cssSource.indexOf("const cssTagId");
-assert.ok(CSS_START > 0 && CSS_END > CSS_START, "the stylesheet region must be found in src/client/css.js");
-const cssText = cssSource.slice(CSS_START, CSS_END);
+// Sheets are located by their export names, not character slices, so a sheet
+// added later is automatically inside every lock below. A sheet's template
+// literal may not contain a backtick (one stray backtick truncates the sheet
+// in the bundle) — the [^`] scan enforces that by construction.
+const SHEET_RE = /\t\texport const (\w*[Cc]ss) = `([^`]*)`/g;
+const sheets = new Map();
+for (const m of cssSource.matchAll(SHEET_RE)) sheets.set(m[1], m[2]);
+assert.ok(sheets.size >= 5, `the css sheets must be found by export name, got: ${[...sheets.keys()].join(", ")}`);
+const cssText = [...sheets.values()].join("");
 const corpusFiles = fs.readdirSync(clientDir).filter((f) => f.endsWith(".js"));
-const corpus = new Map(corpusFiles.map((f) => [f, f === "css.js" ? cssSource.slice(0, CSS_START) + cssSource.slice(CSS_END) : moduleText(f)]));
+const corpus = new Map(corpusFiles.map((f) => [f, f === "css.js" ? cssSource.replace(SHEET_RE, "") : moduleText(f)]));
 const jsText = [...corpus.values()].join("\n");
 const bundle = fs.readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
 

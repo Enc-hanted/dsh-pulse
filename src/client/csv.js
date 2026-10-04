@@ -735,7 +735,7 @@ import { AUX_MODEL_KEY, ROUTE_FAMILIES, auxCalibration, buildView, clampSpan, co
 				dimWrap(panels.sessions !== false && project !== "" && jsxs("div", { children: [
 					jsxs("div", { className: "dp_panelTitle", children: [
 						jsx("span", { children: t("projectDetailTitle") }),
-						jsx("button", { type: "button", className: "dp_setLink", style: { marginLeft: "auto" }, onClick: () => setProjectUser(""), children: `← ${t("back")}` }),
+						jsx("button", { type: "button", className: "dp_setLink dp_setLinkEnd", onClick: () => setProjectUser(""), children: `← ${t("back")}` }),
 					] }),
 					jsx(SessionsPanel, {
 						groups: sessionGroupsData.filter((g) => g.project === project), costEnabled, pricing: data.pricing, fx: data.fx,

@@ -246,6 +246,32 @@ test("money notation has one exit — no inline ¥ templates", () => {
   assert.deepEqual(offenders, [], `inline ¥ templates outside view.js moneyParts: ${offenders.join(", ")}`);
 });
 
+test("style props carry only dynamic values (static chrome lives in the sheets)", () => {
+  // Contract: static styles belong in the sheets — one home, under the class
+  // lock. A style prop may only carry data-driven values (a `%` width/left,
+  // an accent fill), SVG plot geometry, or float positioning. Every
+  // `style: { ... }` object whose values are ALL string/number literals is
+  // static chrome that migrated; a backtick, identifier or spread value
+  // marks a legitimate dynamic prop.
+  const offenders = [];
+  for (const [f, text] of corpus) {
+    if (f === "css.js") continue;
+    for (const m of text.matchAll(/style: \{([^{}]*)\}/g)) {
+      const capture = m[1];
+      if (capture.includes("`")) continue;
+      let any = false, allStatic = true;
+      for (const part of capture.split(",")) {
+        const colon = part.indexOf(":");
+        if (colon < 0) { allStatic = false; break; }
+        any = true;
+        if (!/^["'-\d]/.test(part.slice(colon + 1).trim())) { allStatic = false; break; }
+      }
+      if (any && allStatic) offenders.push(`${f}: { ${capture.trim().slice(0, 60)} }`);
+    }
+  }
+  assert.deepEqual(offenders, [], `static inline styles must move to the sheet: ${offenders.join("; ")}`);
+});
+
 /** Card-layout sizes come from the content or the container (em / cqw / % /
  *  shared tokens) — never from a pixel tuned to one screen. Typography
  *  (font-size, line-height), hairline borders and element-intrinsic geometry

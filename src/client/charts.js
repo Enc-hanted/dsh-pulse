@@ -271,11 +271,11 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntry
 				];
 			return jsxs("div", { children: [
 				jsx("div", { ref: outerRef, className: "dp_chartOuter", children: jsxs("div", { className: "dp_chartGrid", children: [
-					jsx("div", { key: "g0", className: "dp_gridline", style: { top: "0%" } }),
-					jsx("div", { key: "g50", className: "dp_gridline", style: { top: "50%" } }),
-					jsx("div", { key: "g100", className: "dp_gridline", style: { top: "100%" } }),
-					jsx("span", { key: "l0", className: "dp_gridlabel", style: { top: "0%" }, children: fmtTokens(max) }),
-					jsx("span", { key: "l50", className: "dp_gridlabel", style: { top: "50%" }, children: fmtTokens(max / 2) }),
+					jsx("div", { key: "g0", className: "dp_gridline dp_g0" }),
+					jsx("div", { key: "g50", className: "dp_gridline dp_g50" }),
+					jsx("div", { key: "g100", className: "dp_gridline dp_g100" }),
+					jsx("span", { key: "l0", className: "dp_gridlabel dp_g0", children: fmtTokens(max) }),
+					jsx("span", { key: "l50", className: "dp_gridlabel dp_g50", children: fmtTokens(max / 2) }),
 					total === 0 && jsxs("div", { key: "empty", className: "dp_emptyChart", children: [
 						jsx(primitives.IconDataOutline16, { size: 20 }),
 						jsx("span", { children: t("cacheNa") }),
@@ -319,7 +319,7 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntry
 								: hover >= rows.length - 2
 									? { left: "0", transform: "translateX(-100%)" }
 									: { left: "0", transform: "translateX(-50%)" },
-							children: jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 1 }, children: [
+							children: jsxs("div", { className: "dp_tipStack", children: [
 								jsx("b", { children: hovered.key === todayKey ? `${hovered.key} ${t("today")}` : hovered.key }),
 								jsx("span", { children: fill(t("tipIn"), { n: fmtTokens((hovered.input || 0) + (hovered.cacheWrite || 0)) }) }),
 								jsx("span", { children: fill(t("tipCache"), { n: fmtTokens(hovered.cacheRead || 0) }) }),
@@ -536,11 +536,11 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntry
 				];
 			return jsxs("div", { children: [
 				jsx("div", { ref: outerRef, className: "dp_chartOuter", children: jsxs("div", { className: "dp_chartGrid", children: [
-					jsx("div", { key: "g0", className: "dp_gridline", style: { top: "0%" } }),
-					jsx("div", { key: "g50", className: "dp_gridline", style: { top: "50%" } }),
-					jsx("div", { key: "g100", className: "dp_gridline", style: { top: "100%" } }),
-					jsx("span", { key: "l0", className: "dp_gridlabel", style: { top: "0%" }, children: moneyCny(max) }),
-					jsx("span", { key: "l50", className: "dp_gridlabel", style: { top: "50%" }, children: moneyCny(max / 2) }),
+					jsx("div", { key: "g0", className: "dp_gridline dp_g0" }),
+					jsx("div", { key: "g50", className: "dp_gridline dp_g50" }),
+					jsx("div", { key: "g100", className: "dp_gridline dp_g100" }),
+					jsx("span", { key: "l0", className: "dp_gridlabel dp_g0", children: moneyCny(max) }),
+					jsx("span", { key: "l50", className: "dp_gridlabel dp_g50", children: moneyCny(max / 2) }),
 					total === 0 && jsxs("div", { key: "empty", className: "dp_emptyChart", children: [
 						jsx(primitives.IconDataOutline16, { size: 20 }),
 						jsx("span", { children: t("cacheNa") }),
@@ -580,7 +580,7 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntry
 						children: jsx("div", {
 							className: "dp_tip",
 							style: hover < 2 ? { left: "0" } : hover >= rows.length - 2 ? { left: "0", transform: "translateX(-100%)" } : { left: "0", transform: "translateX(-50%)" },
-							children: jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 1 }, children: [
+							children: jsxs("div", { className: "dp_tipStack", children: [
 								jsx("b", { children: hovered.key === todayKey ? `${hovered.key} ${t("today")}` : hovered.key }),
 								jsx("span", { children: fill(t("costTipPeak"), { v: fmtCost(hovered.peak || 0) }) }),
 								jsx("span", { children: fill(t("costTipOff"), { v: fmtCost(hovered.offpeak || 0) }) }),
@@ -612,11 +612,11 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntry
 			const offFill = "color-mix(in srgb,var(--dsw-alias-state-business-primary) 45%,var(--dsw-alias-label-tertiary))";
 			return jsxs("div", { children: [
 				jsx("div", { className: "dp_chartOuter", children: jsxs("div", { className: "dp_chartGrid", children: [
-					jsx("div", { key: "g0", className: "dp_gridline", style: { top: "0%" } }),
-					jsx("div", { key: "g50", className: "dp_gridline", style: { top: "50%" } }),
-					jsx("div", { key: "g100", className: "dp_gridline", style: { top: "100%" } }),
-					maxRaw > 0 && jsx("span", { key: "l0", className: "dp_gridlabel", style: { top: "0%" }, children: moneyCny(max) }),
-					maxRaw > 0 && jsx("span", { key: "l50", className: "dp_gridlabel", style: { top: "50%" }, children: moneyCny(max / 2) }),
+					jsx("div", { key: "g0", className: "dp_gridline dp_g0" }),
+					jsx("div", { key: "g50", className: "dp_gridline dp_g50" }),
+					jsx("div", { key: "g100", className: "dp_gridline dp_g100" }),
+					maxRaw > 0 && jsx("span", { key: "l0", className: "dp_gridlabel dp_g0", children: moneyCny(max) }),
+					maxRaw > 0 && jsx("span", { key: "l50", className: "dp_gridlabel dp_g50", children: moneyCny(max / 2) }),
 					total === 0 && jsxs("div", { key: "empty", className: "dp_emptyChart", children: [
 						jsx(primitives.IconDataOutline16, { size: 20 }),
 						jsx("span", { children: t("cacheNa") }),
@@ -646,7 +646,7 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntry
 						children: jsx("div", {
 							className: "dp_tip",
 							style: hover < 2 ? { left: "0" } : hover >= rows.length - 2 ? { left: "0", transform: "translateX(-100%)" } : { left: "0", transform: "translateX(-50%)" },
-							children: jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 1 }, children: [
+							children: jsxs("div", { className: "dp_tipStack", children: [
 								jsx("b", { children: `${hovered.key}:00` }),
 								jsx("span", { children: fill(t("costTipPeak"), { v: moneyCny(hovered.peak || 0) }) }),
 								jsx("span", { children: fill(t("costTipOff"), { v: moneyCny(hovered.offpeak || 0) }) }),
@@ -869,9 +869,9 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntry
 						className: `dp_pickerItem${sel.has(key) ? " dp_pickerItemActive" : ""}`,
 						onClick: () => onToggle(key),
 						title: label(key),
-						children: jsxs("span", { style: { display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }, children: [
+						children: jsxs("span", { className: "dp_pickerItemMain", children: [
 							sel.has(key) && jsx("i", { className: "dp_mselDot" }),
-							jsx("span", { style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: label(key) }),
+							jsx("span", { className: "dp_ellipsis", children: label(key) }),
 						] }),
 					}, key)),
 					rows.length === 0 && jsx("div", { className: "dp_pickerEmpty", children: t("noMatch") }),
@@ -928,13 +928,13 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntry
 			const hovered = hover !== null && rows[hover] !== undefined ? rows[hover] : null;
 			return jsxs("div", { className: "dp_hourWrap", children: [
 				jsx("div", { className: "dp_chartOuter", children: jsxs("div", { className: "dp_hourGrid", children: [
-					jsx("div", { key: "g0", className: "dp_gridline", style: { top: "0%" } }),
-					jsx("div", { key: "g50", className: "dp_gridline", style: { top: "50%" } }),
-					jsx("div", { key: "g100", className: "dp_gridline", style: { top: "100%" } }),
-					cacheMaxRaw > 0 && jsx("span", { key: "cl0", className: "dp_gridlabel dp_gridlabelAxisL", style: { top: "0%" }, children: fmtTokens(cacheMax) }),
-					cacheMaxRaw > 0 && jsx("span", { key: "cl50", className: "dp_gridlabel dp_gridlabelAxisL", style: { top: "50%" }, children: fmtTokens(cacheMax / 2) }),
-					rightMaxRaw > 0 && jsx("span", { key: "rl0", className: "dp_gridlabel", style: { top: "0%" }, children: fmtTokens(rightMax) }),
-					rightMaxRaw > 0 && jsx("span", { key: "rl50", className: "dp_gridlabel", style: { top: "50%" }, children: fmtTokens(rightMax / 2) }),
+					jsx("div", { key: "g0", className: "dp_gridline dp_g0" }),
+					jsx("div", { key: "g50", className: "dp_gridline dp_g50" }),
+					jsx("div", { key: "g100", className: "dp_gridline dp_g100" }),
+					cacheMaxRaw > 0 && jsx("span", { key: "cl0", className: "dp_gridlabel dp_gridlabelAxisL dp_g0", children: fmtTokens(cacheMax) }),
+					cacheMaxRaw > 0 && jsx("span", { key: "cl50", className: "dp_gridlabel dp_gridlabelAxisL dp_g50", children: fmtTokens(cacheMax / 2) }),
+					rightMaxRaw > 0 && jsx("span", { key: "rl0", className: "dp_gridlabel dp_g0", children: fmtTokens(rightMax) }),
+					rightMaxRaw > 0 && jsx("span", { key: "rl50", className: "dp_gridlabel dp_g50", children: fmtTokens(rightMax / 2) }),
 					total === 0 && jsxs("div", { key: "empty", className: "dp_emptyChart", children: [
 						jsx(primitives.IconDataOutline16, { size: 20 }),
 						jsx("span", { children: t("cacheNa") }),
@@ -970,7 +970,7 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntry
 						children: jsx("div", {
 							className: "dp_tip",
 							style: hover < 4 ? { left: "0" } : hover >= 20 ? { left: "0", transform: "translateX(-100%)" } : { left: "0", transform: "translateX(-50%)" },
-							children: jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 1 }, children: [
+							children: jsxs("div", { className: "dp_tipStack", children: [
 								jsx("b", { children: `${hovered.key}:00` }),
 								jsx("span", { children: fill(t("tipIn"), { n: fmtTokens((hovered.input || 0) + (hovered.cacheWrite || 0)) }) }),
 								jsx("span", { children: fill(t("tipCache"), { n: fmtTokens(hovered.cacheRead || 0) }) }),
@@ -1113,8 +1113,8 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntry
 				jsxs("div", { className: "dp_tableRow dp_tableHead", children: [
 					jsx("span", { children: t("colRank") }),
 					jsx("span", { children: t("colProject") }),
-					jsx("span", { style: { textAlign: "right" }, children: t("colSessions") }),
-					jsx("span", { style: { textAlign: "right" }, children: t("colTokens") }),
+					jsx("span", { className: "dp_thNum", children: t("colSessions") }),
+					jsx("span", { className: "dp_thNum", children: t("colTokens") }),
 					jsx("span", { children: "" }),
 				] }),
 				rows.map((row, i) => {
@@ -1383,7 +1383,7 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntry
 						ref: svgRef,
 						viewBox: `0 0 ${W} ${H}`,
 						preserveAspectRatio: "none",
-						style: { width: "100%", height: 84, display: "block", cursor: "crosshair", touchAction: "none" },
+						className: "dp_turnSvg",
 						onPointerDown: (e) => {
 							if (e.pointerType === "mouse" && e.button !== 0) return;
 							e.preventDefault();
@@ -1443,8 +1443,8 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntry
 						jsx("span", { children: t("sessionSegment") }),
 						jsx("span", { children: `${t("sessionSegFrom")} → ${t("sessionSegTo")}` }),
 						jsx("span", { children: t("sessionTopModel") }),
-						jsx("span", { style: { textAlign: "right" }, children: t("colTokens") }),
-						jsx("span", { style: { textAlign: "right" }, children: t("chipCost") }),
+						jsx("span", { className: "dp_thNum", children: t("colTokens") }),
+						jsx("span", { className: "dp_thNum", children: t("chipCost") }),
 					] }),
 					segments.map((seg, i) => {
 						const inSide = (seg.tokens.input || 0) + (seg.tokens.cacheRead || 0) + (seg.tokens.cacheWrite || 0);

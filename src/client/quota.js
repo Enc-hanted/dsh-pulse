@@ -193,7 +193,7 @@ import { fmtCost, moneyParts, quotaBurn, quotaCalibrate, quotaCoverage, quotaFee
 				return jsxs("div", { className: "dp_qWin", children: [
 					jsxs("div", { className: "dp_qWinMain", children: [
 						jsx("span", { className: "dp_qwLabel", children: quotaWindowLabel(w.id, t) }),
-						jsx("span", { className: "dp_qwTrack", style: { width: 110 }, children: jsx("span", { className: quotaWindowCls(w.usedPct), style: { width: `${Math.max(2, Math.min(100, w.usedPct ?? 0))}%` } }) }),
+						jsx("span", { className: "dp_qwTrack dp_qwTrackWide", children: jsx("span", { className: quotaWindowCls(w.usedPct), style: { width: `${Math.max(2, Math.min(100, w.usedPct ?? 0))}%` } }) }),
 						jsx("span", { className: "dp_qwPct", children: w.usedPct === null ? "—" : `${Math.round(w.usedPct)}%` }),
 						jsxs("span", { className: "dp_qEst", title: t("quotaScopeNote"), children: [
 							estParts.flatMap((part, i) => (i === 0 ? [part] : [jsx("span", { className: "dp_qEstSep", children: "·" }, `sep-${i}`), part])),
@@ -211,11 +211,11 @@ import { fmtCost, moneyParts, quotaBurn, quotaCalibrate, quotaCoverage, quotaFee
 			const extraRows = (Array.isArray(active.extras) ? active.extras : []).map((extra) => jsxs("div", { className: "dp_qWin", children: [
 				jsxs("div", { className: "dp_qWinMain", children: [
 					jsx("span", { className: "dp_qwLabel", children: extra.label ?? t("quotaTools") }),
-					jsx("span", { className: "dp_qwTrack", style: { width: 110 }, children: jsx("span", { className: quotaWindowCls(extra.usedPct), style: { width: `${Math.max(2, Math.min(100, extra.usedPct ?? 0))}%` } }) }),
+					jsx("span", { className: "dp_qwTrack dp_qwTrackWide", children: jsx("span", { className: quotaWindowCls(extra.usedPct), style: { width: `${Math.max(2, Math.min(100, extra.usedPct ?? 0))}%` } }) }),
 					jsx("span", { className: "dp_qwPct", children: extra.usedPct === null ? "—" : `${Math.round(extra.usedPct)}%` }),
 					extra.used !== null && extra.used !== undefined && extra.total !== null && extra.total !== undefined
-						? jsx("span", { className: "dp_qWinRight", style: { gridColumn: "4 / 6" }, children: `${extra.used}/${extra.total}` })
-						: jsx("span", { style: { gridColumn: "4 / 6" } }),
+						? jsx("span", { className: "dp_qWinRight dp_qWinSpan", children: `${extra.used}/${extra.total}` })
+						: jsx("span", { className: "dp_qWinSpan" }),
 				] }),
 			] }, extra.id));
 			const headRows = [
@@ -229,9 +229,9 @@ import { fmtCost, moneyParts, quotaBurn, quotaCalibrate, quotaCoverage, quotaFee
 			const bodyRows = top.map((row) => jsxs("div", { className: "dp_qTr", children: [
 				jsx("span", { className: "dp_qTd dp_qTdFirst", title: row.project, children: row.project === "" ? "—" : row.project }),
 				jsx("span", { className: "dp_qTd dp_qTdNum", children: fmtTokens(row.total) }),
-				jsxs("span", { className: "dp_qTd", style: { display: "flex", alignItems: "center", gap: 8 }, children: [
+				jsxs("span", { className: "dp_qTd dp_qTdFlex", children: [
 					jsx("span", { children: `${Math.round(row.share * 100)}%` }),
-					jsx("span", { className: "dp_qShareTrack", style: { flex: 1 }, children: jsx("span", { className: "dp_qShareFill", style: { width: `${Math.max(2, Math.min(100, row.share * 100))}%`, display: "block" } }) }),
+					jsx("span", { className: "dp_qShareTrack", children: jsx("span", { className: "dp_qShareFill", style: { width: `${Math.max(2, Math.min(100, row.share * 100))}%` } }) }),
 				] }),
 				fee !== null ? jsx("span", { className: "dp_qTd dp_qTdNum", children: quotaMoney(quotaFeeShare(active.fee, row.total, grandTotal) ?? 0, fee.currency) }) : jsx("span", {}, "f"),
 			] }, row.project || "__"));

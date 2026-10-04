@@ -150,7 +150,7 @@ import { DEFAULT_USD_TO_CNY } from "./../view.js";
 					}),
 					jsxs("span", { children: [
 						entry.plan?.name ?? entry.label ?? entry.displayName ?? entry.provider,
-						jsx("span", { className: "dp_qNote", style: { display: "block" }, children: statusLine(entry) }),
+						jsx("span", { className: "dp_qNote dp_qNoteBlock", children: statusLine(entry) }),
 					] }),
 				] }, entry.provider)) }),
 				state.status === "error"

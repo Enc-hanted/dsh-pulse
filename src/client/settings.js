@@ -421,7 +421,7 @@ import { DEFAULT_USD_TO_CNY, accentEntryOf, buildView, daysBetween, familyRouteO
 							setField(t("setPeakOut"), row.peak?.output, (v) => patchPeak(i, "output", v)),
 						] }),
 						jsxs("div", { className: "dp_setField", children: [
-							jsxs("span", { className: "dp_setLabel", style: { marginBottom: "6px" }, children: [
+							jsxs("span", { className: "dp_setLabel dp_setLabelGap", children: [
 								`${t("setPeakHours")} `,
 								jsx("button", {
 									type: "button", className: "dp_setLink",

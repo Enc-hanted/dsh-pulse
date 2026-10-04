@@ -6,7 +6,7 @@ import { Toolbar } from "./toolbar.js";
 import { BudgetCard } from "./dashboard.js";
 import { QuotaPanel } from "./quota.js";
 import { Btn, Seg, primitives } from "./adapter.js";
-import { AUX_MODEL_KEY, ROUTE_FAMILIES, auxCalibration, buildView, clampSpan, costSeries, daysBetween, fmtCost, hourlyCostSeries, hourlySeries, isOfficialProvider, localDay, modelAccentMap, modelKey, moneyParts, reconcileSeries, rollupModelFamilies, sessionGroups, shiftDay, splitModelKey } from "./../view.js";
+import { AUX_MODEL_KEY, ROUTE_FAMILIES, auxCalibration, buildView, clampSpan, costSeries, daysBetween, hourlyCostSeries, moneyCny, hourlySeries, isOfficialProvider, localDay, modelAccentMap, modelKey, moneyParts, reconcileSeries, rollupModelFamilies, sessionGroups, shiftDay, splitModelKey } from "./../view.js";
 		//#region csv export
 		/** One CSV cell: bare numbers stay unquoted, anything with a comma/
 		 *  quote/break gets the RFC-4180 quoting. */
@@ -686,7 +686,7 @@ import { AUX_MODEL_KEY, ROUTE_FAMILIES, auxCalibration, buildView, clampSpan, co
 								? jsxs("div", { children: [
 									jsx(HourlyCostChart, { hours: hourlyCost?.hours ?? [], t }),
 									hourlyCost !== null && hourlyCost.unpricedTokens > 0 && jsx("div", { className: "dp_focusNote", children: fill(t("unpriced"), { n: fmtTokens(hourlyCost.unpricedTokens) }) }),
-									project === "" && (reconByKey.get(hourlyDay)?.aux ?? 0) > 0 && jsx("div", { className: "dp_focusNote", children: fill(t("costHourlyAux"), { v: `¥${fmtCost(reconByKey.get(hourlyDay).aux)}` }) }),
+									project === "" && (reconByKey.get(hourlyDay)?.aux ?? 0) > 0 && jsx("div", { className: "dp_focusNote", children: fill(t("costHourlyAux"), { v: moneyCny(reconByKey.get(hourlyDay).aux) }) }),
 									hourlyCutoff !== null && hourlyDay < hourlyCutoff && jsx("div", { className: "dp_focusNote", children: t("hourlyNote") }),
 									jsx("div", { className: "dp_focusNote", children: t("focusNote") }),
 								] })

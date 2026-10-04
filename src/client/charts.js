@@ -3,7 +3,7 @@ import { resolveRates, priceTier, ruleMaps, ruleFor, tierAtMs } from "../view.js
 import { UNPRICED_HINT_TOKENS, catalogNames, fill, fmtTokens, httpError } from "./stores.js";
 import { quotaDur, quotaEntryName, quotaRankEntries, quotaWindowCls, quotaWindowLabel } from "./quota.js";
 import { Btn, Float, HoverCardPrim, Tag, TooltipPrim, floatReady, relativeTimePrim, primitives } from "./adapter.js";
-import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntryOf, breaksSegments, bucketLabel, bucketOf, costOf, fmtClockMs, fmtCost, heatmapCells, heatmapLevel, isOffPeakDay, isOfficialProvider, keyMatchesFilter, modelAccentMap, modelFilterSet, modelKey, niceMax, splitModelKey } from "./../view.js";
+import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntryOf, breaksSegments, bucketLabel, bucketOf, costOf, fmtClockMs, fmtCost, heatmapCells, heatmapLevel, isOffPeakDay, isOfficialProvider, keyMatchesFilter, modelAccentMap, modelFilterSet, modelKey, moneyCny, niceMax, splitModelKey } from "./../view.js";
 		//#region charts
 		/** Stacked bucket bar chart built from divs - responsive without
 		 *  measurement. The stack dimension switches between token types and
@@ -485,8 +485,8 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntry
 									if (start !== end) return `${start} ~ ${end}`;
 									return row.key === todayKey ? `${row.key} · ${t("today")}` : row.key;
 								})() }),
-								jsx("span", { children: `¥${fmtCost(dayTotal)}` }),
-								actual !== null && actual !== undefined && jsx("span", { children: fill(t("actualTip"), { v: `¥${fmtCost(actual)}` }) }),
+								jsx("span", { children: moneyCny(dayTotal) }),
+								actual !== null && actual !== undefined && jsx("span", { children: fill(t("actualTip"), { v: moneyCny(actual) }) }),
 							] }),
 						] }),
 						jsx("div", { className: "dp_drillStage", children: jsx("div", { className: "dp_drillBar", style: drillStyle, children: segs.map((seg) => {
@@ -501,7 +501,7 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntry
 					jsxs("div", { className: "dp_legend", children: segs.map((seg) => jsxs("span", { children: [
 						jsx("i", { className: "dp_legendDot", style: { background: seg.fill } }),
 						segLabel(seg),
-						jsx("span", { className: "dp_legendVal", children: `¥${fmtCost(seg.tokens)}` }),
+						jsx("span", { className: "dp_legendVal", children: moneyCny(seg.tokens) }),
 					] }, seg.key)) }),
 				] });
 			}
@@ -527,7 +527,7 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntry
 					children: [
 						jsx("i", { className: "dp_legendDot", style: { background: row.fill } }),
 						row.label,
-						jsx("span", { className: "dp_legendVal", children: `¥${fmtCost(row.cost)}` }),
+						jsx("span", { className: "dp_legendVal", children: moneyCny(row.cost) }),
 					],
 				}, row.label))
 				: [
@@ -539,8 +539,8 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntry
 					jsx("div", { key: "g0", className: "dp_gridline", style: { top: "0%" } }),
 					jsx("div", { key: "g50", className: "dp_gridline", style: { top: "50%" } }),
 					jsx("div", { key: "g100", className: "dp_gridline", style: { top: "100%" } }),
-					jsx("span", { key: "l0", className: "dp_gridlabel", style: { top: "0%" }, children: `¥${fmtCost(max)}` }),
-					jsx("span", { key: "l50", className: "dp_gridlabel", style: { top: "50%" }, children: `¥${fmtCost(max / 2)}` }),
+					jsx("span", { key: "l0", className: "dp_gridlabel", style: { top: "0%" }, children: moneyCny(max) }),
+					jsx("span", { key: "l50", className: "dp_gridlabel", style: { top: "50%" }, children: moneyCny(max / 2) }),
 					total === 0 && jsxs("div", { key: "empty", className: "dp_emptyChart", children: [
 						jsx(primitives.IconDataOutline16, { size: 20 }),
 						jsx("span", { children: t("cacheNa") }),
@@ -615,8 +615,8 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntry
 					jsx("div", { key: "g0", className: "dp_gridline", style: { top: "0%" } }),
 					jsx("div", { key: "g50", className: "dp_gridline", style: { top: "50%" } }),
 					jsx("div", { key: "g100", className: "dp_gridline", style: { top: "100%" } }),
-					maxRaw > 0 && jsx("span", { key: "l0", className: "dp_gridlabel", style: { top: "0%" }, children: `¥${fmtCost(max)}` }),
-					maxRaw > 0 && jsx("span", { key: "l50", className: "dp_gridlabel", style: { top: "50%" }, children: `¥${fmtCost(max / 2)}` }),
+					maxRaw > 0 && jsx("span", { key: "l0", className: "dp_gridlabel", style: { top: "0%" }, children: moneyCny(max) }),
+					maxRaw > 0 && jsx("span", { key: "l50", className: "dp_gridlabel", style: { top: "50%" }, children: moneyCny(max / 2) }),
 					total === 0 && jsxs("div", { key: "empty", className: "dp_emptyChart", children: [
 						jsx(primitives.IconDataOutline16, { size: 20 }),
 						jsx("span", { children: t("cacheNa") }),
@@ -648,17 +648,17 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntry
 							style: hover < 2 ? { left: "0" } : hover >= rows.length - 2 ? { left: "0", transform: "translateX(-100%)" } : { left: "0", transform: "translateX(-50%)" },
 							children: jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 1 }, children: [
 								jsx("b", { children: `${hovered.key}:00` }),
-								jsx("span", { children: fill(t("costTipPeak"), { v: `¥${fmtCost(hovered.peak || 0)}` }) }),
-								jsx("span", { children: fill(t("costTipOff"), { v: `¥${fmtCost(hovered.offpeak || 0)}` }) }),
-								jsx("span", { children: fill(t("costTipTotal"), { v: `¥${fmtCost((hovered.peak || 0) + (hovered.offpeak || 0))}` }) }),
+								jsx("span", { children: fill(t("costTipPeak"), { v: moneyCny(hovered.peak || 0) }) }),
+								jsx("span", { children: fill(t("costTipOff"), { v: moneyCny(hovered.offpeak || 0) }) }),
+								jsx("span", { children: fill(t("costTipTotal"), { v: moneyCny((hovered.peak || 0) + (hovered.offpeak || 0)) }) }),
 							] }),
 						}),
 					}),
 				] }) }),
 				jsxs("div", { className: "dp_hourXlabels", children: ["00", "06", "12", "18", "23"].map((label) => jsx("span", { key: label, children: label })) }),
 				jsxs("div", { className: "dp_legend", children: [
-					jsxs("span", { children: [jsx("i", { className: "dp_legendDot", style: { background: peakFill } }), t("legendPeak"), jsx("span", { className: "dp_legendVal", children: `¥${fmtCost(peakTotal)}` })] }),
-					jsxs("span", { children: [jsx("i", { className: "dp_legendDot", style: { background: offFill } }), t("legendOffpeak"), jsx("span", { className: "dp_legendVal", children: `¥${fmtCost(offTotal)}` })] }),
+					jsxs("span", { children: [jsx("i", { className: "dp_legendDot", style: { background: peakFill } }), t("legendPeak"), jsx("span", { className: "dp_legendVal", children: moneyCny(peakTotal) })] }),
+					jsxs("span", { children: [jsx("i", { className: "dp_legendDot", style: { background: offFill } }), t("legendOffpeak"), jsx("span", { className: "dp_legendVal", children: moneyCny(offTotal) })] }),
 				] }),
 			] });
 		}
@@ -1033,9 +1033,9 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntry
 							&& Math.abs(row.gap ?? 0) >= 0.1 && Math.abs(row.gap ?? 0) >= 0.15 * official;
 						return jsxs("div", { className: "dp_qTr", children: [
 							jsx("span", { className: "dp_qTd dp_qTdFirst", children: row.key }),
-							jsx("span", { className: "dp_qTd", children: official === null ? "—" : `${row.sparse === true ? "≈" : ""}¥${fmtCost(official)}` }),
-							jsx("span", { className: "dp_qTd", children: `¥${fmtCost(est)}` }),
-							jsx("span", { className: `dp_qTd${drifted ? " dp_reconGapBad" : ""}`, children: row.gap === null ? "—" : `${(row.gap ?? 0) > 0 ? "+" : ""}¥${fmtCost(row.gap ?? 0)}` }),
+							jsx("span", { className: "dp_qTd", children: official === null ? "—" : `${row.sparse === true ? "≈" : ""}${moneyCny(official)}` }),
+							jsx("span", { className: "dp_qTd", children: moneyCny(est) }),
+							jsx("span", { className: `dp_qTd${drifted ? " dp_reconGapBad" : ""}`, children: row.gap === null ? "—" : `${(row.gap ?? 0) > 0 ? "+" : ""}${moneyCny(row.gap ?? 0)}` }),
 						] }, row.key);
 					}),
 				] }),

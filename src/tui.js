@@ -55,7 +55,7 @@ import { join } from "node:path";
 import { foldEvents, projectOf, localDay, dayStart } from "./aggregate.js";
 import {
 	costOf, officialRulesFor, officialEstimateRulesFor,
-	fmtCost, shiftDay, DEFAULT_USD_TO_CNY, splitModelKey,
+	shiftDay, DEFAULT_USD_TO_CNY, moneyCny, splitModelKey,
 } from "./view.js";
 
 export const name = "pulse-tui";
@@ -184,7 +184,7 @@ export function wrapDisplay(text, width) {
 export function money(cost, estimated) {
 	const v = Number(cost);
 	if (!Number.isFinite(v) || v <= 0) return "¥—";
-	return `${estimated ? "≈" : ""}¥${fmtCost(v)}`;
+	return `${estimated ? "≈" : ""}${moneyCny(v)}`;
 }
 
 /** Whole days from `a` to `b` (`b - a`). */

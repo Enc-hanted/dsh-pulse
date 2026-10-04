@@ -1669,6 +1669,11 @@ export function moneyParts(total, currency) {
     : { text: fmtCost(total), unit: currency };
 }
 
+/** The CNY face of moneyParts for call sites that print the symbol inline. */
+export function moneyCny(total) {
+  return moneyParts(total, "CNY").text;
+}
+
 /** Default Beijing-time peak hours (official DeepSeek windows) — the fallback
  *  when a rule carries no `peakHours`. */
 const PEAK_HOURS_DEFAULT = [9, 10, 11, 14, 15, 16, 17];

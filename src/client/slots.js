@@ -7,7 +7,7 @@ import { PricingPage } from "./settings.js";
 import { ComparePage } from "./compare.js";
 import { PanelsPage } from "./panels.js";
 import { Btn, primitives } from "./adapter.js";
-import { buildView, cacheHitRateOf, costOf, fmtCost, localDay, sessionModelRows, shiftDay } from "./../view.js";
+import { buildView, cacheHitRateOf, costOf, localDay, moneyCny, sessionModelRows, shiftDay } from "./../view.js";
 		//#region slot components
 		/** settings.section page - owner props `{close}`, locale `t` via inject
 		 *  face. Four levels of internal state (no shell navigation API): the
@@ -152,7 +152,7 @@ import { buildView, cacheHitRateOf, costOf, fmtCost, localDay, sessionModelRows,
 				const priced = costOf(rows, pricing, fx, monthly);
 				return priced.configured ? priced.total : null;
 			};
-			const money = (value) => (value === null ? null : `¥${fmtCost(value)}`);
+			const money = (value) => (value === null ? null : moneyCny(value));
 			const totals = view === null ? null : view.totals;
 			/** The invoking session's own payload record over this window — the
 			 *  card's whole point: this session first, the workspace as the frame. */
@@ -191,7 +191,7 @@ import { buildView, cacheHitRateOf, costOf, fmtCost, localDay, sessionModelRows,
 			const scopeLine = useMemo(() => {
 				if (sessionRecord === null || totals === null) return null;
 				const parts = [`${fmtTokens(tokenTotal(totals))} tok`];
-				const costText = costOn && view.cost.configured === true ? `¥${fmtCost(view.cost.total)}` : null;
+				const costText = costOn && view.cost.configured === true ? moneyCny(view.cost.total) : null;
 				if (costText !== null) parts.push(costText);
 				parts.push(fill(t("cmdSessCount"), { n: totals.sessions ?? 0 }));
 				return `${t("cmdProject")} · ${parts.join(" · ")}`;
@@ -279,7 +279,7 @@ import { buildView, cacheHitRateOf, costOf, fmtCost, localDay, sessionModelRows,
 						] }),
 						jsx("div", { className: "dp_cmdBars", children: modelRows.map((row) => jsxs("div", {
 							className: "dp_cmdBar",
-							title: `${row.name} · ${row.pct.toFixed(1)}%${row.cost === null ? "" : ` · ¥${fmtCost(row.cost)}`}`,
+							title: `${row.name} · ${row.pct.toFixed(1)}%${row.cost === null ? "" : ` · ${moneyCny(row.cost)}`}`,
 							children: [
 								jsx("span", { className: "dp_cmdBarName", children: row.name }),
 								jsx("span", { className: "dp_cmdBarTrack", children: jsx("span", {
@@ -343,7 +343,7 @@ import { buildView, cacheHitRateOf, costOf, fmtCost, localDay, sessionModelRows,
 				title: t("openOverlay"),
 				children: wide
 					? [jsx(primitives.IconDataOutline16, { key: "i", size: 16 }), jsx("span", { key: "l", children: t("nav") }),
-						showBalance && jsx("span", { key: "b", className: "dp_footBalance", children: `¥${fmtCost(balance.data.total ?? 0)}` })]
+						showBalance && jsx("span", { key: "b", className: "dp_footBalance", children: moneyCny(balance.data.total ?? 0) })]
 					: jsx(primitives.IconDataOutline16, { size: 16 }),
 			});
 		}

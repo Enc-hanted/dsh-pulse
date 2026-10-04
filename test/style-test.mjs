@@ -230,6 +230,17 @@ test("host Button is reached only through the adapter's Btn wrapper", () => {
   assert.deepEqual(offenders, [], `primitives.Button used outside adapter.js: ${offenders.join(", ")}`);
 });
 
+test("money notation has one exit — no inline ¥ templates", () => {
+  // moneyParts/moneyCny own the ¥ symbol; a hand-rolled `¥${fmtCost(x)}`
+  // reopens the two-notation bug (¥ and CNY printed side by side in tips).
+  const offenders = [...corpus]
+    .filter(([f, text]) => text.includes("¥${fmtCost"))
+    .map(([f]) => f);
+  const tui = fs.readFileSync(new URL("../src/tui.js", import.meta.url), "utf8");
+  if (tui.includes("¥${fmtCost")) offenders.push("tui.js");
+  assert.deepEqual(offenders, [], `inline ¥ templates outside view.js moneyParts: ${offenders.join(", ")}`);
+});
+
 /** Card-layout sizes come from the content or the container (em / cqw / % /
  *  shared tokens) — never from a pixel tuned to one screen. Typography
  *  (font-size, line-height), hairline borders and element-intrinsic geometry

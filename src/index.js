@@ -228,12 +228,18 @@ function settingsPatchOf(body) {
  *  from the official default rather than from the deployment — a distinction
  *  only the refold predictor needs, because a row that merely restates the
  *  official windows must not be mistaken for a tier-scope change. */
-function effectivePricing(config) {
-  const rules = new Map();
+/** The ONE merge of official pricing with the user's config rows: official
+ *  defaults seed the table, config rows overlay by composite key, and tier
+ *  scope inherits only through rows that actually speak to it. Both faces —
+ *  effectivePricing (the settings face) and peakMapOf (the fold's tier
+ *  engine) — project this map; the spread order and the inheritance rules
+ *  live here and nowhere else. */
+function mergePricingRows(config) {
+  const rows = new Map();
   const currency = config.currency === "USD" ? "USD" : "CNY";
   for (const rule of OFFICIAL_PRICING) {
     const key = modelKey("", rule.model);
-    rules.set(key, {
+    rows.set(key, {
       ...rule, provider: "",
       peakHours: normalizePeakHours(rule.peakHours ?? PEAK_HOURS),
       weekdaysOnly: rule.weekdaysOnly !== false,
@@ -249,12 +255,12 @@ function effectivePricing(config) {
     // prices exactly the id it names (a reseller may serve that id itself).
     const canonical = provider === "" ? (LEGACY_MODEL_ALIASES.get(model) ?? model) : model;
     const key = modelKey(provider, canonical);
-    const prev = rules.get(key) ?? {};
+    const prev = rows.get(key) ?? {};
     // Only a rule that actually SPEAKS to tier scope inherits it from its
     // predecessor row; one that stays silent keeps the official default (and
     // stays tier-neutral however the previous row was scoped).
     const speaksPeak = rule.peakHours !== undefined || typeof rule.weekdaysOnly === "boolean";
-    rules.set(key, {
+    rows.set(key, {
       ...prev, ...rule, provider, model: canonical,
       peakHours: normalizePeakHours(rule.peakHours ?? (prev.inherited === true ? PEAK_HOURS : prev.peakHours) ?? PEAK_HOURS),
       weekdaysOnly: typeof rule.weekdaysOnly === "boolean"
@@ -264,7 +270,11 @@ function effectivePricing(config) {
       currency,
     });
   }
-  return [...rules.values()].map(({ inherited, ...rule }) => ({ ...rule, currency }));
+  return rows;
+}
+
+function effectivePricing(config) {
+  return [...mergePricingRows(config).values()].map(({ inherited, ...rule }) => rule);
 }
 
 /** Canonical model→tier-spec map of the effective pricing, the fold's input.
@@ -277,36 +287,8 @@ function effectivePricing(config) {
  *  alias ids are indexed alongside their current id, so events folded under
  *  either name hit the same spec. */
 function peakMapOf(config) {
+  const rows = mergePricingRows(config);
   const map = new Map();
-  const currency = config.currency === "USD" ? "USD" : "CNY";
-  const rows = new Map();
-  for (const rule of OFFICIAL_PRICING) {
-    rows.set(modelKey("", rule.model), {
-      ...rule, provider: "",
-      peakHours: normalizePeakHours(rule.peakHours ?? PEAK_HOURS),
-      weekdaysOnly: rule.weekdaysOnly !== false,
-      inherited: true,
-      currency,
-    });
-  }
-  for (const rule of Array.isArray(config.pricing) ? config.pricing : []) {
-    const model = typeof rule?.model === "string" && rule.model !== "" ? rule.model : null;
-    if (model === null) continue;
-    const provider = typeof rule?.provider === "string" && rule.provider.length > 0 ? rule.provider : "";
-    const canonical = provider === "" ? (LEGACY_MODEL_ALIASES.get(model) ?? model) : model;
-    const key = modelKey(provider, canonical);
-    const prev = rows.get(key) ?? {};
-    const speaksPeak = rule.peakHours !== undefined || typeof rule.weekdaysOnly === "boolean";
-    rows.set(key, {
-      ...prev, ...rule, provider, model: canonical,
-      peakHours: normalizePeakHours(rule.peakHours ?? (prev.inherited === true ? PEAK_HOURS : prev.peakHours) ?? PEAK_HOURS),
-      weekdaysOnly: typeof rule.weekdaysOnly === "boolean"
-        ? rule.weekdaysOnly
-        : (prev.inherited === true || prev.weekdaysOnly === undefined ? true : prev.weekdaysOnly === true),
-      inherited: !speaksPeak,
-      currency,
-    });
-  }
   /** The official tier scope is the fold's default, so it needs no entry. */
   const isOfficialScope = (rule) => rule.inherited === true
     || (rule.peakHours.join() === PEAK_HOURS.join() && rule.weekdaysOnly === true);

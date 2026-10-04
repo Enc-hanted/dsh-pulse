@@ -469,17 +469,8 @@ export function buildView(sessions, { granularity = "day", from, to, project = "
    *  caller's own rules overlaid — rules that arrive already merged with the
    *  official table are marked `inherited` and skipped here so today's copy
    *  of the official rates never double-books history. */
-  const userRules = (Array.isArray(pricing) ? pricing : []).filter((rule) => rule?.inherited !== true);
-  const dayRuleMaps = new Map();
-  const rulesOn = (day) => {
-    let maps = dayRuleMaps.get(day);
-    if (maps === undefined) {
-      maps = ruleMaps([...officialRulesFor(day), ...userRules]);
-      dayRuleMaps.set(day, maps);
-    }
-    return maps;
-  };
-  const monthlySet = new Set(Array.isArray(monthly) ? monthly : []);
+  const rulesOn = epochRulesOn(pricing);
+  const monthlySet = monthlySetOf(monthly);
   const usdToCny = Number(fx?.usdToCny) > 0 ? Number(fx.usdToCny) : DEFAULT_USD_TO_CNY;
   /** Per-day cost for the cost trend panel: peak / off-peak contributions,
    *  a per-model cost map for the drill, and the day's unpriced tokens. */
@@ -1003,6 +994,37 @@ export function costSeries(sessions, { from, to, project = "", model = "", model
 /** Drift/calibration absolute floor (CNY): below this a gap is settlement
  *  noise — a relative percentage on a near-zero day means nothing. */
 export const RECON_ABS_FLOOR = 0.1;
+
+/** The user's own pricing rules — config rows that are not inherited copies
+ *  of the official table (those would double-book history). */
+function userRulesOf(pricing) {
+  return (Array.isArray(pricing) ? pricing : []).filter((rule) => rule?.inherited !== true);
+}
+
+/** THE epoch pricing context, memoized per call site: each usage day
+ *  resolves once to the user's rules over the official schedule in effect
+ *  that day (see {@link officialRulesFor}). */
+function epochRulesOn(pricing) {
+  const memo = new Map();
+  return (day) => {
+    let maps = memo.get(day);
+    if (maps === undefined) {
+      maps = ruleMaps([...officialRulesFor(day), ...userRulesOf(pricing)]);
+      memo.set(day, maps);
+    }
+    return maps;
+  };
+}
+
+/** Monthly-provider set: flat-subscription providers price at zero marginal. */
+export function monthlySetOf(monthly) {
+  return new Set(Array.isArray(monthly) ? monthly : []);
+}
+
+/** USD→CNY conversion rate, falling back to the built-in default. */
+export function fxRateOf(fx) {
+  return Number(fx?.usdToCny) > 0 ? Number(fx.usdToCny) : DEFAULT_USD_TO_CNY;
+}
 
 /**
  * Per-day reconciliation over the whole corpus (never filtered): the
@@ -2050,8 +2072,7 @@ export function hourlyCostSeries(sessions, day, { pricing = [], fx = {}, monthly
   let unpricedTokens = 0;
   if (typeof day !== "string" || /^\d{4}-\d{2}-\d{2}$/.test(day) === false) return { hours, unpricedTokens };
   const modelSet = modelFilterSet("", models);
-  const userRules = (Array.isArray(pricing) ? pricing : []).filter((rule) => rule?.inherited !== true);
-  const maps = ruleMaps([...officialRulesFor(day), ...userRules]);
+  const maps = epochRulesOn(pricing)(day);
   const monthlySet = new Set(Array.isArray(monthly) ? monthly : []);
   const usdToCny = Number(fx?.usdToCny) > 0 ? Number(fx.usdToCny) : DEFAULT_USD_TO_CNY;
   const dayMs = quotaDayStart(day);

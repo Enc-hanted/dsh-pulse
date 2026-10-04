@@ -3,7 +3,7 @@ import { resolveRates, priceTier, ruleMaps, ruleFor, tierAtMs } from "../view.js
 import { UNPRICED_HINT_TOKENS, catalogNames, fill, fmtTokens, httpError } from "./stores.js";
 import { quotaDur, quotaEntryName, quotaRankEntries, quotaWindowCls, quotaWindowLabel } from "./quota.js";
 import { Btn, Float, HoverCardPrim, Tag, TooltipPrim, floatReady, relativeTimePrim, primitives } from "./adapter.js";
-import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntryOf, breaksSegments, bucketLabel, bucketOf, costOf, fmtClockMs, fmtCost, heatmapCells, heatmapLevel, isOffPeakDay, isOfficialProvider, keyMatchesFilter, modelAccentMap, modelFilterSet, modelKey, moneyCny, niceMax, splitModelKey } from "./../view.js";
+import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, accentEntryOf, breaksSegments, bucketLabel, bucketOf, costOf, fmtClockMs, fmtCost, fxRateOf, heatmapCells, heatmapLevel, isOffPeakDay, isOfficialProvider, keyMatchesFilter, modelAccentMap, modelFilterSet, modelKey, moneyCny, monthlySetOf, niceMax, splitModelKey } from "./../view.js";
 		//#region charts
 		/** Stacked bucket bar chart built from divs - responsive without
 		 *  measurement. The stack dimension switches between token types and
@@ -1267,8 +1267,8 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntry
 			let auxCost = 0;
 			if (auxEvents.length > 0 && costEnabled) {
 				const maps = ruleMaps(pricing);
-				const monthlySet = new Set(Array.isArray(monthly) ? monthly : []);
-				const usd = Number(fx?.usdToCny) > 0 ? Number(fx.usdToCny) : DEFAULT_USD_TO_CNY;
+				const monthlySet = monthlySetOf(monthly);
+				const usd = fxRateOf(fx);
 				for (const e of auxEvents) {
 					const priceAs = e.kind === "title" && typeof e.key === "string" && e.key !== "" ? e.key : modelKey("", AUX_PRICE_AS);
 					// 标题路由不在官方账号上时，官方口径的账单不含它——不计价。

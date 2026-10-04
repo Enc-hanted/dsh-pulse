@@ -127,12 +127,12 @@ import { fmtCost, moneyParts } from "../view.js";
 					] }, "topped"),
 					balanceData.isAvailable !== true && jsx("span", { className: "dp_balanceWarn", children: t("balanceUnavailable") }, "warn"),
 				] }),
-				!balanceResolved && jsx("span", {
-					className: "dp_consNote dp_hBody",
+				balanceError && jsx("span", {
+					className: balanceResolved ? "dp_consNote" : "dp_consNote dp_hBody",
 					title: fill(t("balanceFailed"), { err: balance.error ?? balanceData?.error ?? "?" }),
 					children: fill(t("balanceFailed"), { err: balance.error ?? balanceData?.error ?? "?" }),
 				}),
-				!balanceResolved && jsx(Btn, {
+				balanceError && jsx(Btn, {
 					variant: "ghost", size: "sm", fallbackClass: "dp_miniBtn",
 					onClick: (e) => { e.stopPropagation(); balance.refresh(); },
 					disabled: balance.busy, children: t("retry"),

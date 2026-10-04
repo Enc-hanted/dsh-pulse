@@ -180,13 +180,20 @@ import { modelKey, providerLabelOf, splitModelKey } from "./../view.js";
 			try { window.dispatchEvent(new CustomEvent(BALANCE_EVENT, { detail: data })); } catch { /* publishing is best-effort */ }
 		}
 		export const BALANCE_POLL_MS = 60000;
-		export function useBalance(enabled = true) {
+		/** ONE polling skeleton behind the balance and quota hooks: the
+		 *  60 s cadence gated on document visibility, peer fetches shared
+		 *  through a window event (fresher than local state, one round-trip
+		 *  cheaper), manual refresh bypassing the server's short cache, stale
+		 *  replies discarded by sequence. A failed poll KEEPS the last good
+		 *  data — the error surface explains it; blanking a working display
+		 *  over a transient hiccup was the balance hook's old drift. */
+		function usePolledEndpoint({ path, event, pollMs, enabled = true }) {
 			const [state, setState] = useState({ data: null, busy: false, error: null });
 			const seq = useRef(0);
 			const load = (refresh) => {
 				const mine = ++seq.current;
 				setState((s) => ({ ...s, busy: true }));
-				fetch(`/pulse/balance${refresh === true ? "?refresh=1" : ""}`, {
+				fetch(`${path}${refresh === true ? "?refresh=1" : ""}`, {
 					credentials: "same-origin",
 					headers: { accept: "application/json" },
 				}).then(async (res) => {
@@ -194,35 +201,34 @@ import { modelKey, providerLabelOf, splitModelKey } from "./../view.js";
 					return res.json();
 				}).then((data) => {
 					if (mine === seq.current) setState({ data, busy: false, error: null });
-					publishBalance(data);
+					try { window.dispatchEvent(new CustomEvent(event, { detail: data })); } catch { /* publishing is best-effort */ }
 				}).catch((error) => {
-					if (mine === seq.current) setState({ data: null, busy: false, error: String(error?.message ?? error) });
+					if (mine === seq.current) setState((s) => ({ ...s, busy: false, error: String(error?.message ?? error) }));
 				});
 			};
 			useEffect(() => {
 				if (!enabled) return undefined;
 				load();
-				/** A peer's fetch (dashboard refresh, another surface's poll)
-				 *  lands here verbatim — fresher than anything this consumer
-				 *  holds, and one network round-trip cheaper than refetching.
-				 *  Bumping the sequence discards this consumer's own inflight
-				 *  reply in favor of the shared one. */
 				const onPeer = (e) => {
 					if (!e.detail) return;
 					seq.current += 1;
 					setState({ data: e.detail, busy: false, error: null });
 				};
 				const poll = () => { if (document.visibilityState === "visible") load(); };
-				const timer = setInterval(poll, BALANCE_POLL_MS);
+				const timer = setInterval(poll, pollMs);
 				document.addEventListener("visibilitychange", poll);
-				window.addEventListener(BALANCE_EVENT, onPeer);
+				window.addEventListener(event, onPeer);
 				return () => {
 					clearInterval(timer);
 					document.removeEventListener("visibilitychange", poll);
-					window.removeEventListener(BALANCE_EVENT, onPeer);
+					window.removeEventListener(event, onPeer);
 				};
 			}, [enabled]);
 			return { ...state, refresh: () => load(true) };
+		}
+
+		export function useBalance(enabled = true) {
+			return usePolledEndpoint({ path: "/pulse/balance", event: BALANCE_EVENT, pollMs: BALANCE_POLL_MS, enabled });
 		}
 		//#endregion
 
@@ -238,43 +244,7 @@ import { modelKey, providerLabelOf, splitModelKey } from "./../view.js";
 			try { window.dispatchEvent(new CustomEvent(QUOTA_EVENT, { detail: data })); } catch { /* publishing is best-effort */ }
 		}
 		export function useQuota(enabled = true) {
-			const [state, setState] = useState({ data: null, busy: false, error: null });
-			const seq = useRef(0);
-			const load = (refresh) => {
-				const mine = ++seq.current;
-				setState((s) => ({ ...s, busy: true }));
-				fetch(`/pulse/quota${refresh === true ? "?refresh=1" : ""}`, {
-					credentials: "same-origin",
-					headers: { accept: "application/json" },
-				}).then(async (res) => {
-					httpError(res);
-					return res.json();
-				}).then((data) => {
-					if (mine === seq.current) setState({ data, busy: false, error: null });
-					publishQuota(data);
-				}).catch((error) => {
-					if (mine === seq.current) setState((s) => ({ ...s, busy: false, error: String(error?.message ?? error) }));
-				});
-			};
-			useEffect(() => {
-				if (!enabled) return undefined;
-				load();
-				const onPeer = (e) => {
-					if (!e.detail) return;
-					seq.current += 1;
-					setState({ data: e.detail, busy: false, error: null });
-				};
-				const poll = () => { if (document.visibilityState === "visible") load(); };
-				const timer = setInterval(poll, QUOTA_POLL_MS);
-				document.addEventListener("visibilitychange", poll);
-				window.addEventListener(QUOTA_EVENT, onPeer);
-				return () => {
-					clearInterval(timer);
-					document.removeEventListener("visibilitychange", poll);
-					window.removeEventListener(QUOTA_EVENT, onPeer);
-				};
-			}, [enabled]);
-			return { ...state, refresh: () => load(true) };
+			return usePolledEndpoint({ path: "/pulse/quota", event: QUOTA_EVENT, pollMs: QUOTA_POLL_MS, enabled });
 		}
 		//#endregion
 

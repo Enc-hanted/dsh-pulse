@@ -724,11 +724,14 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, accentEntryOf, breaksSegments, 
 			] });
 		}
 
-		/** Searchable dropdown: a button plus a popup with an embedded filter
-		 *  input. Closes on select, Escape, or an outside click. */
-		export function SearchPicker({ value, options, placeholder, displayName, onChange, t }) {
+		/** ONE open/close skeleton behind both pickers: Escape closes, and in
+		 *  the inline shell an outside pointer closes too (with the anchored
+		 *  float the panel is portaled outside this root and
+		 *  useDismissOnOutsidePointer — which counts the portaled panel as
+		 *  inside — owns outside-pointer closes). The button head and the menu
+		 *  items stay the call site's; only the shell discipline is shared. */
+		function usePickerShell() {
 			const [open, setOpen] = useState(false);
-			const [query, setQuery] = useState("");
 			const rootRef = useRef(null);
 			const btnRef = useRef(null);
 			useEffect(() => {
@@ -737,9 +740,6 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, accentEntryOf, breaksSegments, 
 				document.addEventListener("keydown", onKey);
 				return () => document.removeEventListener("keydown", onKey);
 			}, [open]);
-			// Inline-shell dismissal only: with the anchored float the panel is
-			// portaled outside this root, and useDismissOnOutsidePointer (which
-			// counts the portaled panel as inside) owns outside-pointer closes.
 			useEffect(() => {
 				if (!open || floatReady()) return;
 				const onDoc = (e) => {
@@ -748,6 +748,30 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, accentEntryOf, breaksSegments, 
 				document.addEventListener("mousedown", onDoc);
 				return () => document.removeEventListener("mousedown", onDoc);
 			}, [open]);
+			return { open, setOpen, rootRef, btnRef };
+		}
+
+		/** The shared picker tail: the portaled Float when the host serves it,
+		 *  else the inline menu — exactly one of the two renders the items. */
+		function pickerShell({ open, setOpen, rootRef, btnRef, children }) {
+			return [
+				open && floatReady() && jsx(Float, {
+					open,
+					onClose: () => setOpen(false),
+					rootRef,
+					anchorRef: btnRef,
+					maxHeight: 320,
+					children,
+				}),
+				open && !floatReady() && jsxs("div", { className: "dp_pickerMenu", role: "listbox", children }),
+			];
+		}
+
+		/** Searchable dropdown: a button plus a popup with an embedded filter
+		 *  input. Closes on select, Escape, or an outside click. */
+		export function SearchPicker({ value, options, placeholder, displayName, onChange, t }) {
+			const { open, setOpen, rootRef, btnRef } = usePickerShell();
+			const [query, setQuery] = useState("");
 			const q = query.trim().toLowerCase();
 			const rows = options.filter((option) => q === "" || option.label.toLowerCase().includes(q));
 			const shown = value === "" || value === null || value === undefined
@@ -796,15 +820,7 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, accentEntryOf, breaksSegments, 
 							: jsx(primitives.IconChevronDownOutline14, { size: 14 }) }),
 					],
 				}),
-				open && floatReady() && jsx(Float, {
-					open,
-					onClose: () => setOpen(false),
-					rootRef,
-					anchorRef: btnRef,
-					maxHeight: 320,
-					children: menuItems,
-				}),
-				open && !floatReady() && jsxs("div", { className: "dp_pickerMenu", role: "listbox", children: menuItems }),
+				...pickerShell({ open, setOpen, rootRef, btnRef, children: menuItems }),
 			] });
 		}
 
@@ -816,26 +832,8 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, accentEntryOf, breaksSegments, 
 		 * legend click and a picker click are the same operation.
 		 */
 		export function ModelMultiPicker({ selected, onToggle, onClear, knownModels, names, t }) {
-			const [open, setOpen] = useState(false);
+			const { open, setOpen, rootRef, btnRef } = usePickerShell();
 			const [query, setQuery] = useState("");
-			const rootRef = useRef(null);
-			const btnRef = useRef(null);
-			useEffect(() => {
-				if (!open) return;
-				const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
-				document.addEventListener("keydown", onKey);
-				return () => document.removeEventListener("keydown", onKey);
-			}, [open]);
-			// Inline-shell dismissal only (see SearchPicker): the anchored float
-			// path hands outside-pointer closes to useDismissOnOutsidePointer.
-			useEffect(() => {
-				if (!open || floatReady()) return;
-				const onDoc = (e) => {
-					if (rootRef.current !== null && !rootRef.current.contains(e.target)) setOpen(false);
-				};
-				document.addEventListener("mousedown", onDoc);
-				return () => document.removeEventListener("mousedown", onDoc);
-			}, [open]);
 			const label = (key) => {
 				const { provider, model } = splitModelKey(key);
 				return model === "unknown" ? t("unknownModel") : model === AUX_MODEL_KEY ? t("auxModelName") : names.labelOf(provider, model);
@@ -893,15 +891,7 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, accentEntryOf, breaksSegments, 
 							: jsx(primitives.IconChevronDownOutline14, { size: 14 }) }),
 					],
 				}),
-				open && floatReady() && jsx(Float, {
-					open,
-					onClose: () => setOpen(false),
-					rootRef,
-					anchorRef: btnRef,
-					maxHeight: 320,
-					children: menuItems,
-				}),
-				open && !floatReady() && jsxs("div", { className: "dp_pickerMenu", role: "listbox", children: menuItems }),
+				...pickerShell({ open, setOpen, rootRef, btnRef, children: menuItems }),
 			] });
 		}
 

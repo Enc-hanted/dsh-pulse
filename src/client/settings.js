@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo, useSyncExternalStore, jsx, jsxs } from "./react.js";
 import { fetchSettings, fill, invalidateSettings, loadStats, payloadCache, statsState, subscribeStats } from "./stores.js";
-import { apply } from "./plugin.js";
 import { Input, PillBtn, primitives } from "./adapter.js";
 import { DEFAULT_USD_TO_CNY, accentEntryOf, buildView, daysBetween, familyRouteOf, fmtCost, localDay, modelAccentMap, modelKey, providerLabelOf, shiftDay } from "./../view.js";
 		//#region settings page

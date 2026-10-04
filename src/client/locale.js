@@ -1,7 +1,6 @@
-import { fill, openOverlay } from "./stores.js";
-import { quotaEmpty } from "../view.js";
-import { apply } from "./plugin.js";
-		//#region locale
+// 数据模块不得 import 组合模块：locale 只被引用、不引用 stores/plugin ——
+// 任何「顺手取个 helper」都会把 plugin↔locale 环重新焊上。
+//#region locale
 		export const NS = "dsh-pulse";
 		export const zh = {
 			nav: "用量观测台",
@@ -132,7 +131,7 @@ import { apply } from "./plugin.js";
 			generatedAt: "生成于 {t}",
 			inOf: "入 {n}",
 			outOf: "出 {n}",
-			openOverlay: "打开用量观测台",
+			"openOverlay": "打开用量观测台",
 			costEnabledLabel: "启用费用估算",
 			costEnabledHint: "关闭后，仪表盘的费用估算卡片与 /pulse 摘要里的费用将隐藏。",
 			configure: "定价与费用",
@@ -392,7 +391,7 @@ import { apply } from "./plugin.js";
 			quotaRangeMonth: "本月",
 			quotaLocalTokens: "本地记录 {v}",
 			quotaUpdated: "{t} 更新",
-			quotaEmpty: "没有检测到支持额度查询的订阅",
+			"quotaEmpty": "没有检测到支持额度查询的订阅",
 			quotaOffHint: "关闭后不再对该供应商发起额度查询",
 			quotaSettingsSub: "订阅额度查询",
 			quotaSettingsHint: "检测到的订阅供应商；关闭即不再查询其额度。",
@@ -536,7 +535,7 @@ import { apply } from "./plugin.js";
 			generatedAt: "Generated {t}",
 			inOf: "in {n}",
 			outOf: "out {n}",
-			openOverlay: "Open usage pulse",
+			"openOverlay": "Open usage pulse",
 			setTitle: "Pricing & cost",
 			setSub: "Model rows come from the configured model catalog — just fill in rates; totals display in CNY. Saves apply immediately and persist.",
 			costEnabledLabel: "Enable cost estimates",
@@ -796,7 +795,7 @@ import { apply } from "./plugin.js";
 			quotaRangeMonth: "Month",
 			quotaLocalTokens: "{v} local",
 			quotaUpdated: "updated {t}",
-			quotaEmpty: "No quota-capable subscription detected",
+			"quotaEmpty": "No quota-capable subscription detected",
 			quotaOffHint: "While off, no quota query is issued for this provider",
 			quotaSettingsSub: "Subscription quota queries",
 			quotaSettingsHint: "Detected subscription providers; switching one off stops its quota queries.",

@@ -198,9 +198,14 @@ test("every cross-module reference is imported (no silent globals)", () => {
     return names;
   };
   const localBinding = (text, name) => new RegExp(`\\b(?:const|let|var|function)\\s+${name}\\b`).test(text);
-  // String-literal contents are not code references (locale dict values
-  // like `"Input"` would otherwise masquerade as adapter imports).
-  const stripStrings = (t) => t.replace(/"(?:[^"\\\n]|\\.)*"/g, '""').replace(/'(?:[^'\\\n]|\\.)*'/g, "''");
+  // String-literal and comment contents are not code references (locale dict
+  // values like `"Input"`, or a comment that merely names a helper, would
+  // otherwise masquerade as adapter imports).
+  const stripStrings = (t) => t
+    .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
+    .replace(/'(?:[^'\\\n]|\\.)*'/g, "''")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\/\/[^\n]*/g, " ");
   const offenders = [];
   for (const [f, rawText] of corpus) {
     if (f === "main.js") continue; // pure re-export surface

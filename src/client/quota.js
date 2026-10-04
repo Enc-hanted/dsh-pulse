@@ -1,5 +1,5 @@
 import { useState, useMemo, jsx, jsxs } from "./react.js";
-import { quotaDayStart, quotaEmpty } from "../view.js";
+import { quotaDayStart } from "../view.js";
 import { Seg } from "./adapter.js";
 import { fill, fmtTokens } from "./stores.js";
 import { BudgetCard } from "./dashboard.js";

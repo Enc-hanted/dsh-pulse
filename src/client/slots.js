@@ -6,7 +6,6 @@ import { PulseDashboard } from "./csv.js";
 import { PricingPage } from "./settings.js";
 import { ComparePage } from "./compare.js";
 import { PanelsPage } from "./panels.js";
-import { inject } from "./plugin.js";
 import { Btn, primitives } from "./adapter.js";
 import { buildView, cacheHitRateOf, costOf, fmtCost, localDay, sessionModelRows, shiftDay } from "./../view.js";
 		//#region slot components

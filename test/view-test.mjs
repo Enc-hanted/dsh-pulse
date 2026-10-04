@@ -1,8 +1,10 @@
 import { strict as assert } from "node:assert";
 import {
-  bucketOf, bucketLabel, breaksSegments, buildView, clampSpan, costOf, costSeries, daysBetween,
-  fmtClockMs, fmtCost, heatmapCells, heatmapLevel, hourlySeries, monthKey, niceMax, rangeKeys,
+  accentEntryOf, accentFillOf, accentLabDistance, ACCENT_MIN_DISTANCE, auxCalibration, auxDayUsage, bucketOf, bucketLabel, breaksSegments, buildView, cacheHitRateOf, clampSpan, costOf, costSeries, daysBetween,
+  familyRouteOf, fmtClockMs, fmtCost, heatmapCells, heatmapLevel, hourlyCostSeries, hourlySeries, isOfficialProvider, modelAccentMap, modelFilterSet, keyMatchesFilter, monthKey, niceMax,
+  officialEstimateRulesFor, providerLabelOf, rangeKeys, reconDrift, reconcileSeries, rollupKeyOf, rollupModelFamilies,
   sessionGroups, sessionModelRows, shiftDay, weekStart,
+  quotaBurn, quotaCalibrate, quotaCoverage, quotaFeeShare, quotaMonthlyFee, quotaProjectAttribution, quotaWindowTokens,
 } from "../src/view.js";
 
 const D = "2026-08-14"; // a Friday
@@ -87,6 +89,9 @@ assert.equal(dayView.projects.length, 2);
 assert.equal(dayView.knownProjects.join(","), "alpha,beta");
 // cache-write was a miss: it joins the denominator and cannot inflate the rate
 assert.ok(Math.abs(dayView.totals.cacheHitRate - 900 / (900 + 2140 + 30)) < 1e-12);
+// the exported helper IS that one definition: totals and the summary card read it
+assert.equal(cacheHitRateOf({ input: 2140, cacheRead: 900, cacheWrite: 30 }), dayView.totals.cacheHitRate);
+assert.equal(cacheHitRateOf({ input: 0, cacheRead: 0, cacheWrite: 0 }), null, "no input side → no rate");
 
 // day aggregation: 08-13 carries only alpha's 08-13 bucket
 assert.equal(dayView.buckets[0].input, 100);
@@ -734,6 +739,727 @@ assert.equal(sameIdAmbiguous[0].sessions[0].cost.configured, true, "official wil
     pricing: [{ model: "deepseek-flash", input: 10, cacheRead: 10, output: 10, peak: { input: 10, cacheRead: 10, output: 10 } }],
   });
   assert.equal(overridden.cost.total, 20, "user rules overlay the schedule base (peak 1M in + offpeak 1M out at 10/M)");
+}
+
+// --- GA-gap estimate rules ---------------------------------------------------
+// Usage days before a schedule's `from` (and models later dropped from the
+// current schedule) still price from the earliest published vintage, tagged
+// `estimatedFrom`, so the observatory estimates instead of showing nothing.
+{
+  const preGa = officialEstimateRulesFor("2026-08-01");
+  const byModel = new Map(preGa.map((rule) => [rule.model, rule]));
+  assert.equal(byModel.get("deepseek-v4-pro").estimatedFrom, "2026-08-17", "v4-pro estimates from its first billing schedule");
+  assert.equal(byModel.get("deepseek-v4-flash").estimatedFrom, "2026-08-17", "v4-flash estimates from its first billing schedule");
+  assert.equal(byModel.get("deepseek-flash").estimatedFrom, "2026-09-10", "flash estimates from the only schedule that published it");
+  assert.equal(byModel.get("deepseek-v4-pro").input, 4.5, "estimate rates are the published rates");
+  // Once a day's own schedule prices a model it is no longer an estimate —
+  // and models the latest schedule dropped keep pricing from their last vintage.
+  const dropped = officialEstimateRulesFor("2026-10-01");
+  assert.deepEqual(dropped.map((rule) => rule.model).sort(), ["deepseek-v4-flash", "deepseek-v4-flash-vision-exp"], "models absent from the current schedule keep their last published rates");
+  assert.deepEqual(officialEstimateRulesFor("2026-08-01").filter((rule) => rule.estimatedFrom === undefined), [], "every estimate rule carries its vintage tag");
+}
+
+// --- subscription quota estimation -------------------------------------------
+// Quota windows are rolling server-side percentages; the estimation layer
+// slices local per-provider tokens over the exact span, calibrates the plan
+// total, forecasts the burn and attributes it to projects.
+{
+  const dayMs = (day, hour = 0) => {
+    const [y, m, d] = day.split("-").map(Number);
+    return new Date(y, m - 1, d, hour, 0, 0, 0).getTime();
+  };
+  const ZAI = "zai-coding-cn";
+  const modelOf = (provider, model) => `${provider}\u0000${model}`;
+  const quotaSessions = [
+    {
+      project: "alpha", day: "2026-09-28",
+      byDay: { "2026-09-28": { input: 100, output: 100, cacheRead: 0, cacheWrite: 0 } },
+      modelsByDay: { "2026-09-28": { [modelOf(ZAI, "glm-5.3")]: { input: 100, output: 100, cacheRead: 0, cacheWrite: 0 } } },
+      hoursByDay: { "2026-09-28": {
+        "09": { [modelOf(ZAI, "glm-5.3")]: { input: 60, output: 60, cacheRead: 0, cacheWrite: 0 } },
+        "21": { [modelOf(ZAI, "glm-5.3")]: { input: 40, output: 40, cacheRead: 0, cacheWrite: 0 } },
+      } },
+    },
+    {
+      project: "beta", day: "2026-09-29",
+      byDay: { "2026-09-29": { input: 500, output: 500, cacheRead: 0, cacheWrite: 0 } },
+      modelsByDay: {
+        "2026-09-29": {
+          [modelOf(ZAI, "glm-5.3")]: { input: 300, output: 300, cacheRead: 0, cacheWrite: 0 },
+          "deepseek-v4-flash": { input: 200, output: 200, cacheRead: 0, cacheWrite: 0 },
+        },
+      },
+    },
+  ];
+  // Whole-day slice: only the provider's own model keys count.
+  const wholeDay = quotaWindowTokens(quotaSessions, dayMs("2026-09-29"), dayMs("2026-09-29") + 86400000, ZAI);
+  assert.equal(wholeDay.total, 600, "day slice attributes the provider route's models only");
+  // Hour-resolution partial day: hours 09:00–10:00 only (the 21:00 hour falls outside).
+  const hourSlice = quotaWindowTokens(quotaSessions, dayMs("2026-09-28", 9), dayMs("2026-09-28", 10), ZAI);
+  assert.equal(hourSlice.total, 120, "boundary day prefers the hour maps over the day totals");
+  // A day WITH hour maps is hour-authoritative: hours without a bucket read
+  // zero instead of a proportional guess (the coverage audit relies on it).
+  const gapSlice = quotaWindowTokens(quotaSessions, dayMs("2026-09-28", 12), dayMs("2026-09-28", 18), ZAI);
+  assert.equal(gapSlice.total, 0, "hours without a bucket contribute zero when hour maps exist");
+  // A day WITHOUT hour maps keeps the proportional estimate (06:00–12:00 = ¼).
+  const fracSlice = quotaWindowTokens(quotaSessions, dayMs("2026-09-29", 6), dayMs("2026-09-29", 12), ZAI);
+  assert.equal(fracSlice.total, 150, "days without hour maps estimate by overlap fraction");
+  // Spanning slices never double-count: both days sum to 200 + 600.
+  const both = quotaWindowTokens(quotaSessions, dayMs("2026-09-28", 9), dayMs("2026-09-29") + 86400000, ZAI);
+  assert.equal(both.total, 800, "multi-day slices sum distinct days exactly");
+  // Calibration: 25% of a window that locally saw 800 tokens → 3200 total.
+  const cal = quotaCalibrate(25, 800);
+  assert.equal(cal.totalEst, 3200);
+  assert.equal(cal.remainingEst, 2400);
+  assert.equal(quotaCalibrate(0, 800), null, "no utilization → no calibration");
+  assert.equal(quotaCalibrate(25, 0), null, "no local usage → no calibration");
+  // Burn: two points 2h apart, +6%/h. From the newest sample (52%) the
+  // remaining 48% exhausts in 8 more hours.
+  const t0 = dayMs("2026-09-29", 8);
+  const burn = quotaBurn([{ t: t0, pct: 40 }, { t: t0 + 2 * 3600000, pct: 52 }], t0, null);
+  assert.equal(burn.perHour, 6);
+  assert.equal(burn.exhaustsAt, t0 + 2 * 3600000 + (8 * 3600000), "exhaustion projects from the newest sample");
+  const burnReset = quotaBurn([{ t: t0, pct: 40 }, { t: t0 + 2 * 3600000, pct: 52 }], t0, t0 + 2 * 3600000 + 3600000);
+  assert.equal(burnReset.pctAtReset, 58, "reset projection extends the slope one hour");
+  assert.equal(quotaBurn([{ t: t0, pct: 40 }], t0, null), null, "one point → no forecast");
+  // Monthly fee normalization + per-project fee share.
+  const fee = quotaMonthlyFee({ amount: 1200, currency: "CNY", cycle: "annually" });
+  assert.equal(fee.monthly, 100, "annual fees divide by twelve");
+  assert.equal(quotaMonthlyFee({ amount: 30, currency: "CNY", cycle: "weekly" }), null, "unknown cycles stay unmonetized");
+  const attribution = quotaProjectAttribution(quotaSessions, dayMs("2026-09-28", 9), dayMs("2026-09-29") + 86400000, ZAI);
+  assert.deepEqual(attribution.map((row) => row.project), ["beta", "alpha"], "attribution sorts by burn, descending");
+  assert.equal(attribution[0].total, 600);
+  assert.equal(Math.round(attribution[0].share * 100), 75, "beta holds 600 of 800 tokens");
+  assert.equal(quotaFeeShare({ amount: 1200, currency: "CNY", cycle: "annually" }, 600, 800), 75, "fee share follows the token share");
+  assert.equal(quotaFeeShare(null, 600, 800), null, "no fee → no money split");
+  // Coverage audit: the provider's percentage is authoritative; this decides
+  // only whether the dsh-derived token translation may be shown. Sessions
+  // place tokens at exact hours via hoursByDay so interval slices are exact.
+  const hour = 3600000;
+  const covAt = (t) => {
+    const d = new Date(t);
+    const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const hh = String(d.getHours()).padStart(2, "0");
+    const key = modelOf(ZAI, "glm-5.3");
+    return {
+      project: "alpha", day,
+      byDay: { [day]: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0 } },
+      modelsByDay: { [day]: { [key]: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0 } } },
+      hoursByDay: { [day]: { [hh]: { [key]: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0 } } } },
+    };
+  };
+  const t1 = dayMs("2026-09-29", 8);
+  // ok: two consecutive intervals, both with dsh usage, stable per-point factor.
+  const okCov = quotaCoverage(
+    [{ t: t1, provider: ZAI, window: "5h", pct: 10 }, { t: t1 + hour, provider: ZAI, window: "5h", pct: 11 }, { t: t1 + 2 * hour, provider: ZAI, window: "5h", pct: 12 }],
+    [covAt(t1 + 60000), covAt(t1 + hour + 60000)],
+    ZAI,
+  );
+  assert.equal(okCov.state, "ok", "stable per-point factors read as covered");
+  assert.equal(okCov.intervals, 2);
+  // external: utilization moved 3 points while dsh recorded nothing in between.
+  const extCov = quotaCoverage(
+    [{ t: t1, provider: ZAI, window: "5h", pct: 10 }, { t: t1 + hour, provider: ZAI, window: "5h", pct: 13 }],
+    [covAt(t1 - hour)],
+    ZAI,
+  );
+  assert.equal(extCov.state, "external", "movement without dsh usage exposes off-dsh spend");
+  // thin: a single usable interval cannot judge stability.
+  const thinCov = quotaCoverage(
+    [{ t: t1, provider: ZAI, window: "5h", pct: 10 }, { t: t1 + hour, provider: ZAI, window: "5h", pct: 11 }],
+    [covAt(t1 + 60000)],
+    ZAI,
+  );
+  assert.equal(thinCov.state, "thin", "one interval is not enough to verify coverage");
+  // sub-10-minute gaps never count as evidence.
+  const noisy = quotaCoverage(
+    [{ t: t1, provider: ZAI, window: "5h", pct: 10 }, { t: t1 + 60000, provider: ZAI, window: "5h", pct: 15 }],
+    [],
+    ZAI,
+  );
+  assert.equal(noisy.state, "thin", "poll noise within 10 minutes is skipped");
+  assert.equal(quotaCoverage([], [], ZAI).state, "thin", "empty series stays thin");
+  // Intervals reaching outside the covered span are skipped — their zero
+  // local tokens would be a payload-cut artifact, not off-dsh spend.
+  const bounded = quotaCoverage(
+    [{ t: t1, provider: ZAI, window: "7d", pct: 10 }, { t: t1 + hour, provider: ZAI, window: "7d", pct: 13 }],
+    [],
+    ZAI,
+    { fromMs: t1 + 120000, toMs: t1 + hour * 2 },
+  );
+  assert.equal(bounded.state, "thin", "intervals outside the covered span never flag external");
+  assert.equal(quotaCoverage(
+    [{ t: t1, provider: ZAI, window: "5h", pct: 10 }, { t: t1 + hour, provider: ZAI, window: "5h", pct: 13 }],
+    [covAt(t1 - hour)],
+    ZAI,
+    { fromMs: t1, toMs: t1 + hour * 2 },
+  ).state, "external", "intervals inside the covered span still flag external");
+}
+
+// --- auxiliary-call pseudo model (web-search) -------------------------------
+// 形状折算：单次 {miss 8000, hit 1500, output 1000}。2026-09-29（周二）的
+// 官方峰时价 2 / 0.04 / 8：一次峰时调用 = (8000×2 + 1500×0.04 + 1000×8)
+// ÷ 1e6 = ¥0.02406；闲时 1 / 0.02 / 4 = ¥0.01203。
+{
+  const auxSession = [{
+    id: "aux1", project: null, subagent: false, day: "2026-09-29",
+    byDay: {}, modelsByDay: {}, turnsByDay: {}, toolCallsByDay: {},
+    auxByDay: { "2026-09-29": { search: { peak: 2, offpeak: 1 } } },
+  }];
+  const aux = buildView(auxSession, { granularity: "day", from: "2026-09-27", to: "2026-09-29", pricing: [], fx: {} });
+  const row = aux.models.find((m) => m.key === "web-search");
+  assert.notEqual(row, undefined, "aux calls fold into a web-search pseudo-model row");
+  assert.equal(row.input, 8000 * 3, "shape-derived miss input");
+  assert.equal(row.cacheRead, 1500 * 3, "shape-derived cache-hit input");
+  assert.equal(row.output, 1000 * 3, "shape-derived output");
+  assert.equal(aux.totals.input, 0, "type-view local totals stay measurement-pure (no estimates)");
+  assert.equal(aux.cost.configured, true, "aux cost prices under the official deepseek-flash rules");
+  assert.equal(Math.round(aux.cost.total * 1e6) / 1e6, 0.04812 + 0.01203, "2 peak + 1 offpeak call at the day's official rates");
+  // 模型筛选到其他模型时不掺入；筛到 web-search 本身则保留。
+  const filtered = buildView(auxSession, { granularity: "day", from: "2026-09-27", to: "2026-09-29", model: "deepseek-v4-pro", pricing: [], fx: {} });
+  assert.equal(filtered.models.some((m) => m.key === "web-search"), false, "aux row follows the model filter");
+  const auxOnly = buildView(auxSession, { granularity: "day", from: "2026-09-27", to: "2026-09-29", model: "web-search", pricing: [], fx: {} });
+  assert.equal(auxOnly.models.find((m) => m.key === "web-search") !== undefined, true, "the aux row is itself filterable");
+}
+
+// --- v0.6 multi-select model filter (the legend-linked full version) ----------
+{
+  const RULES = [
+    { model: "ma", input: 1, output: 1 },
+    { model: "mb", input: 2, output: 2 },
+  ];
+  const rec = (model, input) => ({
+    project: "p", day: "2026-09-28",
+    byDay: { "2026-09-28": { input, output: 0, cacheRead: 0, cacheWrite: 0 } },
+    modelsByDay: { "2026-09-28": { [model]: { input, output: 0, cacheRead: 0, cacheWrite: 0 } } },
+    hoursByDay: { "2026-09-28": { "10": { [model]: { input, output: 0, cacheRead: 0, cacheWrite: 0 } } } },
+    turnsByDay: {}, toolCallsByDay: {},
+  });
+  const sessions = [rec("ma", 1_000_000), rec("mb", 2_000_000)];
+  const sum = (v) => v.totals.input + v.totals.output;
+  assert.equal(sum(buildView(sessions, { granularity: "day", from: "2026-09-28", to: "2026-09-28", models: [], pricing: RULES })), 3_000_000, "empty models = no filter");
+  assert.equal(sum(buildView(sessions, { granularity: "day", from: "2026-09-28", to: "2026-09-28", models: ["mb"], pricing: RULES })), 2_000_000, "single-member set filters like the old single filter");
+  assert.equal(sum(buildView(sessions, { granularity: "day", from: "2026-09-28", to: "2026-09-28", models: ["ma", "mb"], pricing: RULES })), 3_000_000, "multi-member set sums both");
+  assert.equal(sum(buildView(sessions, { granularity: "day", from: "2026-09-28", to: "2026-09-28", model: "mb", models: [], pricing: RULES })), 2_000_000, "the legacy single model keeps working");
+  // a bare member covers every provider's row of that model id
+  const composite = [rec("prov\u0000ma", 500_000), rec("other\u0000ma", 250_000), rec("ma", 125_000)];
+  assert.equal(sum(buildView(composite, { granularity: "day", from: "2026-09-28", to: "2026-09-28", models: ["ma"], pricing: RULES })), 875_000, "bare member matches composite rows of the same id");
+  assert.equal(sum(buildView(composite, { granularity: "day", from: "2026-09-28", to: "2026-09-28", models: ["prov\u0000ma"], pricing: RULES })), 500_000, "composite member matches exactly");
+  // filter-set helpers agree with the fold
+  const set = modelFilterSet("", ["ma", "web-search"]);
+  assert.equal(keyMatchesFilter(set, "prov\u0000ma"), true);
+  assert.equal(keyMatchesFilter(set, "prov\u0000mb"), false);
+  assert.equal(keyMatchesFilter(set, "web-search"), true);
+  assert.equal(modelFilterSet("", []), null, "empty = all");
+  // costSeries/hourlySeries/sessionGroups share the semantics
+  const cs = costSeries(sessions, { from: "2026-09-28", to: "2026-09-28", models: ["ma"], pricing: RULES });
+  assert.ok(cs[0].peak + cs[0].offpeak < 1.5, "cost series follows the multi-select (ma only: ¥1)");
+  assert.equal(hourlySeries(sessions, "2026-09-28", { models: ["mb"] }).reduce((s, h) => s + h.input, 0), 2_000_000, "hourly series follows the multi-select");
+  const groups = sessionGroups(sessions, { models: ["mb"], pricing: RULES });
+  assert.equal(groups.length, 1, "session groups drop sessions that never used a selected model");
+}
+
+// --- v0.6 title-llm estimation rides the aux pseudo row ------------------------
+{
+  // A weekday-peak aux day: 1 peak search + 1 peak title with real text
+  // estimates and a route key. deepseek-flash official (2026-09-28, peak):
+  // miss 2/CNY-M, hit 0.04, out 8 → search = 8000×2/M + 1500×0.04/M + 1000×8/M
+  // = 0.016 + 0.00006 + 0.008 = 0.02406. Title under v4-pro flat 4/16:
+  // 1000×4/M + 32×16/M = 0.004 + 0.000512 = 0.004512.
+  const auxRecord = {
+    project: "p", day: "2026-09-28",
+    byDay: {}, modelsByDay: {}, turnsByDay: {}, toolCallsByDay: {},
+    auxByDay: {
+      "2026-09-28": {
+        search: { peak: 1, offpeak: 0 },
+        title: { peak: 1, offpeak: 0 },
+        titleIn: { peak: 1000, offpeak: 0 },
+        titleOut: { peak: 32, offpeak: 0 },
+        titleKey: "deepseek-v4-pro",
+      },
+    },
+  };
+  const RULE = { model: "deepseek-v4-pro", input: 4, cacheRead: 0.8, output: 16 };
+  const view = buildView([auxRecord], { granularity: "day", from: "2026-09-28", to: "2026-09-28", pricing: [RULE] });
+  const approx = (a, b, msg) => assert.ok(Math.abs(a - b) < 1e-9, `${msg}: ${a} != ${b}`);
+  approx(view.cost.total, 0.02406 + 0.004512, "search shapes at flash rates, title prices under its own route");
+  assert.equal(view.buckets[0].auxSearch, 1, "buckets carry the search-call count for the CSV");
+  assert.equal(view.buckets[0].auxTitle, 1);
+  assert.equal(view.knownModels.includes("web-search"), true, "the aux row is selectable in the model picker");
+  assert.equal(view.models.find((m) => m.key === "web-search").input, 9000, "aux tokens = shape input + title text input");
+  // costSeries agrees with the panel fold (the spark/CSV and the drill agree)
+  const cs = costSeries([auxRecord], { from: "2026-09-28", to: "2026-09-28", pricing: [RULE] });
+  approx(cs[0].peak, 0.028572, "cost series folds the same aux estimate");
+  // a third-party title route never leaks into the official flash rate
+  const thirdPartyTitle = buildView([{
+    ...auxRecord,
+    auxByDay: { "2026-09-28": { title: { peak: 1, offpeak: 0 }, titleIn: { peak: 1000, offpeak: 0 }, titleOut: { peak: 32, offpeak: 0 }, titleKey: "zai\u0000glm-5.3" } },
+  }], { granularity: "day", from: "2026-09-28", to: "2026-09-28", pricing: [RULE] });
+  assert.equal(thirdPartyTitle.cost.configured, false, "an unpriced third-party title route stays unpriced (honest)");
+  // …and the caveat NAMES the id that has no rate, so it can be priced
+  assert.deepEqual(thirdPartyTitle.cost.unpricedModels, [
+    { key: "zai\u0000glm-5.3", provider: "zai", model: "glm-5.3", input: 1000, output: 32, total: 1032 },
+  ], "the unpriced breakdown names the billing key, biggest first");
+  // a priced title route contributes nothing to the caveat
+  const pricedTitle = buildView([{
+    ...auxRecord,
+    auxByDay: { "2026-09-28": { title: { peak: 1, offpeak: 0 }, titleIn: { peak: 141, offpeak: 0 }, titleOut: { peak: 32, offpeak: 0 }, titleKey: "deepseek-official\u0000deepseek-v4-pro" } },
+  }], { granularity: "day", from: "2026-09-28", to: "2026-09-28", pricing: [RULE] });
+  assert.deepEqual(pricedTitle.cost.unpricedModels, [], "a title route with a rule is not reported as unpriced");
+  // the real case: a title route whose model id has no rule is named, and only
+  // its own tokens count (the search side still prices at the flash rate)
+  const missingRule = buildView([{
+    id: "titleonly", project: null, subagent: false, day: "2026-09-28",
+    byDay: {}, modelsByDay: {}, turnsByDay: {}, toolCallsByDay: {},
+    auxByDay: { "2026-09-28": { title: { peak: 1, offpeak: 0 }, titleIn: { peak: 197, offpeak: 0 }, titleOut: { peak: 32, offpeak: 0 }, titleKey: "deepseek-official\u0000deepseek-v4.1-pro" } },
+  }], { granularity: "day", from: "2026-09-28", to: "2026-09-28", pricing: [RULE] });
+  assert.deepEqual(missingRule.cost.unpricedModels, [
+    { key: "deepseek-official\u0000deepseek-v4.1-pro", provider: "deepseek-official", model: "deepseek-v4.1-pro", input: 197, output: 32, total: 229 },
+  ], "a title route the price table does not know is named in the caveat");
+  assert.equal(missingRule.cost.unpriced.input, 197, "the totals keep counting the same missing tokens");
+  // the aux shape option scales the search side (the calibrated shape flows in)
+  const scaled = buildView([auxRecord], {
+    granularity: "day", from: "2026-09-28", to: "2026-09-28", pricing: [RULE],
+    auxShape: { miss: 4000, hit: 750, out: 1000 },
+  });
+  assert.equal(scaled.models.find((m) => m.key === "web-search").input, 4000 + 1000, "the shape option scales the search side, title keeps its own tokens");
+  // auxDayUsage sanity: null on empty, counts on both kinds
+  assert.equal(auxDayUsage({}, { miss: 1, hit: 1, out: 1 }), null);
+  assert.equal(auxDayUsage({ search: { peak: 2, offpeak: 3 } }, { miss: 10, hit: 1, out: 1 }).searchCalls, 5);
+}
+
+// --- v0.6 session badge counts + hourly multi-select ---------------------------
+{
+  const record = {
+    id: "aux1", project: "p", subagent: false, day: "2026-09-28",
+    byDay: { "2026-09-28": { input: 10, output: 0, cacheRead: 0, cacheWrite: 0 } },
+    modelsByDay: { "2026-09-28": { m: { input: 10, output: 0, cacheRead: 0, cacheWrite: 0 } } },
+    turnsByDay: {}, toolCallsByDay: {},
+    auxByDay: { "2026-09-28": { search: { peak: 2, offpeak: 1 } } },
+  };
+  const groups = sessionGroups([record], { pricing: [] });
+  assert.equal(groups[0].sessions[0].auxSearch, 3, "the session row carries its own search-call count for the badge");
+  const filteredGroups = sessionGroups([record], { pricing: [], models: ["other-model"] });
+  assert.equal(filteredGroups.length, 0, "model filters still drop the session");
+}
+
+// --- v0.6 reconciliation + aux self-calibration ---------------------------------
+{
+  const RULE = { model: "deepseek-v4-pro", input: 4, cacheRead: 0.8, output: 16 };
+  const day = (key, input, output, aux) => ({
+    project: "p", day: key,
+    byDay: { [key]: { input, output, cacheRead: 0, cacheWrite: 0 } },
+    modelsByDay: { [key]: { deepseek_official_prefix: undefined } },
+    turnsByDay: {}, toolCallsByDay: {},
+    ...(aux ? { auxByDay: { [key]: aux } } : {}),
+  });
+  // build a cleaner record set directly: one official model row per day
+  const mk = (key, tokens, aux) => ({
+    project: "p", day: key,
+    byDay: { [key]: tokens },
+    modelsByDay: { [key]: { "deepseek-official\u0000deepseek-v4-pro": tokens } },
+    tiersByDay: {},
+    turnsByDay: {}, toolCallsByDay: {},
+    ...(aux ? { auxByDay: { [key]: aux } } : {}),
+  });
+  const sessions = [
+    mk("2026-09-25", { input: 1_000_000, output: 500_000, cacheRead: 0, cacheWrite: 0 }), // est 12, clean control
+    mk("2026-09-26", { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, { search: { peak: 5, offpeak: 0 } }), // aux day
+    mk("2026-09-27", { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }), // control
+    mk("2026-09-28", { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }), // today-2: complete
+  ];
+  const official = [
+    { key: "2026-09-25", spend: 12.4 },
+    { key: "2026-09-26", spend: 4.05 },
+    { key: "2026-09-27", spend: 4.0 },
+    { key: "2026-09-28", spend: 4.0 },
+  ];
+  const rows = reconcileSeries(sessions, {
+    from: "2026-09-25", to: "2026-09-28",
+    pricing: [RULE], fx: {}, monthly: [],
+    official,
+  });
+  const byDay = new Map(rows.map((r) => [r.key, r]));
+  const approx = (a, b, msg) => assert.ok(Math.abs(a - b) < 1e-6, `${msg}: ${a} != ${b}`);
+  approx(byDay.get("2026-09-25").est, 12, "official-channel measured cost prices under the rule");
+  approx(byDay.get("2026-09-25").gap, 0.4, "gap = official − est − aux");
+  assert.equal(byDay.get("2026-09-25").auxCalls, 0, "clean control day");
+  assert.ok(byDay.get("2026-09-26").aux > 0, "the aux day estimates its shape cost");
+  assert.equal(byDay.get("2026-09-26").auxCalls, 5);
+  // third-party rows are out of the official account's scope
+  const thirdRows = reconcileSeries([{
+    project: "p", day: "2026-09-27",
+    byDay: { "2026-09-27": { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 } },
+    modelsByDay: { "2026-09-27": { "pi-ai\u0000m": { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 } } },
+    turnsByDay: {}, toolCallsByDay: {},
+  }], { from: "2026-09-27", to: "2026-09-27", pricing: [RULE], official: [{ key: "2026-09-27", spend: 1 }] });
+  approx(thirdRows[0].est, 0, "third-party models never enter the official reconciliation");
+  // unpriced official rows flag the day out of calibration (a model the
+  // official table and the user rules both leave unpriced)
+  const unpricedRows = reconcileSeries([{
+    project: "p", day: "2026-09-27",
+    byDay: { "2026-09-27": { input: 10, output: 0, cacheRead: 0, cacheWrite: 0 } },
+    modelsByDay: { "2026-09-27": { "deepseek-official\u0000unknown-model": { input: 10, output: 0, cacheRead: 0, cacheWrite: 0 } } },
+    tiersByDay: {},
+    turnsByDay: {}, toolCallsByDay: {},
+  }], {
+    from: "2026-09-27", to: "2026-09-27", pricing: [], official: [{ key: "2026-09-27", spend: 1 }],
+  });
+  assert.equal(unpricedRows[0].unpriced, true, "unpriced official tokens flag the day");
+  assert.equal(unpricedRows[0].est, 0);
+  // sparse official days pass the flag through (interval spend, not a
+  // calendar-day measurement — the drift/calibration gates read it)
+  const sparseRows = reconcileSeries([], {
+    from: "2026-09-27", to: "2026-09-27",
+    official: [{ key: "2026-09-27", spend: 0.02, sparse: true }],
+  });
+  assert.equal(sparseRows[0].sparse, true, "sparse passes through");
+  assert.equal(sparseRows[0].official, 0.02);
+  assert.equal(reconcileSeries([], {
+    from: "2026-09-27", to: "2026-09-27",
+    official: [{ key: "2026-09-27", spend: 1 }],
+  })[0].sparse, false, "absent flag means observed");
+
+  // calibration: s = (aux + gap) / aux, median over consistent samples
+  const today = "2026-09-30";
+  const row = (key, officialSpend, auxSpend, auxCalls, unpriced = false) => ({
+    key, est: 0, aux: auxSpend, official: officialSpend,
+    gap: Math.round((officialSpend - auxSpend) * 1e6) / 1e6, auxCalls, unpriced,
+  });
+  const learned = auxCalibration([
+    row("2026-09-20", 0.01, 0, 0), // clean control (gap 0.01, within tolerance)
+    row("2026-09-24", 1.1, 1.0, 5), // s = 1.1
+    row("2026-09-25", 1.1, 1.0, 5),
+    row("2026-09-26", 1.1, 1.0, 5),
+  ], { today });
+  assert.equal(learned.status, "calibrated");
+  approx(learned.medianS, 1.1, "median implied scalar");
+  assert.deepEqual(learned.shape, { miss: 8800, hit: 1650, out: 1000 }, "the input side scales, output stays frozen");
+  // aligned (within 3% of 1) keeps the seed
+  const aligned = auxCalibration([
+    row("2026-09-24", 1.01, 1.0, 5),
+    row("2026-09-25", 1.01, 1.0, 5),
+    row("2026-09-26", 1.01, 1.0, 5),
+  ], { today });
+  assert.equal(aligned.status, "calibrated");
+  assert.deepEqual(aligned.shape, { miss: 8000, hit: 1500, out: 1000 }, "an aligned calibration keeps the seed");
+  // too few samples → insufficient
+  assert.equal(auxCalibration([row("2026-09-24", 1.1, 1.0, 5)], { today }).status, "insufficient");
+  // inconsistent samples → insufficient (max/min > 1.6)
+  assert.equal(auxCalibration([
+    row("2026-09-24", 1.1, 1.0, 5),
+    row("2026-09-25", 2.2, 1.0, 5),
+    row("2026-09-26", 1.1, 1.0, 5),
+  ], { today }).status, "insufficient", "a 2.2× outlier breaks the consistency band");
+  // residual on a control day → divergent (learning suspended, seed kept)
+  const divergent = auxCalibration([
+    row("2026-09-23", 10, 0, 0),
+    row("2026-09-24", 1.1, 1.0, 5),
+    row("2026-09-25", 1.1, 1.0, 5),
+  ], { today });
+  assert.equal(divergent.status, "divergent");
+  assert.deepEqual(divergent.shape, { miss: 8000, hit: 1500, out: 1000 });
+  // manual shape freezes everything
+  const manual = auxCalibration([row("2026-09-24", 1.1, 1.0, 5)], { today, manual: true });
+  assert.equal(manual.status, "manual");
+  // today and unknown-official days never participate
+  const gated = auxCalibration([
+    row("2026-09-29", 1.1, 1.0, 5), // today-1? No: today = 09-30, so 09-29 IS complete
+    row("2026-09-30", 1.1, 1.0, 5), // today → excluded
+  ], { today });
+  assert.equal(gated.checkedDays, 1, "the running day never calibrates");
+  // unpriced days are excluded
+  assert.equal(auxCalibration([row("2026-09-24", 1.1, 1.0, 5, true)], { today }).checkedDays, 0);
+  // sparse days are excluded: a snapshot gap's residual neither controls
+  // (no false divergent) nor samples
+  const sparseControl = auxCalibration([
+    row("2026-09-25", 0.05, 0, 0), // observed control, gap within tolerance
+    { ...row("2026-09-23", 10, 0, 0), key: "2026-09-24", sparse: true }, // gap 10, but sparse
+  ], { today });
+  assert.equal(sparseControl.status, "insufficient", "a sparse control day's residual never sets divergent");
+  assert.equal(sparseControl.checkedDays, 1);
+  assert.equal(sparseControl.divergentDays, 0);
+  const sparseImplied = auxCalibration([
+    { ...row("2026-09-24", 1.1, 1.0, 5), sparse: true },
+    row("2026-09-25", 1.1, 1.0, 5),
+    row("2026-09-26", 1.1, 1.0, 5),
+    row("2026-09-27", 1.1, 1.0, 5),
+  ], { today });
+  assert.equal(sparseImplied.status, "calibrated");
+  assert.equal(sparseImplied.samples, 3, "the sparse implied day is not sampled");
+
+  // drift alarm: |gap| ≥ 15% of official AND ≥ ¥0.10 absolute on any recent
+  // complete day; sparse days never alarm
+  const driftRows = [
+    { key: "2026-09-25", est: 12, aux: 0, official: 12.4, gap: 0.4, auxCalls: 0, unpriced: false }, // 3.2% — fine
+    { key: "2026-09-26", est: 4, aux: 0, official: 10, gap: 6, auxCalls: 5, unpriced: false }, // 60% — drift
+  ];
+  const drift = reconDrift(driftRows, { today: "2026-09-30" });
+  assert.equal(drift.count, 1);
+  assert.equal(drift.pct, 60);
+  assert.equal(drift.day, "2026-09-26");
+  assert.equal(reconDrift([{ key: "2026-09-25", est: 4, aux: 0, official: 4.01, gap: 0.01, auxCalls: 0, unpriced: false }], { today: "2026-09-30" }), null, "a reconciling window raises nothing");
+  // the real-world phantom: ¥0.02 of settlement residual on a zero-usage
+  // day reads as +100% relatively but is noise absolutely
+  const phantom = { key: "2026-09-27", est: 0, aux: 0, official: 0.02, gap: 0.02, auxCalls: 0, unpriced: false };
+  assert.equal(reconDrift([phantom], { today: "2026-09-30" }), null, "sub-dime residuals never alarm");
+  assert.equal(reconDrift([{ ...phantom, sparse: true, official: 5, gap: 5 }], { today: "2026-09-30" }), null, "sparse days never alarm");
+  const real = reconDrift([phantom, { key: "2026-09-28", est: 0, aux: 0, official: 0.5, gap: 0.5, auxCalls: 0, unpriced: false }], { today: "2026-09-30" });
+  assert.equal(real.pct, 100, "a real half-yuan divergence on a used day still alarms");
+  assert.equal(real.day, "2026-09-28");
+}
+
+// --- deterministic model accents ----------------------------------------------
+{
+  const accentOf = (rows, overrides, options) => {
+    const map = modelAccentMap(rows, overrides, options);
+    return { map, entry: (row) => accentEntryOf(map, row.provider ?? "", row.model) };
+  };
+  // the same id wears the same color regardless of list order/composition
+  const alone = accentOf([{ model: "deepseek-chat" }]).entry({ model: "deepseek-chat" }).fill;
+  const crowded = accentOf([
+    { model: "deepseek-reasoner" },
+    { model: "deepseek-chat" },
+    { model: "kimi-k2" },
+    { model: "unknown-vendor-xyz" },
+  ]).entry({ model: "deepseek-chat" }).fill;
+  assert.equal(alone, crowded, "composition cannot recolor an unopposed model");
+  assert.equal(modelAccentMap([{ model: "deepseek-chat" }, { model: "deepseek-chat" }]).size, 1, "duplicate ids collapse");
+  // the deployment's main pair stays visually far apart on the brand gradient
+  const chatFill = accentFillOf("deepseek-chat");
+  const reasonerFill = accentFillOf("deepseek-reasoner");
+  assert.notEqual(chatFill, reasonerFill, "deepseek siblings never share a fill");
+  assert.ok(chatFill.includes("color-mix") && reasonerFill.includes("color-mix"), "vendor ids ride the brand gradient");
+  // k3 ids belong to the moonshot family, not the unknown hash wheel
+  assert.ok(accentFillOf("k3-256k").includes("#4b4b52"), "k3 rides the moonshot gradient");
+  // the aux pseudo-model keeps its reserved gold, striped as an estimate
+  const auxFill = accentFillOf("web-search");
+  assert.ok(auxFill.startsWith("repeating-linear-gradient(") && auxFill.includes("oklch(68.0% 0.130 80.0)"),
+    `aux accent is the reserved gold under a stripe texture (${auxFill})`);
+  // unknown vendors: deterministic, and nudged off every vendor anchor hue
+  const weird = accentFillOf("some-unknown-model");
+  assert.equal(weird, accentFillOf("some-unknown-model"), "unknown ids are stable");
+  assert.ok(weird.startsWith("oklch("), "unknown ids ride the hash wheel");
+  assert.notEqual(accentFillOf("some-unknown-model"), accentFillOf("another-unknown-model"), "unknown siblings usually differ");
+  // user overrides win; malformed ones fall back to the auto color
+  const overridden = accentOf([{ model: "deepseek-chat" }], { "deepseek-chat": "#FF0000" }).entry({ model: "deepseek-chat" });
+  assert.equal(overridden.fill, "#ff0000");
+  assert.equal(overridden.custom, true, "overrides mark custom");
+  const bad = accentOf([{ model: "deepseek-chat" }], { "deepseek-chat": "red" }).entry({ model: "deepseek-chat" });
+  assert.equal(bad.custom, false, "non-hex overrides are ignored");
+
+  // --- set-aware resolution: no two rows of one chart may look alike ----------
+  // Measured before the fix: Claude's two anchors sit 0.035 ΔE apart and
+  // several vendors' hashed slots land only 0.013 apart, so canonical colours
+  // alone demonstrably collided at dot size. The resolver must clear the
+  // target for every set a dashboard can actually show.
+  const minPairDistance = (rows, options) => {
+    const labs = [...modelAccentMap(rows, {}, options).values()].map((e) => (options?.bw === true ? [e.lab[0], 0, 0] : e.lab));
+    let worst = Infinity;
+    for (let i = 0; i < labs.length; i += 1) {
+      for (let j = i + 1; j < labs.length; j += 1) worst = Math.min(worst, accentLabDistance(labs[i], labs[j]));
+    }
+    return worst;
+  };
+  const CLAUDE_SIBLINGS = [
+    { provider: "anthropic", model: "claude-opus-4" },
+    { provider: "anthropic", model: "claude-sonnet-4" },
+  ];
+  const DEEPSEEK_QUARTET = ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-flash", "deepseek-v4.1-pro"]
+    .map((model) => ({ provider: "deepseek-official", model }));
+  const ROUTE_TWINS = [
+    { provider: "deepseek-official", model: "deepseek-flash" },
+    { provider: "deepseek-account", model: "deepseek-flash" },
+  ];
+  const CROSS_VENDOR_TWINS = [
+    { provider: "zai-coding-cn", model: "glm-5.3" },
+    { provider: "google", model: "gemini-3-pro" },
+  ];
+  for (const [label, rows] of [
+    ["claude siblings", CLAUDE_SIBLINGS],
+    ["deepseek quartet", DEEPSEEK_QUARTET],
+    ["same id on two routes", ROUTE_TWINS],
+    ["cross-vendor canonical twins", CROSS_VENDOR_TWINS],
+    ["aux beside a family", [{ provider: "", model: "web-search" }, { provider: "anthropic", model: "claude-opus-4" }]],
+  ]) {
+    assert.ok(minPairDistance(rows) >= ACCENT_MIN_DISTANCE,
+      `${label}: every pair stays at least ${ACCENT_MIN_DISTANCE} ΔE apart (got ${minPairDistance(rows).toFixed(3)})`);
+  }
+  // order cannot matter, and a twin never moves an unopposed model
+  const forward = [...modelAccentMap(CLAUDE_SIBLINGS, {}).entries()];
+  const backward = [...modelAccentMap([...CLAUDE_SIBLINGS].reverse(), {}).entries()];
+  assert.deepEqual(forward, backward, "resolution is order-independent");
+  assert.equal(accentOf([{ provider: "anthropic", model: "claude-opus-4" }]).entry({ provider: "anthropic", model: "claude-opus-4" }).fill,
+    accentFillOf("claude-opus-4"), "an unopposed model keeps its canonical paint");
+  assert.notEqual(
+    accentEntryOf(modelAccentMap(ROUTE_TWINS), "deepseek-official", "deepseek-flash").fill,
+    accentEntryOf(modelAccentMap(ROUTE_TWINS), "deepseek-account", "deepseek-flash").fill,
+    "the same model id on two routes is still two distinguishable swatches",
+  );
+  // B&W theme: a grey ladder instead of one flat grey, hand-picked colours kept
+  const bwRows = [...CLAUDE_SIBLINGS, ...ROUTE_TWINS];
+  const bwMap = modelAccentMap(bwRows, { "claude-opus-4": "#123456" }, { bw: true });
+  assert.ok(minPairDistance(bwRows, { bw: true }) >= ACCENT_MIN_DISTANCE, "the greyscale ladder still separates");
+  const bwGrey = accentEntryOf(bwMap, "anthropic", "claude-sonnet-4").fill;
+  assert.ok(bwGrey.startsWith("oklch(") && bwGrey.includes("0.000"), `auto colours are emitted as greys (${bwGrey})`);
+  assert.equal(accentEntryOf(bwMap, "anthropic", "claude-opus-4").fill, "#123456", "a hand-picked colour survives the B&W theme");
+}
+
+// --- provider route families (one DeepSeek account, two routes) -----------------
+{
+  // The hand-entered API route and the route the desktop client adds on sign-in
+  // bill the same balance: the reconciliation must see both, the label must
+  // collapse, and the per-route identity must survive for a future split.
+  assert.equal(isOfficialProvider(""), true, "the wildcard provider is official");
+  assert.equal(isOfficialProvider("deepseek-official"), true);
+  assert.equal(isOfficialProvider("deepseek-account"), true, "the signed-in account route is the same official channel");
+  assert.equal(isOfficialProvider("kimi-coding"), false, "third-party routes stay third-party");
+  assert.equal(familyRouteOf("deepseek-account").family, "deepseek");
+  assert.equal(familyRouteOf("deepseek").family, "deepseek", "the family id itself also resolves (display rows are keyed by it)");
+  assert.equal(isOfficialProvider("deepseek"), true, "a family-rolled selection still counts as official");
+  assert.equal(familyRouteOf("zai-coding-cn"), null, "a standalone route has no family");
+  assert.equal(providerLabelOf("deepseek-account"), "DeepSeek", "the family label collapses the two routes");
+  assert.equal(providerLabelOf("kimi-coding"), "kimi-coding", "a familyless route falls back to its id");
+  assert.equal(rollupKeyOf("deepseek-official", "deepseek-flash"), rollupKeyOf("deepseek-account", "deepseek-flash"), "both routes fold onto one display key");
+  assert.notEqual(rollupKeyOf("zai-coding-cn", "glm-5.3"), rollupKeyOf("kimi-coding", "glm-5.3"), "familyless routes keep their own key");
+
+  // A filter entry naming the merged row covers both routes; route-scoped and
+  // legacy bare selections keep working.
+  const rolledSet = modelFilterSet("", [rollupKeyOf("deepseek-official", "deepseek-flash")]);
+  assert.equal(keyMatchesFilter(rolledSet, "deepseek-official\u0000deepseek-flash"), true, "the merged entry selects the API route");
+  assert.equal(keyMatchesFilter(rolledSet, "deepseek-account\u0000deepseek-flash"), true, "…and the account route");
+  assert.equal(keyMatchesFilter(rolledSet, "deepseek-official\u0000deepseek-v4-pro"), false, "…and nothing else");
+
+  const tokens = (n) => ({ input: n, output: n, cacheRead: 0, cacheWrite: 0 });
+  const row = (provider, model, n) => ({
+    key: `${provider}\u0000${model}`, provider, model,
+    ...tokens(n), peak: tokens(n), offpeak: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  });
+  const view = {
+    models: [
+      row("deepseek-official", "deepseek-flash", 100),
+      row("deepseek-account", "deepseek-flash", 300),
+      row("deepseek-account", "deepseek-v4-pro", 20),
+      row("kimi-coding", "k3-256k", 7),
+    ],
+    modelBuckets: [new Map([
+      ["deepseek-official\u0000deepseek-flash", tokens(1)],
+      ["deepseek-account\u0000deepseek-flash", tokens(2)],
+      ["kimi-coding\u0000k3-256k", tokens(5)],
+    ])],
+    bucketCosts: [{
+      key: "2026-09-29", peak: 0, offpeak: 0, unpriced: { input: 0, output: 0 },
+      byModel: new Map([
+        ["deepseek-official\u0000deepseek-flash", { model: "deepseek-flash", provider: "deepseek-official", priceAs: "deepseek-flash", cost: 1.25 }],
+        ["deepseek-account\u0000deepseek-flash", { model: "deepseek-flash", provider: "deepseek-account", priceAs: "deepseek-flash", cost: 2.5 }],
+        ["kimi-coding\u0000k3-256k", { model: "k3-256k", provider: "kimi-coding", priceAs: "k3-256k", cost: 0.5 }],
+      ]),
+    }],
+  };
+  const rolled = rollupModelFamilies(view);
+  const merged = rolled.view.models.find((m) => m.key === "deepseek\u0000deepseek-flash");
+  assert.notEqual(merged, undefined, "both routes fold into one DeepSeek row");
+  assert.equal(merged.input, 400, "the merged row sums both routes' tokens");
+  assert.equal(merged.peak.input, 400, "…including the tier split");
+  assert.deepEqual(merged.routes, ["deepseek-official", "deepseek-account"], "the merged row records which routes fed it");
+  assert.equal(merged.provider, "deepseek-official", "a merged row is named by a route that actually served it");
+  assert.equal(rolled.view.models.filter((m) => m.model === "deepseek-flash").length, 1, "one row per model, not one per route");
+  assert.equal(rolled.view.models.find((m) => m.model === "k3-256k").key, "kimi-coding\u0000k3-256k", "familyless rows are untouched");
+  assert.equal(rolled.view.modelBuckets[0].get("deepseek\u0000deepseek-flash").input, 3, "per-day matrices fold too");
+  assert.equal(rolled.view.modelBuckets[0].get("kimi-coding\u0000k3-256k").input, 5, "…without disturbing other providers");
+  assert.equal(rolled.view.bucketCosts[0].byModel.get("deepseek\u0000deepseek-flash").cost, 3.75, "priced cost is summed AFTER each route priced under its own rules");
+  // the split artifact: exactly the merged family, per route
+  assert.deepEqual(rolled.modelRoutes.map((r) => `${r.family}|${r.provider}|${r.model}|${r.input}`).sort(), [
+    "deepseek|deepseek-account|deepseek-flash|300",
+    "deepseek|deepseek-account|deepseek-v4-pro|20",
+    "deepseek|deepseek-official|deepseek-flash|100",
+  ], "the per-route rows ride along for a future split");
+  // a single-route family needs no detail payload
+  const single = rollupModelFamilies({ models: [row("deepseek-official", "deepseek-flash", 5)] });
+  assert.deepEqual(single.modelRoutes, [], "no merge, no split artifact");
+  assert.deepEqual(rollupModelFamilies(null), { view: null, modelRoutes: [] }, "a null view is inert");
+  // the filter picker lists the merged identity, not one entry per route
+  const picker = rollupModelFamilies({
+    models: [],
+    knownModels: ["deepseek-account\u0000deepseek-flash", "deepseek-official\u0000deepseek-flash", "kimi-coding\u0000k3-256k"],
+  });
+  assert.deepEqual(picker.view.knownModels, ["deepseek\u0000deepseek-flash", "kimi-coding\u0000k3-256k"], "knownModels folds too");
+}
+
+// --- cost-trend segment identity (the colour bug) -------------------------------
+{
+  // The aux pseudo-model prices AT a real model's rates but IS its own model:
+  // the per-day cost row must keep both, or the chart colours (and names) the
+  // segment after the pricing target — which is how the aux bar turned grey in
+  // the 7-day cost trend while its legend dot stayed gold.
+  const auxSession = [{
+    id: "aux-identity", project: null, subagent: false, day: "2026-09-29",
+    byDay: {}, modelsByDay: {}, turnsByDay: {}, toolCallsByDay: {},
+    auxByDay: { "2026-09-29": { search: { peak: 1, offpeak: 0 } } },
+  }];
+  const view = buildView(auxSession, { granularity: "day", from: "2026-09-29", to: "2026-09-29", pricing: [], fx: {} });
+  const bucket = view.bucketCosts[0];
+  const entry = bucket.byModel.get("web-search");
+  assert.notEqual(entry, undefined, "the aux cost row is keyed by the aux model");
+  assert.equal(entry.model, "web-search", "the row's identity is the model it belongs to");
+  assert.equal(entry.priceAs, "deepseek-flash", "…while the rate it billed at stays visible");
+  // pricing-style keys still own their identity
+  const priced = buildView([{
+    project: "p", day: "2026-09-29",
+    byDay: { "2026-09-29": { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 } },
+    modelsByDay: { "2026-09-29": { "deepseek-official\u0000deepseek-flash": { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 } } },
+    turnsByDay: {}, toolCallsByDay: {},
+  }], { granularity: "day", from: "2026-09-29", to: "2026-09-29", pricing: [], fx: {} });
+  const real = priced.bucketCosts[0].byModel.get("deepseek-official\u0000deepseek-flash");
+  assert.equal(real.model, "deepseek-flash");
+  assert.equal(real.provider, "deepseek-official");
+  // and the accent lookup the chart performs now finds the aux gold
+  const accents = modelAccentMap(priced.bucketCosts[0].byModel.size > 0 ? [{ provider: "", model: "web-search" }] : [], {});
+  assert.equal(accentEntryOf(accents, "", "web-search").aux, true, "the aux segment resolves to the reserved gold, not the fallback grey");
+}
+
+
+
+// --- hourly cost: single-day, official-console repricing ------------------------
+{
+  const RULE = { model: "deepseek-v4-pro", input: 4, cacheRead: 0.8, output: 16, peak: { input: 8, cacheRead: 1.6, output: 32 } };
+  const tokens = () => ({ input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 });
+  const sessions = [{
+    project: "p",
+    hoursByDay: {
+      "2026-09-29": {
+        9: { "deepseek-official\u0000deepseek-v4-pro": tokens() },
+        12: { "deepseek-official\u0000deepseek-v4-pro": tokens() },
+        23: { "deepseek-official\u0000deepseek-v4-pro": tokens() },
+      },
+      "2026-09-27": {
+        9: { "deepseek-official\u0000deepseek-v4-pro": tokens() },
+      },
+    },
+  }];
+  const hc = hourlyCostSeries(sessions, "2026-09-29", { pricing: [RULE], fx: {} });
+  assert.equal(hc.hours.length, 24, "24 buckets");
+  // 2026-09-29 is a Tuesday: hour 9 rides the official peak window, 12/23 sit off-peak
+  assert.ok(hc.hours[9].peak > 0 && hc.hours[9].offpeak === 0, "the peak hour prices wholly at peak");
+  assert.ok(hc.hours[12].offpeak > 0 && hc.hours[12].peak === 0, "off-peak hours price wholly off-peak");
+  assert.ok(hc.hours[9].cost > hc.hours[12].cost, "peak input is pricier than off-peak input");
+  for (const hour of hc.hours) {
+    assert.ok(Math.abs(hour.cost - hour.peak - hour.offpeak) < 1e-6, "cost = peak + offpeak per hour");
+  }
+  assert.ok(hc.hours.filter((h) => h.cost > 0).length === 3, "only the used hours carry cost");
+  // Sunday: weekday-only rules flatten everything to off-peak
+  const sun = hourlyCostSeries(sessions, "2026-09-27", { pricing: [RULE], fx: {} });
+  assert.ok(sun.hours[9].offpeak > 0 && sun.hours[9].peak === 0, "the weekend flattens to off-peak");
+  assert.ok(sun.hours[9].cost === hc.hours[12].cost, "weekend peak-hour tokens price as off-peak");
+  // unpriced models count for the footnote, never guess a rate
+  const unpriced = hourlyCostSeries([{ project: "p", hoursByDay: { "2026-09-29": { 9: { "deepseek-official\u0000mystery": { input: 10, output: 0, cacheRead: 0, cacheWrite: 0 } } } } }], "2026-09-29", { pricing: [RULE] });
+  assert.equal(unpriced.unpricedTokens, 10);
+  assert.equal(unpriced.hours[9].cost, 0);
+  // model filter excludes non-matching rows; aux never rides hoursByDay
+  const filtered = hourlyCostSeries(sessions, "2026-09-29", { pricing: [RULE], models: ["kimi-k2"] });
+  assert.equal(filtered.hours.filter((h) => h.cost > 0).length, 0, "a non-matching filter empties the day");
+  // invalid day keys fold to zeros, not NaN
+  assert.equal(hourlyCostSeries(sessions, "nope", { pricing: [RULE] }).hours[9].cost, 0);
 }
 
 console.log("view-test: all assertions passed");

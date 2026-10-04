@@ -1,6 +1,6 @@
 {
   "name": "dsh-pulse",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Cross-session usage & cost observatory for dsh — daily token charts, cache hit ring, 90d/1y heatmaps, model and project breakdowns, adaptive color themes and CSV export in the web UI",
   "type": "module",
   "main": "src/index.js",
@@ -21,17 +21,17 @@
     "./aggregate": "./src/aggregate.js",
     "./view": "./src/view.js",
     "./client": "./lib/client.js",
+    "./tui": "./src/tui.js",
     "./package.json": "./package.json"
   },
   "files": [
     "src",
     "lib/client.js",
-    "scripts/sync-mirror.mjs",
+    "scripts/build-client.mjs",
     "test",
     "assets/pulse.svg",
     "cordis.patch.yml",
     "README.md",
-    "README.zh-CN.md",
     "LICENSE"
   ],
   "keywords": [
@@ -45,7 +45,10 @@
   ],
   "license": "MIT",
   "scripts": {
-    "test": "node test/host-test.mjs && node test/aggregate-test.mjs && node test/view-test.mjs && node test/mirror-test.mjs"
+    "build": "node scripts/build-client.mjs",
+    "demo": "node scripts/build-canvas-demo.mjs",
+    "shots": "node scripts/shoot-canvas-matrix.mjs",
+    "test": "npm run build && node test/host-test.mjs && node test/aggregate-test.mjs && node test/view-test.mjs && node test/tui-test.mjs && node test/golden-test.mjs && node test/style-test.mjs && node test/manifest-test.mjs"
   },
   "dependencies": {
     "@deepseek-ai/dsh-credentials": "^0.1.0-rc.6 || ^0.1.7-alpha.0",
@@ -67,5 +70,8 @@
         "@deepseek-ai/dsh-client-store"
       ]
     }
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
   }
 }

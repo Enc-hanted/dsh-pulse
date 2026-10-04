@@ -29,7 +29,7 @@ const daysAgo = (n) => localDay(noon(-n));
  *  plugin serves every generation. `deferSettings` queues
  *  the inject callback instead of running it at apply time, simulating a
  *  settings service that mounts after the plugin. */
-function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCredentials = false, withStorageDomain = false, legacyCache = false, alphaCache = false }) {
+function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCredentials = false, withStorageDomain = false, legacyCache = false, alphaCache = false, withQuota = false }) {
   const routes = [];
   const commands = [];
   const coldReads = [];
@@ -44,11 +44,16 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
   let pendingSettingsCb = null;
   let llmSection = null;
   let balanceState = { snapshots: [] };
+  let quotaState = { snapshots: [] };
   const fetchCalls = [];
   const fakeCredentials = {
     resolve: async (ref) => (String(ref) === "DEEPSEEK_API_KEY"
       ? { value: "sk-test-SECRET-value", source: "file" }
-      : undefined),
+      : String(ref) === "ZAI_CODING_CN_API_KEY"
+        ? { value: "zai-test-SECRET-value", source: "file" }
+        : String(ref) === "KIMI_CODING_API_KEY"
+          ? { value: "kimi-test-SECRET-value", source: "file" }
+          : undefined),
   };
   const fakeDomain = {
     global: {
@@ -57,7 +62,14 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
     },
     close: async () => {},
   };
-  const fakeStorageDomain = { open: async () => fakeDomain };
+  const fakeQuotaDomain = {
+    global: {
+      get: () => quotaState,
+      set: async (value) => { quotaState = value; },
+    },
+    close: async () => {},
+  };
+  const fakeStorageDomain = { open: async (spec) => (spec?.name === "pulse_quota" ? fakeQuotaDomain : fakeDomain) };
 
   const liveValues = {
     pulseUsage: {
@@ -166,14 +178,21 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
   const docFeeds = new Set();
 
   const fakeLlm = {
-    listProviders: () => [{ id: "deepseek-official", name: "DeepSeek" }],
+    listProviders: () => [
+      { id: "deepseek-official", name: "DeepSeek" },
+      ...(withQuota ? [{ id: "zai-coding-cn", name: "Z.AI Coding CN" }, { id: "kimi-coding", name: "Kimi For Coding" }] : []),
+    ],
     listModels: async (provider) => (provider === "deepseek-official"
       ? [
         { provider, id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" },
         { provider, id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
         { provider, id: "third-party-x", name: "Third Party X" },
       ]
-      : []),
+      : provider === "zai-coding-cn"
+        ? [{ provider, id: "glm-5.3", name: "GLM-5.3" }]
+        : provider === "kimi-coding"
+          ? [{ provider, id: "k3-256k", name: "k3-256k" }]
+          : []),
   };
 
   const ctx = {
@@ -314,6 +333,8 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
     listSessionsProbe: () => ctx.sessionQuery.listSessions(),
     balanceState: () => balanceState,
     seedSnapshots: (snapshots) => { balanceState = { snapshots }; },
+    quotaState: () => quotaState,
+    seedQuotaSnapshots: (snapshots) => { quotaState = { snapshots }; },
     fetchCalls,
     formCalls,
     fireDocumentUpdated: (ns) => { for (const callback of [...docFeeds]) callback(ns); },
@@ -337,6 +358,8 @@ const config = { defaultDays: 30, topProjects: 8, pricing: [] };
   const stats = JSON.parse((await env.serve(`/pulse/stats?from=${daysAgo(4)}&to=${today()}`)).body);
   assert.equal(stats.costEnabled, true, "payload defaults to cost enabled");
   assert.deepEqual(stats.fx, { usdToCny: 6.8 }, "payload carries the fx rate");
+  assert.deepEqual(stats.auxShape, { miss: 8000, hit: 1500, out: 1000, manual: false },
+    "payload carries the seed aux shape for the client's self-calibration");
 }
 
 // --- environment with a settings service: full wiring ------------------------
@@ -346,15 +369,16 @@ apply(env.ctx, config);
 // --- the projection unit registered with the official contract --------------
 assert.notEqual(env.unit(), null, "projection unit registered");
 assert.equal(env.unit().key, "pulseUsage");
-assert.equal(env.unit().stateVersion, 7);
+assert.equal(env.unit().stateVersion, 10);
 assert.equal(env.registerCount(), 1, "one registration at load");
 assert.deepEqual(env.unit().view(env.unit().init()), {
-  byDay: {}, modelsByDay: {}, hoursByDay: {}, tiersByDay: {}, turnsByDay: {}, toolCallsByDay: {}, firstDay: null,
+  byDay: {}, modelsByDay: {}, hoursByDay: {}, tiersByDay: {}, turnsByDay: {}, toolCallsByDay: {}, auxByDay: {}, firstDay: null, title: null,
 });
 assert.equal(env.routes.length, 1, "/pulse route registered");
 assert.equal(env.routes[0].kind, "prefix");
 assert.equal(env.routes[0].path, "/pulse");
-assert.equal(env.commands.length, 1, "/pulse command registered");
+assert.equal(env.commands.length, 0,
+  "no host command: the '/' menu row is a client contribution (a host command would add a second, glyph-less row)");
 
 // --- one HTTP request through the real handler --------------------------------
 const { status, body } = await env.serve(`/pulse/stats?from=${daysAgo(4)}&to=${today()}`);
@@ -461,7 +485,7 @@ const peakChange = JSON.parse((await env.serve("/pulse/settings", {
 assert.equal(peakChange.ok, true);
 assert.equal(peakChange.refold, true, "peak-hours save predicts a re-fold");
 assert.equal(env.registerCount(), 2, "peak-hours change re-registers the projection");
-assert.equal(env.unit().stateVersion, 8, "bumped state version invalidates persisted rows");
+assert.equal(env.unit().stateVersion, 11, "bumped state version invalidates persisted rows");
 await new Promise((resolve) => setTimeout(resolve, 20));
 assert.ok(env.coldReads.length > coldReadsBefore, "background warm-up re-folds the cold corpus");
 
@@ -488,7 +512,7 @@ assert.equal(resetSettings.costEnabled, true);
 assert.equal(resetSettings.pricing.length, 2, "official defaults back");
 assert.deepEqual(resetSettings.fx, { usdToCny: 6.8 }, "fx re-inherits the default");
 assert.equal(env.registerCount(), 4, "reset drops the custom hours → re-fold back to official");
-assert.equal(env.unit().stateVersion, 10);
+assert.equal(env.unit().stateVersion, 13);
 
 // a provider-scoped rule coexists with the wildcard official default: same
 // model id, two effective rules, and the provider survives the round trip
@@ -539,6 +563,20 @@ const currencyOnly = JSON.parse((await env.serve("/pulse/settings", {
 assert.equal(currencyOnly.ok, true);
 assert.deepEqual(env.userSection().monthlyProviders, ["pi-ai"], "partial merge keeps the monthly list");
 assert.deepEqual(env.userSection().currency, "USD", "and applies the currency edit");
+
+// the manual aux shape persists through the classic seam: a partial object
+// fills from the seed and stays flagged manual; clearing returns to auto
+const shapeSave = JSON.parse((await env.serve("/pulse/settings", {
+  method: "POST",
+  body: { searchShape: { miss: 9000, junk: 1e9, out: -1 } },
+})).body);
+assert.equal(shapeSave.ok, true);
+assert.deepEqual(env.userSection().searchShape, { miss: 9000 }, "the shape patch is sanitized on the classic path too");
+const shapeStats = JSON.parse((await env.serve(`/pulse/stats?from=${daysAgo(4)}&to=${today()}`)).body);
+assert.deepEqual(shapeStats.auxShape, { miss: 9000, hit: 1500, out: 1000, manual: true }, "missing keys fill from the seed, still manual");
+await env.serve("/pulse/settings", { method: "POST", body: { searchShape: {} } });
+const shapeCleared = JSON.parse((await env.serve(`/pulse/stats?from=${daysAgo(4)}&to=${today()}`)).body);
+assert.deepEqual(shapeCleared.auxShape, { miss: 8000, hit: 1500, out: 1000, manual: false }, "an empty shape returns to the auto seed");
 
 // invalid writes are refused
 const bad = JSON.parse((await env.serve("/pulse/settings", { method: "POST", body: { costEnabled: "yes" } })).body);
@@ -599,18 +637,36 @@ assert.ok(env.coldReads.length <= before + 3, "shared flight reads the cold corp
   assert.equal(boot.coldReads.length + boot.fastReads.length, readsBefore, "non-empty windows stay cached for the TTL");
 }
 
-// --- the command handler returns a text summary ------------------------------
-const result = await env.commands[0].handler({ signal: undefined });
-assert.equal(result.kind, "success");
-assert.ok(result.text.includes("Sessions 3"), `summary mentions sessions: ${result.text}`);
-assert.ok(result.text.includes("Tokens in"), `summary mentions tokens: ${result.text}`);
-assert.ok(result.text.includes("Estimated cost") && result.text.includes("CNY"), `summary shows a CNY estimate: ${result.text}`);
+// --- the update check: click-only, registry-backed ---------------------------
+{
+  const realFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url: String(url), method: init?.method ?? "GET" });
+      return {
+        ok: true, status: 200,
+        json: async () => ({ "dist-tags": { latest: "0.6.0" }, time: { "0.6.0": "2026-10-01T00:00:00.000Z" } }),
+      };
+    };
+    const checked = JSON.parse((await env.serve("/pulse/update-check")).body);
+    assert.equal(checked.ok, true);
+    assert.equal(checked.latest, "0.6.0");
+    assert.equal(checked.publishedAt, "2026-10-01T00:00:00.000Z");
+    assert.equal(calls.length, 1, "exactly one registry call per request");
+    assert.ok(calls[0].url.includes("dsh-pulse"), `registry lookup names the package: ${calls[0].url}`);
 
-// with cost disabled the command omits the cost line entirely
-const disabledCmd = JSON.parse((await env.serve("/pulse/settings", { method: "POST", body: { costEnabled: false, pricing: [] } })).body);
-assert.equal(disabledCmd.ok, true);
-const resultNoCost = await env.commands[0].handler({ signal: undefined });
-assert.ok(!resultNoCost.text.includes("Estimated cost"), "cost line hidden when disabled");
+    globalThis.fetch = async () => ({ ok: false, status: 503, json: async () => ({}) });
+    const failed = JSON.parse((await env.serve("/pulse/update-check")).body);
+    assert.equal(failed.ok, false, "a registry failure is reported as data, not an HTTP error");
+    assert.ok(String(failed.error).includes("503"), `failure carries the reason: ${failed.error}`);
+
+    const wrongMethod = await env.serve("/pulse/update-check", { method: "POST" });
+    assert.equal(wrongMethod.status, 405, "the check is a read-only GET");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
 
 // --- settings service mounting after the plugin: routes stay live ------------
 // Runs last: the module-level stats cache is shared across environments, so
@@ -716,6 +772,138 @@ assert.ok(!resultNoCost.text.includes("Estimated cost"), "cost line hidden when 
   assert.equal("ref" in bare, false);
 }
 
+// --- /pulse/quota: subscription adapters, credentials, snapshots, settings ---
+{
+  const env = makeCtx({ withSettings: "forms", withLlm: true, withCredentials: true, withStorageDomain: true, withQuota: true });
+  const quotaConfig = { ...config, quotaOff: [] };
+  apply(env.ctx, quotaConfig);
+  const realFetch = globalThis.fetch;
+  let fetchCount = 0;
+  try {
+    globalThis.fetch = async (url, init) => {
+      fetchCount += 1;
+      const target = String(url);
+      env.fetchCalls.push({ url: target, init });
+      if (target === "https://open.bigmodel.cn/api/monitor/usage/quota/limit") {
+        assert.equal(init.headers.authorization, "Bearer zai-test-SECRET-value");
+        return { ok: true, status: 200, json: async () => ({
+          code: 200,
+          data: {
+            level: "pro",
+            limits: [
+              { type: "TIME_LIMIT", unit: 5, number: 1, usage: 1000, currentValue: 92, percentage: 9, nextResetTime: 1792305793995 },
+              { type: "TOKENS_LIMIT", unit: 3, number: 5, percentage: 8, nextResetTime: 1790659044728 },
+              { type: "TOKENS_LIMIT", unit: 6, number: 1, percentage: 14, nextResetTime: 1791163910973 },
+            ],
+          },
+          success: true,
+        }) };
+      }
+      if (target === "https://open.bigmodel.cn/api/biz/subscription/list") {
+        return { ok: true, status: 200, json: async () => ({
+          code: 200,
+          data: [{ status: "VALID", productName: "GLM Coding Pro", billingCycle: "annually", actualPrice: 1251.6, nextRenewTime: "2027-06-18" }],
+          success: true,
+        }) };
+      }
+      if (target === "https://api.kimi.com/coding/v1/usages") {
+        assert.equal(init.headers.authorization, "Bearer kimi-test-SECRET-value");
+        return { ok: true, status: 200, json: async () => ({
+          usage: { limit: "100", used: "16", remaining: "84", resetTime: "2026-10-05T02:07:46.635557Z" },
+          limits: [{ window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" }, detail: { limit: "100", remaining: "100", resetTime: "2026-09-29T03:07:46.635557Z" } }],
+          usages: { limit_5h: { used_ratio: 0, reset_time: "2026-09-29T03:07:46Z" }, limit_7d: { used_ratio: 0.159929, reset_time: "2026-10-05T02:07:46Z" } },
+        }) };
+      }
+      throw new Error(`unexpected quota fetch ${target}`);
+    };
+    const body = JSON.parse((await env.serve("/pulse/quota")).body);
+    assert.equal(body.schema, 1);
+    assert.equal(body.providers.length, 2, "only adapter-backed catalog routes are queried");
+    const zai = body.providers.find((p) => p.provider === "zai-coding-cn");
+    assert.equal(zai.ok, true);
+    assert.equal(zai.plan.name, "GLM Coding Pro");
+    assert.equal(zai.plan.level, "pro");
+    assert.deepEqual(zai.plan.renewsAt, "2027-06-18");
+    assert.equal(zai.fee.amount, 1251.6);
+    assert.equal(zai.fee.cycle, "annually");
+    assert.deepEqual(zai.windows.map((w) => w.id), ["5h", "7d"], "windows sort shortest-first");
+    assert.equal(zai.windows[0].usedPct, 8);
+    assert.equal(zai.windows[1].usedPct, 14);
+    assert.equal(zai.windows[0].resetsAt, 1790659044728);
+    assert.equal(zai.extras.length, 1, "TIME_LIMIT lands as a tool-quota extra");
+    assert.equal(zai.extras[0].used, 92);
+    assert.equal(zai.extras[0].total, 1000);
+    const kimi = body.providers.find((p) => p.provider === "kimi-coding");
+    assert.equal(kimi.ok, true);
+    // Percentages only: the ratio endpoints never become "x/100 次" counts.
+    // The 5h ratio window is back as a row (pct-only) beside the weekly one;
+    // the legacy flat usage object keeps 7d precedence over limit_7d.
+    assert.deepEqual(kimi.windows.map((w) => w.id), ["5h", "7d"], "windows sort shortest-first");
+    for (const window of kimi.windows) {
+      assert.equal(window.used, null, "no fabricated counts on ratio windows");
+      assert.equal(window.total, null);
+    }
+    assert.equal(kimi.windows[0].usedPct, 0, "the untouched 5h ratio still renders its track");
+    assert.equal(Math.round(kimi.windows[1].usedPct), 16, "the weekly ratio carries the percentage");
+    assert.ok(kimi.windows[1].resetsAt > 0, "over-long ISO fractional seconds parse");
+    // every successful query records utilization points — percentages only
+    const snaps = env.quotaState().snapshots;
+    assert.equal(snaps.filter((s) => s.provider === "zai-coding-cn").length, 2, "one point per window");
+    assert.equal(snaps.filter((s) => s.provider === "kimi-coding").length, 2, "one point per window");
+    assert.equal(JSON.stringify(snaps).includes("SECRET"), false, "no credential material lands in the store");
+    assert.equal(JSON.stringify(body).includes("SECRET"), false, "no credential material in the reply");
+    // the reply caches; ?refresh=1 bypasses
+    const cached = JSON.parse((await env.serve("/pulse/quota")).body);
+    assert.equal(fetchCount, 3, "cache serves the repeat without refetching (zai quota+subscription, kimi usages)");
+    assert.equal(cached.cached, true);
+    await env.serve("/pulse/quota?refresh=1");
+    assert.equal(fetchCount, 6, "refresh re-fetches every provider");
+    // a failing provider stays uncached and reports a generic reason
+    globalThis.fetch = async () => ({ ok: false, status: 401, json: async () => ({}) });
+    const failed = JSON.parse((await env.serve("/pulse/quota?refresh=1")).body);
+    assert.equal(failed.providers.every((p) => p.ok === false), true);
+    assert.equal(failed.providers[0].error, "HTTP 401");
+    // settings GET/POST carry the quotaOff list
+    const settings = JSON.parse((await env.serve("/pulse/settings")).body);
+    assert.deepEqual(settings.quotaOff, []);
+    const post = await env.serve("/pulse/settings", { method: "POST", body: { quotaOff: ["kimi-coding"], revision: settings.revision } });
+    assert.equal(JSON.parse(post.body).ok, true);
+    const quotaCall = env.formCalls[env.formCalls.length - 1];
+    assert.equal(quotaCall.op, "update");
+    assert.deepEqual(quotaCall.patch, { quotaOff: ["kimi-coding"] }, "the toggle writes the quotaOff list through the entry config");
+    // A real 0.1.7+ host commits the volatile field into the live config the
+    // fiber reads; simulate that commit in place (no re-apply).
+    quotaConfig.quotaOff = ["kimi-coding"];
+    // a disabled route reports itself without fetching
+    globalThis.fetch = async (url, init) => {
+      fetchCount += 1;
+      const target = String(url);
+      env.fetchCalls.push({ url: target, init });
+      if (target === "https://open.bigmodel.cn/api/monitor/usage/quota/limit") return { ok: true, status: 200, json: async () => ({ code: 200, data: { limits: [{ type: "TOKENS_LIMIT", unit: 3, number: 5, percentage: 8, nextResetTime: 1790659044728 }] }, success: true }) };
+      if (target === "https://open.bigmodel.cn/api/biz/subscription/list") return { ok: true, status: 200, json: async () => ({ code: 200, data: [], success: true }) };
+      throw new Error(`unexpected quota fetch ${target}`);
+    };
+    fetchCount = 0;
+    env.fetchCalls.length = 0;
+    const half = JSON.parse((await env.serve("/pulse/quota?refresh=1")).body);
+    assert.equal(fetchCount, 2, "the disabled route is never fetched (zai sub + quota only)");
+    const offRow = half.providers.find((p) => p.provider === "kimi-coding");
+    assert.equal(offRow.disabled, true);
+    assert.equal(offRow.ok, false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+// no llm service / no matching providers → an empty, well-formed answer
+{
+  const env = makeCtx({ withSettings: false });
+  apply(env.ctx, config);
+  const empty = JSON.parse((await env.serve("/pulse/quota")).body);
+  assert.deepEqual(empty.providers, []);
+  assert.deepEqual(empty.series, []);
+  assert.equal(empty.schema, 1);
+}
+
 // --- /pulse/session: event-level timeline (break-analysis source) -------------
 {
   const env = makeCtx({ withSettings: true });
@@ -725,7 +913,7 @@ assert.ok(!resultNoCost.text.includes("Estimated cost"), "cost line hidden when 
   assert.equal(tl.header.origin, "main");
   assert.equal(tl.events.length, 1, "only the usage-bearing assistant/message lands");
   assert.deepEqual(tl.events[0], { t: noon(-1) + 1000, i: 100, o: 50, cr: 900, cw: 10, key: "deepseek-official\u0000deepseek-v4-flash" });
-  assert.deepEqual(tl.turns, [{ start: noon(-1), end: noon(-1) + 5000 }]);
+  assert.deepEqual(tl.turns, [{ start: noon(-1), end: noon(-1) + 5000, preview: null }]);
   // the LRU cache serves the repeat with an identical shape
   const again = JSON.parse((await env.serve("/pulse/session?id=live1")).body);
   assert.deepEqual(again.events, tl.events);
@@ -786,6 +974,22 @@ assert.ok(!resultNoCost.text.includes("Estimated cost"), "cost line hidden when 
   assert.deepEqual(call.patch, { modelColors: { "glm-5.3-flash": "#2f6bff" } }, "the accent patch is sanitized: empty ids and non-color values dropped");
 }
 
+// --- v0.5 aux shape: a manual searchShape freezes the client self-calibration ---
+{
+  const env = makeCtx({ withSettings: "forms" });
+  apply(env.ctx, { ...config, searchShape: { miss: 8442, hit: 1309, out: 997, junk: -5 } });
+  const surface = JSON.parse((await env.serve("/pulse/settings")).body);
+  assert.deepEqual(surface.searchShape, { miss: 8442, hit: 1309, out: 997 }, "GET exposes the manual shape, sanitized");
+  const stats = JSON.parse((await env.serve("/pulse/stats?days=12")).body);
+  assert.deepEqual(stats.auxShape, { miss: 8442, hit: 1309, out: 997, manual: true },
+    "the payload carries the manual shape (calibration frozen client-side)");
+  const saved = await env.serve("/pulse/settings", { method: "POST", body: { searchShape: { miss: 9000, junk: 1e9, out: -1 }, revision: 4 } });
+  assert.equal(saved.status, 200);
+  const call = env.formCalls[env.formCalls.length - 1];
+  assert.deepEqual(call.patch, { searchShape: { miss: 9000 } }, "unknown keys and out-of-bound amounts drop; partial shapes stay partial");
+  assert.equal(Config.dict.searchShape.meta.volatile, true, "searchShape edits apply live (no restart)");
+}
+
 // --- 0.1.7 SettingsForms generation: revision-guarded writes through the seam ---
 {
   const env = makeCtx({ withSettings: "forms" });
@@ -835,4 +1039,4 @@ assert.ok(!resultNoCost.text.includes("Estimated cost"), "cost line hidden when 
   assert.equal(env.userSection().usdToCny, 7.4, "the user layer received the patch");
 }
 
-console.log("host-test: route, windowing, dedupe, settings surface and command all passed");
+console.log("host-test: route, windowing, dedupe, settings surface and update check all passed");

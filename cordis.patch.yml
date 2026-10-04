@@ -20,11 +20,39 @@
 # client normally requests an explicit `from`/`to`. The host half also
 # requires the harness's session-projection seam (registry + persisted
 # cache), which the web profile's base/web-app bundles already compose.
+#
+# Two faces, one package — mutually exclusive by composition shape (the
+# dsh-tui pattern: entry-level `disabled` guards read `ctx.loader.entries()`,
+# which sees every mounted row regardless of activation state):
+# - `pulse` (web half, injects webServer) self-disables inside a dsh-tui
+#   profile — no web app bundle there, and a pending webServer would
+#   deadlock the TUI boot.
+# - `pulse-tui` (terminal face, zero top-level external imports) self-
+#   disables everywhere else — it would find no tuiScenes to register with.
 - insert:
     - id: pulse
       name: 'dsh-pulse'
+      disabled: !!js >-
+        (() => {
+          try {
+            return [...ctx.loader.entries()].some((entry) => typeof entry.options?.name === 'string' && entry.options.name.startsWith('@deepseek-harness-tui/dsh-tui') && !entry.disabled)
+          } catch {
+            return false
+          }
+        })()
       config:
         defaultDays: 30
         topProjects: 8
         usdToCny: 6.8
         pricing: []
+
+    - id: pulse-tui
+      name: 'dsh-pulse/tui'
+      disabled: !!js >-
+        (() => {
+          try {
+            return ![...ctx.loader.entries()].some((entry) => typeof entry.options?.name === 'string' && entry.options.name.startsWith('@deepseek-harness-tui/dsh-tui') && !entry.disabled)
+          } catch {
+            return true
+          }
+        })()

@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import {
-  balanceSpendSeries, BEIJING_OFFSET_MS, buildPayload, clampDays, dayStart, foldEvents, localDay,
+  balanceSpendSeries, BEIJING_OFFSET_MS, buildPayload, clampDays, dayStart, estimateTokens, foldEvents, localDay,
   MAX_WINDOW_DAYS, normalizePeakHours, PEAK_HOURS, projectOf, pulseProjectionDefinition,
   resolveWindow, sliceRecord, tierAt, timelineEvents, validDay,
 } from "../src/aggregate.js";
@@ -154,8 +154,8 @@ const flatHoursFolded = foldEvents([
 assert.equal(flatHoursFolded.tiersByDay[localDay(bj(10))]["m-flat"].input.peak, 0, "empty hour set: 10:00 Beijing is off-peak");
 assert.equal(flatHoursFolded.tiersByDay[localDay(bj(10))]["m-flat"].input.offpeak, 5);
 // the definition carries its stateVersion (host bumps it on peak-hour changes)
-assert.equal(pulseProjectionDefinition().stateVersion, 7);
-assert.equal(pulseProjectionDefinition({ stateVersion: 9 }).stateVersion, 9);
+assert.equal(pulseProjectionDefinition().stateVersion, 10);
+assert.equal(pulseProjectionDefinition({ stateVersion: 11 }).stateVersion, 11);
 // The official peak windows run Monday–Friday: the same 10:00 Beijing hour is
 // off-peak on a weekend. 2026-08-15 is a Saturday, 2026-08-14 a Friday. A bare
 // hour set keeps the historical all-days reading; the projection and the host
@@ -235,9 +235,50 @@ const noTime = foldEvents([
 assert.deepEqual(noTime.byDay, {});
 
 // hopeless input folds to an empty state, never throws
-const emptyState = { byDay: {}, modelsByDay: {}, hoursByDay: {}, tiersByDay: {}, turnsByDay: {}, toolCallsByDay: {}, firstDay: null };
+const emptyState = { byDay: {}, modelsByDay: {}, hoursByDay: {}, tiersByDay: {}, turnsByDay: {}, toolCallsByDay: {}, auxByDay: {}, firstDay: null, title: null };
 assert.deepEqual(foldEvents(null), emptyState);
 assert.deepEqual(foldEvents([{}, null, 42]), emptyState);
+
+// --- auxiliary calls (search / title LLM) ----------------------------------
+// 一次搜索 = 一条 log-only 请求事件；08:59（闲）与 09:01（峰）跨峰谷边界，
+// 标题请求同路径计数，各自按事件时刻归入峰/闲。标题事件带确切 prompt 文本
+// 与输出上限：折算层按文本估输入 token、按钳制后的上限估输出 token。
+// Anchored to the fixed Friday fixture (like `bj` above), NOT "today": the
+// official schedule bills weekends entirely off-peak, so a "today"-anchored
+// 09:01 event flips tier every Saturday/Sunday and the test time-bombs.
+const auxDay = localDay(bj(12));
+const nineAm = bj(9);
+const auxView = foldEvents([
+  { type: "web/deepseek-search-llm-request", time: nineAm - 60_000, data: {} },
+  { type: "web/deepseek-search-llm-request", time: nineAm + 60_000, data: {} },
+  { type: "session/title-llm-request", time: nineAm + 120_000, data: {} },
+]);
+assert.deepEqual(auxView.auxByDay[auxDay], {
+  search: { peak: 1, offpeak: 1 },
+  title: { peak: 1, offpeak: 0 },
+  titleOut: { peak: 32, offpeak: 0 },
+}, "aux requests count per kind and tier; the title output clamps to 32 without a cap");
+assert.deepEqual(auxView.byDay, {}, "aux events never touch the token totals");
+
+// a title event with the exact route/text/cap prices from REAL input and the
+// clamped cap, tiered by the event's own instant and the route's tier spec
+const titleView = foldEvents([
+  {
+    type: "session/title-llm-request", time: nineAm + 60_000,
+    data: {
+      route: { provider: "", model: "deepseek-v4-pro" },
+      system: "请为这段对话写标题。", // 10 CJK chars → 6 tokens (ceil)
+      messages: [{ role: "user", content: [{ type: "text", text: "hello world" }] }], // 11 latin → 3.3 → 4
+      maxTokens: 8,
+    },
+  },
+]);
+assert.deepEqual(titleView.auxByDay[auxDay], {
+  title: { peak: 1, offpeak: 0 },
+  titleIn: { peak: 10, offpeak: 0 },
+  titleOut: { peak: 8, offpeak: 0 },
+  titleKey: "deepseek-v4-pro",
+}, "title text → token estimate (10×0.6 + 11×0.3 → 6+4), cap clamped, route recorded");
 
 // --- sliceRecord ------------------------------------------------------------
 const base = {
@@ -309,7 +350,7 @@ assert.deepEqual(tl.events, [
   { t: noon(-2) + 1000, i: 10, o: 5, cr: 2, cw: 0, key: modelKey("deepseek-official", "deepseek-v4-flash") },
   { t: noon(-2) + 3000, i: 7, o: 0, cr: 0, cw: 0, key: "legacy" },
 ], "zero-usage and untimestamped events dropped");
-assert.deepEqual(tl.turns, [{ start: noon(-2), end: noon(-2) + 5000 }], "closed turn boundary captured");
+assert.deepEqual(tl.turns, [{ start: noon(-2), end: noon(-2) + 5000, preview: null }], "closed turn boundary captured");
 assert.equal(tl.id, "s9");
 assert.equal(tl.header.origin, "subagent");
 assert.equal(tl.header.parentSession, "s0");
@@ -324,6 +365,40 @@ assert.deepEqual(unsorted.events.map((e) => e.t), [1000, 2000]);
 assert.equal(unsorted.header.origin, "main", "absent subagent origin labels main");
 assert.deepEqual(timelineEvents(null).events, []);
 assert.deepEqual(timelineEvents(null).turns, []);
+
+// turn previews: the opening user message rides the turn record (F1 chips/hover)
+const pv = timelineEvents([
+  // a queued opener can land in the log before its turn opens
+  { type: "user/message", time: 100, data: { content: [{ type: "image", url: "x" }, { type: "text", text: "帮我修复\n断点图的 三个bug，越详细越好，谢谢！" }] } },
+  { type: "turn/start", time: 200, data: { turn: 1 } },
+  { type: "user/message", time: 250, data: { content: [{ type: "text", text: "第二条消息不应该出现在预览里" }] } },
+  { type: "assistant/message", time: 300, data: { usage: { inputTokens: 1, outputTokens: 1 }, message: { source: { provider: "p", model: "m" } } } },
+  { type: "turn/end", time: 400, data: { turn: 1 } },
+  // a turn with no user text at all
+  { type: "turn/start", time: 500, data: { turn: 2 } },
+  { type: "assistant/message", time: 550, data: { usage: { inputTokens: 1, outputTokens: 1 }, message: { source: { provider: "p", model: "m" } } } },
+  { type: "turn/end", time: 600, data: { turn: 2 } },
+]);
+assert.equal(pv.turns[0].preview, "帮我修复 断点图的 三个bug，越详细越好，谢谢！",
+  "queued opener captured (standby), non-text blocks skipped, whitespace flattened, first message wins");
+assert.equal(pv.turns[1].preview, null, "turn without user text carries null preview");
+const capped = timelineEvents([
+  { type: "turn/start", time: 10 },
+  { type: "user/message", time: 20, data: { content: "字".repeat(50) } },
+  { type: "turn/end", time: 30 },
+]);
+assert.equal(capped.turns[0].preview, "字".repeat(40), "string content capped to 40 code points");
+
+// F2: the fold carries the session title (last session/title wins, blank ignored)
+const titled = foldEvents([
+  { type: "session/title", time: noon(-1), data: { title: "  旧标题  " } },
+  { type: "step/end", time: noon(-1) + 1, data: { turn: 1, step: 1 } },
+  { type: "session/title", time: noon(-1) + 2, data: { title: "新标题" } },
+  { type: "session/title", time: noon(-1) + 3, data: { title: "   " } },
+]);
+assert.equal(titled.title, "新标题", "last non-blank title wins");
+assert.equal(foldEvents([{ type: "step/end", time: noon(-1), data: { turn: 1, step: 1 } }]).title, null,
+  "sessions without a title event carry null");
 
 // --- buildPayload: schema 4, window echo, pricing/topProjects -----------------
 const pricing = [{ model: "deepseek-v4-flash", input: 1, cacheRead: 0.02, output: 2, currency: "CNY" }];
@@ -371,9 +446,9 @@ assert.deepEqual(buildPayload({ records: [] }).fx, { usdToCny: 6.8 }, "missing f
     { t: noon(-1) + 3600000, total: 80 },
   ];
   assert.deepEqual(balanceSpendSeries(snaps, dayOf(-3), dayOf(-1)), [
-    { key: dayOf(-3), spend: 10 },
-    { key: dayOf(-2), spend: null },
-    { key: dayOf(-1), spend: 15 },
+    { key: dayOf(-3), spend: 10, sparse: false },
+    { key: dayOf(-2), spend: null, sparse: false },
+    { key: dayOf(-1), spend: 15, sparse: false },
   ]);
   // no snapshot before the window start: the first observed day is unknown
   assert.deepEqual(balanceSpendSeries(snaps.slice(1), dayOf(-3), dayOf(-1)).map((d) => d.spend), [null, null, 15]);
@@ -388,9 +463,54 @@ assert.deepEqual(buildPayload({ records: [] }).fx, { usdToCny: 6.8 }, "missing f
     { t: noon(-1) - 3600000, total: 40 },
     { t: noon(-1) + 3600000, total: 36 },
   ];
-  assert.deepEqual(balanceSpendSeries(intra, dayOf(-1), dayOf(-1)), [{ key: dayOf(-1), spend: 14 }]);
+  assert.deepEqual(balanceSpendSeries(intra, dayOf(-1), dayOf(-1)), [{ key: dayOf(-1), spend: 14, sparse: false }]);
   assert.deepEqual(balanceSpendSeries([], dayOf(-3), dayOf(-1)), []);
   assert.deepEqual(balanceSpendSeries(snaps, "banana", dayOf(-1)), [], "invalid window is empty");
+
+  // sparse days: real-world 2026-09 shape — the dashboard stays closed for
+  // days, a settlement residual lands on whichever day holds the newer
+  // reading, and the attribution window for every day in between is an
+  // interval, not a calendar-day measurement
+  const gapped = [
+    { t: noon(-4) - 3 * 3600000, total: 23.38 },  // 09:00, last reading for two days
+    { t: noon(-2) + 11 * 3600000, total: 23.37 }, // 23:00, observed day
+    { t: noon(-1) + 11 * 3600000, total: 22.36 }, // 23:00, observed day
+  ];
+  assert.deepEqual(balanceSpendSeries(gapped, dayOf(-3), dayOf(-1)), [
+    { key: dayOf(-3), spend: 0, sparse: true },   // enter reading is 2 days stale
+    { key: dayOf(-2), spend: 0.01, sparse: true }, // the residual; attributed across a gap
+    { key: dayOf(-1), spend: 1.01, sparse: false }, // fresh enter, observed through the evening
+  ]);
+  // a day observed only through its morning is sparse too (its tail is
+  // unobserved and rolls into the next reading)
+  const morningOnly = [
+    { t: noon(-2) + 11 * 3600000, total: 30 },
+    { t: noon(-1) - 3 * 3600000, total: 29.5 },
+    { t: noon(0) + 11 * 3600000, total: 28.5 },
+  ];
+  assert.deepEqual(balanceSpendSeries(morningOnly, dayOf(-1), dayOf(-1)), [
+    { key: dayOf(-1), spend: 0.5, sparse: true },
+  ]);
 }
+
+// --- text-derived token estimation (title LLM) -------------------------------
+assert.equal(estimateTokens(""), 0);
+assert.equal(estimateTokens("你好世界。"), 3, "5 CJK/fullwidth chars × 0.6 = 3.0");
+assert.equal(estimateTokens("hello world!"), 4, "12 latin chars × 0.3 → ceil(3.6)");
+assert.equal(estimateTokens("你好 hello"), 3, "2×0.6 + 6×0.3 = 3.0");
+
+// the session timeline exposes the aux request events for the detail bill
+const auxTimeline = timelineEvents([
+  { type: "assistant/message", time: 1000, data: { message: { source: { model: "m" } }, usage: { inputTokens: 5 } } },
+  { type: "web/deepseek-search-llm-request", time: 1500, data: {} },
+  { type: "session/title-llm-request", time: 500, data: { route: { provider: "", model: "deepseek-v4-pro" }, system: "标题", messages: [{ role: "user", content: [{ type: "text", text: "abc" }] }], maxTokens: 128 } },
+  { type: "web/deepseek-search-llm-request", time: 900, data: {} },
+], { id: "t1" });
+assert.deepEqual(auxTimeline.aux, [
+  { t: 500, kind: "title", key: "deepseek-v4-pro", in: 3, out: 32 },
+  { t: 900, kind: "search" },
+  { t: 1500, kind: "search" },
+], "aux events ride the timeline sorted by time, title with its estimates");
+assert.equal(auxTimeline.events.length, 1);
 
 console.log("aggregate-test: all assertions passed");

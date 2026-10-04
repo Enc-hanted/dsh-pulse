@@ -21,7 +21,7 @@
 
 import { z } from "zod";
 
-import { DEFAULT_USD_TO_CNY, modelKey } from "./view.js";
+import { AUX_PRICE_AS, DEFAULT_USD_TO_CNY, modelKey } from "./view.js";
 
 /** Local-timezone `YYYY-MM-DD` for a Unix epoch millisecond stamp. */
 export function localDay(timeMs) {
@@ -58,6 +58,14 @@ function num(value) {
 
 /** Upper bound for a served window (keeps payloads bounded). — ~3 years */
 export const MAX_WINDOW_DAYS = 1095;
+
+/** How far a day's boundary readings may sit from the day itself before
+ *  its spend degrades into an interval estimate (`sparse` rows): the enter
+ *  reading older than noon of the previous day, or the leave reading from
+ *  before noon of the day, means the attribution window swallows the
+ *  neighbors' usage (or the day's own tail) — drift and calibration skip
+ *  such days, displays may mark them. */
+export const SNAPSHOT_SPARSE_STALE_MS = 12 * 3600000;
 
 /** Days of per-hour detail the projection keeps (the hourly chart only needs
  *  the current day; a small retention window keeps the persisted checkpoint
@@ -145,6 +153,13 @@ const tierTokensSchema = z.object({
   cacheWrite: tierSplit,
 }).strict();
 
+/** Peak/off-peak pair of an auxiliary day entry (call counts or estimated
+ *  token amounts — both integers by construction). */
+const auxTierCountsSchema = z.object({
+  peak: z.number().int().nonnegative(),
+  offpeak: z.number().int().nonnegative(),
+}).strict();
+
 /** Wire shape of the `pulseUsage` projection unit (validates `view` output). */
 export const pulseUsageSchema = z.object({
   byDay: z.record(z.string(), z.object({
@@ -168,6 +183,25 @@ export const pulseUsageSchema = z.object({
   tiersByDay: z.record(z.string(), z.record(z.string(), tierTokensSchema)),
   turnsByDay: z.record(z.string(), z.number().int().nonnegative()),
   toolCallsByDay: z.record(z.string(), z.number().int().nonnegative()),
+  /** Auxiliary-call counters (official `web_search` / title LLM): per day.
+   *  Locally only the request event exists — no usage event — so search
+   *  stays a count (the view's shape turns counts into estimated tokens),
+   *  while title requests carry their exact prompt text and output cap and
+   *  are therefore folded as TEXT-DERIVED token estimates (`titleIn` /
+   *  `titleOut`, tier-split by the event's own instant) plus the route the
+   *  day's title calls billed under (last route wins after a config change
+   *  mid-day). */
+  auxByDay: z.record(z.string(), z.object({
+    search: auxTierCountsSchema.optional(),
+    title: auxTierCountsSchema.optional(),
+    titleIn: auxTierCountsSchema.optional(),
+    titleOut: auxTierCountsSchema.optional(),
+    titleKey: z.string().optional(),
+  }).strict()),
+  /** The session's display title (last `session/title` event wins): rides the
+   *  fold so the sessions list can name rows without a per-session service
+   *  round-trip. Null until the log carries one. */
+  title: z.string().nullable().optional(),
   firstDay: z.string().nullable(),
 }).strict();
 
@@ -201,6 +235,67 @@ export const BEIJING_OFFSET_MS = 8 * 3600000;
  * midnight — are the same shape: a boolean per hour.
  */
 export const PEAK_HOURS = [9, 10, 11, 14, 15, 16, 17];
+
+/** The composite model key auxiliary calls bill under — derived from the ONE
+ *  constant the pricing side uses (`AUX_PRICE_AS`), so the tier classification
+ *  and the pricing lookup can never disagree about which model an aux request
+ *  rides. Title requests whose event carries a concrete route classify under
+ *  that route's own tier spec instead. */
+const AUX_TIER_KEY = modelKey("", AUX_PRICE_AS);
+
+/** Title outputs are a visible title plus nothing else (the DeepSeek adapter
+ *  disables thinking for the session-title purpose), so the billed output is
+ *  the request's own cap — clamped hard, since a misconfigured large cap
+ *  must never inflate the estimate. */
+const TITLE_OUT_EST = 32;
+
+/**
+ * Estimated token count of one text: CJK characters price at ≈0.6 tokens
+ * each, everything else at ≈0.3 (the approximation DeepSeek's own docs use
+ * for mixed zh/en input). Input length is capped so a pathological event can
+ * neither stall the fold nor grow the state.
+ */
+export function estimateTokens(text) {
+  if (typeof text !== "string" || text === "") return 0;
+  let chars = 0;
+  let cjk = 0;
+  const capped = text.length > 1e6 ? text.slice(0, 1e6) : text;
+  for (const ch of capped) {
+    chars += 1;
+    const cp = ch.codePointAt(0);
+    if ((cp >= 0x2e80 && cp <= 0x9fff) || (cp >= 0xff00 && cp <= 0xffef)) cjk += 1;
+  }
+  return Math.ceil(cjk * 0.6 + (chars - cjk) * 0.3);
+}
+
+/** Estimated output tokens of one title request: the event's own cap, taken
+ *  down to the title-sized clamp (missing caps read at the clamp). */
+function titleOutEstimate(maxTokens) {
+  const cap = typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens > 0
+    ? maxTokens
+    : TITLE_OUT_EST;
+  return Math.max(1, Math.round(Math.min(cap, TITLE_OUT_EST)));
+}
+
+/** Sum the estimated input tokens of one title request: the system prompt
+ *  plus every text block of every message (the exact model-visible input). */
+function titleInputEstimate(data) {
+  let tokens = estimateTokens(data?.system);
+  const messages = Array.isArray(data?.messages) ? data.messages : [];
+  for (const message of messages) {
+    if (message === null || typeof message !== "object") continue;
+    if (typeof message.content === "string") {
+      tokens += estimateTokens(message.content);
+      continue;
+    }
+    for (const block of Array.isArray(message.content) ? message.content : []) {
+      if (block !== null && typeof block === "object" && typeof block.text === "string") {
+        tokens += estimateTokens(block.text);
+      }
+    }
+  }
+  return tokens;
+}
 
 /** Normalize a configured hour list into a deduplicated, valid one. A
  *  non-array (undefined settings) means "not configured" and falls back to
@@ -276,7 +371,7 @@ export function tierAt(timeMs, peakHours = PEAK_HOURS) {
  *   - peak-hour spec per composite model key (`provider\u0000model`, bare id
  *   without a provider); omitted models fold at the official windows
  *   (weekdays only). Defaults to the official windows for everything.
- * @param {number} [options.stateVersion=7] - fold-semantics version; the
+ * @param {number} [options.stateVersion=10] - fold-semantics version; the
  *   host bumps it when peak-hour settings change so persisted rows replay.
  * @returns {object} the projection definition (`key`, `stateSchema`, `wire`,
  *   `init`, `apply`, `stateVersion`, plus the legacy `schema`/`view` pair).
@@ -290,7 +385,7 @@ export function tierAt(timeMs, peakHours = PEAK_HOURS) {
  * (a unit without `wire` is treated as host-internal and never surfaces in
  * snapshot values — the failure mode this dual contract exists to prevent).
  */
-export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 7 } = {}) {
+export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 10 } = {}) {
   const dayOf = (event) => (num(event.time) > 0 ? localDay(event.time) : null);
   /** Per-model tier specs, materialized once (the map lives and dies with one
    *  registration, so a re-register on settings change starts it fresh). An
@@ -341,7 +436,9 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 7 } = {
     tiersByDay: state.tiersByDay,
     turnsByDay: state.turnsByDay,
     toolCallsByDay: state.toolCallsByDay,
+    auxByDay: state.auxByDay,
     firstDay: state.firstDay,
+    title: state.title ?? null,
   });
   return {
     key: "pulseUsage",
@@ -352,7 +449,7 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 7 } = {
     stateSchema: pulseUsageStateSchema,
     init() {
       return {
-        byDay: {}, modelsByDay: {}, hoursByDay: {}, tiersByDay: {}, turnsByDay: {}, toolCallsByDay: {}, firstDay: null, lastTurn: null,
+        byDay: {}, modelsByDay: {}, hoursByDay: {}, tiersByDay: {}, turnsByDay: {}, toolCallsByDay: {}, auxByDay: {}, firstDay: null, lastTurn: null, title: null,
       };
     },
     apply(state, event) {
@@ -423,6 +520,60 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 7 } = {
         withFirstDay(next, day);
         return next;
       }
+      if (type === "session/title") {
+        // Last title wins: the log carries one per generation (llm or
+        // fallback), and the newest names the session best.
+        const title = typeof data.title === "string" && data.title.trim() !== "" ? data.title.trim() : null;
+        if (title === null || title === state.title) return state;
+        return { ...state, title };
+      }
+      if (type === "web/deepseek-search-llm-request" || type === "session/title-llm-request") {
+        // Auxiliary LLM calls (official web_search, title generation): the
+        // log-only request event is the whole story locally. Search keeps a
+        // count (the billing shape is the view's concern, self-calibrated
+        // there); title carries its exact text and output cap, so the fold
+        // records TEXT-DERIVED token estimates split by the pricing tier of
+        // the event's own instant — the route's tier spec when the event
+        // names one, the aux billing model's otherwise.
+        const day = dayOf(event);
+        if (day === null) return state;
+        const next = { ...state };
+        next.auxByDay = { ...state.auxByDay };
+        const dayAux = { ...(state.auxByDay[day] ?? {}) };
+        if (type === "web/deepseek-search-llm-request") {
+          const tierSpec = hoursOf(AUX_TIER_KEY);
+          const tier = tierAt(event.time, { hours: tierSpec.hours, weekdaysOnly: tierSpec.weekdaysOnly });
+          const kindAux = { ...(dayAux.search ?? { peak: 0, offpeak: 0 }) };
+          kindAux[tier] = (kindAux[tier] ?? 0) + 1;
+          dayAux.search = kindAux;
+        } else {
+          const route = data?.route;
+          const titleKey = typeof route?.model === "string" && route.model !== ""
+            ? modelKey(typeof route?.provider === "string" ? route.provider : "", route.model)
+            : null;
+          const tierSpec = hoursOf(titleKey ?? AUX_TIER_KEY);
+          const tier = tierAt(event.time, { hours: tierSpec.hours, weekdaysOnly: tierSpec.weekdaysOnly });
+          const counts = { ...(dayAux.title ?? { peak: 0, offpeak: 0 }) };
+          counts[tier] = (counts[tier] ?? 0) + 1;
+          dayAux.title = counts;
+          const inTok = titleInputEstimate(data);
+          if (inTok > 0) {
+            const titleIn = { ...(dayAux.titleIn ?? { peak: 0, offpeak: 0 }) };
+            titleIn[tier] = (titleIn[tier] ?? 0) + inTok;
+            dayAux.titleIn = titleIn;
+          }
+          const outTok = titleOutEstimate(data?.maxTokens);
+          const titleOut = { ...(dayAux.titleOut ?? { peak: 0, offpeak: 0 }) };
+          titleOut[tier] = (titleOut[tier] ?? 0) + outTok;
+          dayAux.titleOut = titleOut;
+          // Last route wins: a mid-day config change prices the day under the
+          // route its newest title call used (the estimate is labeled 估算).
+          if (titleKey !== null) dayAux.titleKey = titleKey;
+        }
+        next.auxByDay[day] = dayAux;
+        withFirstDay(next, day);
+        return next;
+      }
       return state;
     },
     view: viewOf,
@@ -450,11 +601,22 @@ export function foldEvents(events, options = {}) {
  * — unknown, never a silently clamped zero. Days past the newest snapshot
  * are `null` too (the day is still running or unqueried).
  *
+ * Each row also carries `sparse`: true when the day cannot pin a balance
+ * move to a calendar day — its enter reading is stale (more than
+ * {@link SNAPSHOT_SPARSE_STALE_MS} before the day began, so the window
+ * swallows earlier days' usage) or its leave reading is early (more than
+ * that before the day's noon, so the day's own tail is unobserved and
+ * lands on the next reading). The official balance also settles
+ * asynchronously, which widens the same uncertainty. A sparse row's spend
+ * is an interval estimate; drift/calibration must skip it, displays may
+ * mark it.
+ *
  * @param {Array<{t: number, total: number}>} snapshots - query-time balance
  *   snapshots (epoch ms, CNY total); unsorted input is tolerated.
  * @param {string} fromDay - inclusive `YYYY-MM-DD` window start.
  * @param {string} toDay - inclusive `YYYY-MM-DD` window end.
- * @returns {Array<{key: string, spend: number|null}>} one entry per day.
+ * @returns {Array<{key: string, spend: number|null, sparse: boolean}>} one
+ *   entry per day.
  */
 export function balanceSpendSeries(snapshots, fromDay, toDay) {
   if (validDay(fromDay) === false || validDay(toDay) === false || fromDay > toDay) return [];
@@ -468,10 +630,11 @@ export function balanceSpendSeries(snapshots, fromDay, toDay) {
   }
   let cursor = 0;
   let lastSeen = null;
-  /** Balance at the end of `day`: the newest snapshot on or before it. */
+  /** Snapshot at the end of `day`: the newest one on or before it (carried
+   *  forward across unobserved days). */
   const endOf = (day) => {
     while (cursor < snaps.length && localDay(snaps[cursor].t) <= day) {
-      lastSeen = snaps[cursor].total;
+      lastSeen = snaps[cursor];
       cursor += 1;
     }
     return lastSeen;
@@ -482,10 +645,13 @@ export function balanceSpendSeries(snapshots, fromDay, toDay) {
     const cur = endOf(day);
     // Past the newest snapshot the day is unobserved (still running or not
     // queried) — null, never a lying zero.
-    const delta = prev === null || cur === null || day > lastDay ? null : prev - cur;
+    const delta = prev === null || cur === null || day > lastDay ? null : prev.total - cur.total;
     const spend = delta === null || delta < -1e-9 ? null : Math.round(delta * 100) / 100;
+    const sparse = day <= lastDay && prev !== null && cur !== null
+      && (dayStart(day) - prev.t > SNAPSHOT_SPARSE_STALE_MS
+        || cur.t - dayStart(day) < SNAPSHOT_SPARSE_STALE_MS);
     prev = cur;
-    return { key: day, spend };
+    return { key: day, spend, sparse };
   });
 }
 
@@ -516,9 +682,13 @@ export function sliceRecord(record, fromDay, toDay) {
   const tiersByDay = slice(record.tiersByDay);
   const turnsByDay = slice(record.turnsByDay);
   const toolCallsByDay = slice(record.toolCallsByDay);
+  // Aux counters ride only when non-empty: records without auxiliary calls
+  // stay byte-identical to the pre-aux shape (older clients, goldens).
+  const auxByDay = slice(record.auxByDay);
+  const hasAux = Object.keys(auxByDay).length > 0;
   const createdIn = validDay(record.createdDay)
     && record.createdDay >= fromDay && record.createdDay <= toDay;
-  const activeDays = [...Object.keys(byDay), ...Object.keys(turnsByDay), ...Object.keys(toolCallsByDay)];
+  const activeDays = [...Object.keys(byDay), ...Object.keys(turnsByDay), ...Object.keys(toolCallsByDay), ...Object.keys(auxByDay)];
   if (!createdIn && activeDays.length === 0) return null;
   const anchor = activeDays.length > 0 ? activeDays.sort()[0] : record.createdDay;
   return {
@@ -527,6 +697,7 @@ export function sliceRecord(record, fromDay, toDay) {
     project: record.project ?? null,
     subagent: record.subagent === true,
     parentSession: record.parentSession ?? null,
+    title: record.title ?? null,
     delegationDepth: Number.isFinite(record.delegationDepth) ? record.delegationDepth : 0,
     day: anchor,
     byDay,
@@ -535,6 +706,7 @@ export function sliceRecord(record, fromDay, toDay) {
     tiersByDay,
     turnsByDay,
     toolCallsByDay,
+    ...(hasAux ? { auxByDay } : {}),
   };
 }
 
@@ -544,20 +716,28 @@ export function sliceRecord(record, fromDay, toDay) {
  * `assistant/message` whose adapter reported usage; model keys are the same
  * `provider\u0000model` composites the projection folds. `turns` collects
  * closed `turn/start`→`turn/end` boundaries so the client can align break
- * marks to task stages, not just wall-clock time.
+ * marks to task stages, not just wall-clock time. `aux` collects the
+ * session's auxiliary requests (official web_search, title LLM) with the
+ * title entries' text-derived input/output estimates, so the detail view can
+ * render an honest auxiliary bill without re-reading the log.
  *
  * @param {Array<object>} events - a session's raw event log (ascending seq).
  * @param {object} [options]
  * @param {string} [options.id] - session id echoed into the result.
  * @param {object} [options.header] - the session header (identity fields).
- * @returns {{id: string|null, header: object, events: Array, turns: Array}}
+ * @returns {{id: string|null, header: object, events: Array, turns: Array, aux: Array}}
  *   `events` = `[{t, i, o, cr, cw, key}]` sorted by time; `turns` =
- *   `[{start, end}]` in time order.
+ *   `[{start, end, preview}]` in time order, where `preview` is the turn's
+ *   opening user message flattened and capped to 40 code points (null when
+ *   the turn carries no user text); `aux` = `[{t, kind, key?, in?, out?}]`.
  */
 export function timelineEvents(events, { id = null, header = null } = {}) {
   const out = [];
   const turns = [];
+  const aux = [];
   let openStart = null;
+  let pendingPreview = null;
+  let standbyPreview = null;
   for (const event of Array.isArray(events) ? events : []) {
     if (event === null || typeof event !== "object") continue;
     if (event.type === "assistant/message") {
@@ -566,14 +746,47 @@ export function timelineEvents(events, { id = null, header = null } = {}) {
       if (t > 0 && u !== null) out.push({ t, ...u });
     } else if (event.type === "turn/start") {
       const t = num(event.time);
-      if (t > 0) openStart = t;
+      if (t > 0) {
+        openStart = t;
+        // A queued user message can land in the log before its turn opens.
+        pendingPreview = standbyPreview;
+        standbyPreview = null;
+      }
+    } else if (event.type === "user/message") {
+      const text = turnPreviewOf(event.data);
+      if (text !== null) {
+        if (openStart !== null) {
+          if (pendingPreview === null) pendingPreview = text;
+        } else {
+          standbyPreview = text;
+        }
+      }
     } else if (event.type === "turn/end" && openStart !== null) {
       const t = num(event.time);
-      if (t > 0 && t >= openStart) turns.push({ start: openStart, end: t });
+      if (t > 0 && t >= openStart) turns.push({ start: openStart, end: t, preview: pendingPreview });
       openStart = null;
+      pendingPreview = null;
+    } else if (event.type === "web/deepseek-search-llm-request") {
+      const t = num(event.time);
+      if (t > 0) aux.push({ t, kind: "search" });
+    } else if (event.type === "session/title-llm-request") {
+      const t = num(event.time);
+      if (t > 0) {
+        const route = event.data?.route;
+        aux.push({
+          t,
+          kind: "title",
+          key: typeof route?.model === "string" && route.model !== ""
+            ? modelKey(typeof route?.provider === "string" ? route.provider : "", route.model)
+            : null,
+          in: titleInputEstimate(event.data),
+          out: titleOutEstimate(event.data?.maxTokens),
+        });
+      }
     }
   }
   out.sort((a, b) => a.t - b.t);
+  aux.sort((a, b) => a.t - b.t);
   const headerOut = header === null || typeof header !== "object"
     ? {}
     : {
@@ -584,13 +797,31 @@ export function timelineEvents(events, { id = null, header = null } = {}) {
       parentSession: header.parentSession ?? null,
       delegationDepth: Number.isFinite(header.delegationDepth) ? header.delegationDepth : 0,
     };
-  return { id: id ?? headerOut.id ?? null, header: headerOut, events: out, turns };
+  return { id: id ?? headerOut.id ?? null, header: headerOut, events: out, turns, aux };
+}
+
+/** The turn preview carried on a timeline turn: the first non-empty text
+ *  block of a `user/message`, whitespace-flattened and capped to 40 code
+ *  points (CJK-safe; the break analyzer shows it on chips and hover cards).
+ *  Returns null when the message carries no usable text. */
+function turnPreviewOf(data) {
+  const content = data?.content;
+  const blocks = Array.isArray(content)
+    ? content
+    : typeof content === "string" ? [{ type: "text", text: content }] : [];
+  for (const block of blocks) {
+    if (block === null || typeof block !== "object" || block.type !== "text") continue;
+    if (typeof block.text !== "string" || block.text.trim() === "") continue;
+    const flat = block.text.replace(/\s+/g, " ").trim();
+    if (flat === "") continue;
+    return Array.from(flat).slice(0, 40).join("");
+  }
+  return null;
 }
 
 /** One `assistant/message` usage event compacted for the session timeline,
  *  or null when the event has no usable usage. */
-function compactUsage(event) {
-  const usage = event?.data?.usage;
+function compactUsage(event) {  const usage = event?.data?.usage;
   if (usage === null || typeof usage !== "object") return null;
   const input = num(usage.inputTokens);
   const output = num(usage.outputTokens);

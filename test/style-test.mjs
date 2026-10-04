@@ -58,16 +58,7 @@ const styled = (tok) => cssClasses.has(tok) || [...cssClasses].some((cls) => cls
 /** Known debt, recorded from the pre-existing sheet. Both lists may only
  *  SHRINK: a cleanup passes, new drift fails. Prune an entry the moment its
  *  class is removed or revived. */
-const DEAD_KNOWN = new Set([
-  "dp_balanceActivity", "dp_balanceChipRow", "dp_balanceInset", "dp_balanceTime",
-  "dp_balanceTotal", "dp_balanceView", "dp_barRowFillAlt", "dp_colPin",
-  "dp_costArea", "dp_costCross", "dp_costDot", "dp_costLine", "dp_costLineActual",
-  "dp_costLinePeak", "dp_costPeakLabel", "dp_dateInput", "dp_dayCard",
-  "dp_dayCardHead", "dp_dayDot", "dp_dayName", "dp_dayRow", "dp_dayVal",
-  "dp_drillSub", "dp_drillSubBar", "dp_hasPin", "dp_pageHead", "dp_pageTitle",
-  "dp_quotaBar", "dp_rangeBox", "dp_reconAlert", "dp_setCurrency", "dp_setFxRow",
-  "dp_setSel", "dp_sparkBody",
-]);
+const DEAD_KNOWN = new Set([]);
 const UNSTYLED_KNOWN = new Set([
   "dp_accentCustom", "dp_consRecon", "dp_hourWrap", "dp_zoomReset",
 ]);

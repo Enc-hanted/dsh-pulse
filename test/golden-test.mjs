@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 
 import { viewSlice } from "../src/tui.js";
 import {
-	buildView, officialRulesFor, officialEstimateRulesFor,
+	buildView, strictRulesWith, fullRulesWith,
 	DEFAULT_USD_TO_CNY, MODEL_SEP,
 } from "../src/view.js";
 
@@ -24,9 +24,9 @@ const RULE = { model: "deepseek-v4-pro", input: 4, cacheRead: 0.8, output: 16, p
 const FX = { usdToCny: DEFAULT_USD_TO_CNY };
 const base = { fx: FX, monthly: [], monthlySet: new Set(), costEnabled: true, modelColors: {} };
 /** The strict layer exactly as both faces build it: official schedule + user overlay. */
-const strictFor = (day) => [...officialRulesFor(day), RULE];
+const strictFor = (day) => strictRulesWith(day, [RULE]);
 /** The TUI's full layer: the GA-gap estimate vintage underlays the schedule. */
-const fullFor = (day) => [...officialEstimateRulesFor(day), ...officialRulesFor(day), RULE];
+const fullFor = (day) => fullRulesWith(day, [RULE]);
 const strictPricing = { ...base, strictFor, fullFor: strictFor };
 const estimatePricing = { ...base, strictFor, fullFor };
 

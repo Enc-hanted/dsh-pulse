@@ -54,7 +54,7 @@ import { join } from "node:path";
 
 import { foldEvents, projectOf, localDay, dayStart } from "./aggregate.js";
 import {
-	costOf, officialRulesFor, officialEstimateRulesFor,
+	costOf, strictRulesWith, fullRulesWith,
 	shiftDay, DEFAULT_USD_TO_CNY, moneyCny, splitModelKey,
 } from "./view.js";
 
@@ -342,8 +342,8 @@ function makePricing(config) {
 		fx, monthly, monthlySet,
 		costEnabled: config?.costEnabled !== false,
 		modelColors: config?.modelColors !== null && typeof config?.modelColors === "object" ? config.modelColors : {},
-		strictFor: (day) => [...officialRulesFor(day), ...user],
-		fullFor: (day) => [...officialEstimateRulesFor(day), ...officialRulesFor(day), ...user],
+		strictFor: (day) => strictRulesWith(day, user),
+		fullFor: (day) => fullRulesWith(day, user),
 	};
 }
 

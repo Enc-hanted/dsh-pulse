@@ -1,11 +1,12 @@
 import { useState, useEffect, useMemo, useSyncExternalStore, jsx, jsxs } from "./react.js";
 import { fetchSettings, fill, invalidateSettings, loadStats, payloadCache, payloadError, statsState, subscribeStats } from "./stores.js";
 import { Btn, Input, PillBtn } from "./adapter.js";
+import { PEAK_HOURS } from "../pricing-facts.js";
 import { DEFAULT_USD_TO_CNY, accentEntryOf, buildView, daysBetween, familyRouteOf, fmtCost, localDay, modelAccentMap, modelKey, providerLabelOf, shiftDay } from "./../view.js";
 		//#region settings page
 		/** Official default peak hours (Beijing time) — the editor's fallback
 		 *  display and the save-side default for rows without a custom window. */
-		export const OFFICIAL_PEAK_HOURS = [9, 10, 11, 14, 15, 16, 17];
+		export const OFFICIAL_PEAK_HOURS = PEAK_HOURS;
 
 		/**
 		 * Build the editor's row list from the model catalog ONLY (the Models

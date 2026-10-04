@@ -234,7 +234,8 @@ export const BEIJING_OFFSET_MS = 8 * 3600000;
  * pairs so any provider's disjoint windows — including ones that wrap
  * midnight — are the same shape: a boolean per hour.
  */
-export const PEAK_HOURS = [9, 10, 11, 14, 15, 16, 17];
+import { PEAK_HOURS } from "./pricing-facts.js";
+export { PEAK_HOURS };
 
 /** The composite model key auxiliary calls bill under — derived from the ONE
  *  constant the pricing side uses (`AUX_PRICE_AS`), so the tier classification

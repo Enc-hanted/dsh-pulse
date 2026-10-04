@@ -26,6 +26,8 @@ export function modelKey(provider, model) {
   return p === "" ? m : `${p}${MODEL_SEP}${m}`;
 }
 
+import { PEAK_HOURS, BEIJING_OFFSET_MS } from "./pricing-facts.js";
+
 /** Split a (possibly composite) model key into its `{provider, model}` parts;
  *  a bare key reports an empty provider. */
 export function splitModelKey(key) {
@@ -105,20 +107,20 @@ export const OFFICIAL_PRICE_SCHEDULES = [
     from: "2026-09-10",
     rules: [
       { model: "deepseek-flash", input: 1, cacheRead: 0.02, output: 4,
-        peak: { input: 2, cacheRead: 0.04, output: 8 }, peakHours: [9, 10, 11, 14, 15, 16, 17], weekdaysOnly: true, currency: "CNY" },
+        peak: { input: 2, cacheRead: 0.04, output: 8 }, peakHours: [...PEAK_HOURS], weekdaysOnly: true, currency: "CNY" },
       { model: "deepseek-v4-pro", input: 4.5, cacheRead: 0.15, output: 13.5,
-        peak: { input: 9, cacheRead: 0.3, output: 27 }, peakHours: [9, 10, 11, 14, 15, 16, 17], weekdaysOnly: true, currency: "CNY" },
+        peak: { input: 9, cacheRead: 0.3, output: 27 }, peakHours: [...PEAK_HOURS], weekdaysOnly: true, currency: "CNY" },
     ],
   },
   {
     from: "2026-08-17",
     rules: [
       { model: "deepseek-v4-flash", input: 1.5, cacheRead: 0.05, output: 4.5,
-        peak: { input: 3, cacheRead: 0.1, output: 9 }, peakHours: [9, 10, 11, 14, 15, 16, 17], weekdaysOnly: true, currency: "CNY" },
+        peak: { input: 3, cacheRead: 0.1, output: 9 }, peakHours: [...PEAK_HOURS], weekdaysOnly: true, currency: "CNY" },
       { model: "deepseek-v4-flash-vision-exp", input: 1.5, cacheRead: 0.05, output: 4.5,
-        peak: { input: 3, cacheRead: 0.1, output: 9 }, peakHours: [9, 10, 11, 14, 15, 16, 17], weekdaysOnly: true, currency: "CNY" },
+        peak: { input: 3, cacheRead: 0.1, output: 9 }, peakHours: [...PEAK_HOURS], weekdaysOnly: true, currency: "CNY" },
       { model: "deepseek-v4-pro", input: 4.5, cacheRead: 0.15, output: 13.5,
-        peak: { input: 9, cacheRead: 0.3, output: 27 }, peakHours: [9, 10, 11, 14, 15, 16, 17], weekdaysOnly: true, currency: "CNY" },
+        peak: { input: 9, cacheRead: 0.3, output: 27 }, peakHours: [...PEAK_HOURS], weekdaysOnly: true, currency: "CNY" },
     ],
   },
 ];
@@ -154,6 +156,19 @@ export function officialEstimateRulesFor(day) {
     }
   }
   return [...out.values()];
+}
+
+/** THE assembly order, declared once: the user overlay always rides ON TOP
+ *  of the official day schedule, and the full layer underlays the GA-gap
+ *  estimate vintage beneath it. The TUI, the golden test and any future face
+ *  build their pricing through these two — never inline the spread order
+ *  again. */
+export function strictRulesWith(day, user) {
+  return [...officialRulesFor(day), ...user];
+}
+
+export function fullRulesWith(day, user) {
+  return [...officialEstimateRulesFor(day), ...officialRulesFor(day), ...user];
 }
 
 /** Chinese public holidays (State Council calendar) — official billing keeps
@@ -1674,18 +1689,12 @@ export function moneyCny(total) {
   return moneyParts(total, "CNY").text;
 }
 
-/** Default Beijing-time peak hours (official DeepSeek windows) — the fallback
- *  when a rule carries no `peakHours`. */
-const PEAK_HOURS_DEFAULT = [9, 10, 11, 14, 15, 16, 17];
-/** Fixed UTC+8 offset for peak-tier classification (Asia/Shanghai has no DST). */
-const BEIJING_OFFSET_MS = 8 * 3600000;
-
 /** `"peak"` | `"offpeak"` tier of an epoch-ms timestamp under a peak hour set
  *  (defaults to the official windows). Mirrors the host's fold-time tiering
  *  so event-level break segments price like the daily tiers. */
 export function tierAtMs(timeMs, peakHours) {
   const hh = new Date(Number(timeMs) + BEIJING_OFFSET_MS).getUTCHours();
-  const hours = Array.isArray(peakHours) ? peakHours : PEAK_HOURS_DEFAULT;
+  const hours = Array.isArray(peakHours) ? peakHours : PEAK_HOURS;
   return hours.includes(hh) ? "peak" : "offpeak";
 }
 

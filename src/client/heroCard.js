@@ -94,10 +94,10 @@ import { fmtCost, moneyParts } from "../view.js";
 				// 无值不穿主值尺寸：未配置的「未配置单价」是注解级安静态，
 				// 显著度由去定价按钮的下划线承载，不靠字号。
 				cost.configured === true
-					? jsx("span", { className: "dp_consHeroVal", children: moneyParts(cost.total ?? 0, "CNY").text })
+					? jsx("span", { className: "dp_consHeroVal dp_hBody", children: moneyParts(cost.total ?? 0, "CNY").text })
 					: (onConfigure !== undefined
-						? jsx("button", { type: "button", className: "dp_chipValueBtn", onClick: (e) => { e.stopPropagation(); onConfigure(); }, children: t("costGoSet") })
-						: jsx("span", { className: "dp_consNote dp_costOff", children: t("costOff") })),
+						? jsx("button", { type: "button", className: "dp_chipValueBtn dp_hBody", onClick: (e) => { e.stopPropagation(); onConfigure(); }, children: t("costGoSet") })
+						: jsx("span", { className: "dp_consNote dp_costOff dp_hBody", children: t("costOff") })),
 				unpricedNote,
 				fxNote !== null && jsx("span", { className: "dp_consNote", title: fxNote, children: fxNote }),
 			] });
@@ -112,7 +112,7 @@ import { fmtCost, moneyParts } from "../view.js";
 						children: runway < 3 ? fill(t("runwayLow"), { n: runway }) : fill(t("runwayDays"), { n: runway }),
 					}),
 				] }),
-				balanceResolved && jsxs("span", { className: "dp_consHeroVal", children: [
+				balanceResolved && jsxs("span", { className: "dp_consHeroVal dp_hBody", children: [
 					balMoney.text,
 					balMoney.unit !== "" && jsx("span", { className: "dp_consUnit", children: ` ${balMoney.unit}` }),
 				] }),
@@ -128,7 +128,7 @@ import { fmtCost, moneyParts } from "../view.js";
 					balanceData.isAvailable !== true && jsx("span", { className: "dp_balanceWarn", children: t("balanceUnavailable") }, "warn"),
 				] }),
 				!balanceResolved && jsx("span", {
-					className: "dp_consNote",
+					className: "dp_consNote dp_hBody",
 					title: fill(t("balanceFailed"), { err: balance.error ?? balanceData?.error ?? "?" }),
 					children: fill(t("balanceFailed"), { err: balance.error ?? balanceData?.error ?? "?" }),
 				}),
@@ -176,7 +176,7 @@ import { fmtCost, moneyParts } from "../view.js";
 					jsx("span", { className: "dp_consLabel", children: t("quotaTitle") }),
 					okEntries.length > 0 && jsx("span", { className: "dp_hRange", children: fill(t("quotaPlanCount"), { n: okEntries.length }) }),
 				] }),
-				jsxs("span", { className: "dp_qChips", children: [
+				jsxs("span", { className: "dp_qChips dp_hBody", children: [
 					shownQuota.map(quotaRow),
 					restQuota.length > 0 && jsx("span", {
 						className: "dp_qAux",
@@ -226,7 +226,7 @@ import { fmtCost, moneyParts } from "../view.js";
 			const cacheBlk = cacheOn && jsxs("div", { className: "dp_hBlk dp_hCache", children: [
 				jsx("span", { className: "dp_hHead", children:
 					jsx("span", { className: "dp_consLabel", children: t("chipCache") }) }),
-				jsxs("div", { className: "dp_cardBody dp_ringBody", children: [
+				jsxs("div", { className: "dp_cardBody dp_ringBody dp_hBody", children: [
 					jsxs("div", { className: "dp_ringWrap", role: "img", "aria-label": rate === null ? t("cacheNa") : `${t("chipCache")} ${Math.round(rate * 100)}%`, children: [
 						jsxs("svg", { viewBox: "0 0 116 116", width: "116", height: "116", "aria-hidden": "true", children: [
 							jsx("circle", { className: "dp_ringTrack", cx: "58", cy: "58", r: String(R), fill: "none", strokeWidth: "12" }),

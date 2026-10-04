@@ -142,12 +142,12 @@ ${pulseCss}
           <div class="dp_hCol" id="moneyCol">
             <div class="dp_hBlk dp_hEst dp_hHot" id="blk-est" role="button" tabindex="0">
               <span class="dp_hHead"><span class="dp_consLabel">费用估算</span><span class="dp_hRange">近7天</span></span>
-              <span class="dp_consHeroVal">¥12.45</span>
+              <span class="dp_consHeroVal dp_hBody">¥12.45</span>
               <button type="button" class="dp_consNote dp_chipNoteBtn">有未定价消耗</button>
             </div>
             <div class="dp_hBlk dp_hBal" id="blk-bal">
               <span class="dp_hHead"><span class="dp_consLabel">官方余额</span><span class="dp_hBadge">余额预估 11 天</span></span>
-              <span class="dp_consHeroVal">¥17.90</span>
+              <span class="dp_consHeroVal dp_hBody">¥17.90</span>
               <span class="dp_hMetrics">
                 <span class="dp_hMetric"><span class="dp_consLabel">赠送</span><b class="dp_hMetricOk">1.00</b></span>
                 <span class="dp_hMetric"><span class="dp_consLabel">充值</span><b>16.89</b></span>
@@ -158,7 +158,7 @@ ${pulseCss}
           <!-- 订阅额度区 -->
           <div class="dp_hBlk dp_hQuota dp_hHot" id="blk-quota" role="button" tabindex="0">
             <span class="dp_hHead"><span class="dp_consLabel">订阅额度</span><span class="dp_hRange" id="planCount">2 项订阅</span></span>
-            <span class="dp_qChips" id="qChips">
+            <span class="dp_qChips dp_hBody" id="qChips">
               <span class="dp_qwRow">
                 <span class="dp_qName">GLM Coding Pro</span>
                 <span class="dp_qWins">
@@ -186,7 +186,7 @@ ${pulseCss}
           <!-- 缓存命中区：头行与另两区共享同一条 label 线 -->
           <div class="dp_hBlk dp_hCache" id="blk-cache">
             <span class="dp_hHead"><span class="dp_consLabel">缓存命中率</span></span>
-            <div class="dp_cardBody dp_ringBody">
+            <div class="dp_cardBody dp_ringBody dp_hBody">
               <div class="dp_ringWrap" role="img" aria-label="缓存命中率">
                 <svg viewBox="0 0 116 116" width="116" height="116" aria-hidden="true">
                   <circle class="dp_ringTrack" cx="58" cy="58" r="48" fill="none" stroke-width="12"/>

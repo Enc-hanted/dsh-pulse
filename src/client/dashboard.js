@@ -1,6 +1,6 @@
 import { useState, useEffect, jsx, jsxs } from "./react.js";
 import { Input, Seg } from "./adapter.js";
-import { fill } from "./stores.js";
+import { fill, httpError } from "./stores.js";
 import { buildView, fmtCost, localDay, shiftDay } from "./../view.js";
 		//#region dashboard
 		/** Monthly budget panel: a CNY budget input with a progress bar, the
@@ -34,7 +34,7 @@ import { buildView, fmtCost, localDay, shiftDay } from "./../view.js";
 					headers: { accept: "application/json" },
 				})
 					.then(async (res) => {
-						if (!res.ok) throw new Error(`HTTP ${res.status}`);
+						httpError(res);
 						return res.json();
 					})
 					.then((payload) => {

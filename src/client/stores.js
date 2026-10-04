@@ -1,6 +1,18 @@
 import { useState, useEffect, useRef, useSyncExternalStore } from "./react.js";
 import { modelKey, providerLabelOf, splitModelKey } from "./../view.js";
 		//#region utils
+		/** ONE conversion of a failed fetch Response into a thrown Error —
+		 *  every read face composes it; the message ("HTTP 500") is the
+		 *  whole error surface. */
+		export function httpError(res) {
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+		}
+		/** The write-API dialect: the payload carries `ok:true` and a server
+		 *  `error` string. Takes the already-parsed body so 409-conflict
+		 *  handling stays at the call site. */
+		export function payloadError(res, body) {
+			if (!res.ok || body?.ok !== true) throw new Error(body?.error ?? `HTTP ${res.status}`);
+		}
 		/** Unpriced-usage display floor. Below this many tokens the gap costs a
 		 *  fraction of a cent (a couple of title calls, not a rate hole), so the
 		 *  card says nothing rather than spending a permanent line on rounding
@@ -115,7 +127,7 @@ import { modelKey, providerLabelOf, splitModelKey } from "./../view.js";
 				headers: { accept: "application/json" },
 				signal: statsAbort.signal,
 			}).then(async (res) => {
-				if (!res.ok) throw new Error(`HTTP ${res.status}`);
+				httpError(res);
 				const data = await res.json();
 				// Schema 4 hosts add `corpusSessions` to the schema-3 payload;
 				// schemas 3 and 2 (previous releases) stay readable so a rolling
@@ -178,7 +190,7 @@ import { modelKey, providerLabelOf, splitModelKey } from "./../view.js";
 					credentials: "same-origin",
 					headers: { accept: "application/json" },
 				}).then(async (res) => {
-					if (res.ok !== true) throw new Error(`HTTP ${res.status}`);
+					httpError(res);
 					return res.json();
 				}).then((data) => {
 					if (mine === seq.current) setState({ data, busy: false, error: null });
@@ -235,7 +247,7 @@ import { modelKey, providerLabelOf, splitModelKey } from "./../view.js";
 					credentials: "same-origin",
 					headers: { accept: "application/json" },
 				}).then(async (res) => {
-					if (res.ok !== true) throw new Error(`HTTP ${res.status}`);
+					httpError(res);
 					return res.json();
 				}).then((data) => {
 					if (mine === seq.current) setState({ data, busy: false, error: null });
@@ -281,7 +293,7 @@ import { modelKey, providerLabelOf, splitModelKey } from "./../view.js";
 				return Promise.resolve(settingsCache.value);
 			}
 			settingsCache.inflight = fetch("/pulse/settings", { credentials: "same-origin", headers: { accept: "application/json" } })
-				.then((res) => { if (!res.ok) throw new Error(`HTTP ${res.status}`); return res.json(); })
+				.then((res) => { httpError(res); return res.json(); })
 				.then((data) => { settingsCache.value = data; settingsCache.at = Date.now(); return data; })
 				.finally(() => { settingsCache.inflight = null; });
 			return settingsCache.inflight;

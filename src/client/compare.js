@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useSyncExternalStore, jsx, jsxs } from "./react.js";
 import { resolveRates } from "../view.js";
-import { catalogNames, fetchSettings, fill, loadStats, statsState, subscribeStats } from "./stores.js";
+import { catalogNames, fetchSettings, fill, httpError, loadStats, statsState, subscribeStats } from "./stores.js";
 import { quotaEntryName } from "./quota.js";
 import { Btn, Input, PillBtn, Seg } from "./adapter.js";
 import { DEFAULT_USD_TO_CNY, buildView, fmtCost, localDay, modelKey, niceMax, quotaMonthlyFee, shiftDay } from "./../view.js";
@@ -106,7 +106,7 @@ import { DEFAULT_USD_TO_CNY, buildView, fmtCost, localDay, modelKey, niceMax, qu
 			useEffect(() => {
 				let alive = true;
 				fetch("/pulse/quota", { headers: { accept: "application/json" } })
-					.then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+					.then(async (r) => { httpError(r); return r.json(); })
 					.then((payload) => {
 						if (!alive) return;
 						const providers = Array.isArray(payload?.providers) ? payload.providers : [];

@@ -1,6 +1,6 @@
 import { useState, useEffect, jsx, jsxs } from "./react.js";
 import { DP_BUILD } from "./css.js";
-import { THEMES, fetchSettings, fill, invalidateSettings, loadPanels, loadStats, payloadCache, savePanels, setTheme, statsState, useQuota } from "./stores.js";
+import { THEMES, fetchSettings, fill, invalidateSettings, loadPanels, loadStats, payloadCache, payloadError, savePanels, setTheme, statsState, useQuota } from "./stores.js";
 import { quotaWindowLabel } from "./quota.js";
 import { Btn, Checkbox, HoverCardPrim, Input, Seg, TooltipPrim } from "./adapter.js";
 import { DEFAULT_USD_TO_CNY } from "./../view.js";
@@ -49,7 +49,7 @@ import { DEFAULT_USD_TO_CNY } from "./../view.js";
 				fetch("/pulse/update-check", { credentials: "same-origin", headers: { accept: "application/json" } })
 					.then(async (res) => {
 						const body = await res.json().catch(() => ({}));
-						if (!res.ok || body?.ok !== true) throw new Error(body?.error ?? `HTTP ${res.status}`);
+						payloadError(res, body);
 						const latest = typeof body.latest === "string" ? body.latest : null;
 						const diff = latest === null ? 0 : compareVersions(latest, DP_BUILD);
 						setState({ kind: diff > 0 ? "newer" : diff < 0 ? "dev" : "current", latest, error: null });
@@ -125,7 +125,7 @@ import { DEFAULT_USD_TO_CNY } from "./../view.js";
 							reloadSettings();
 							return;
 						}
-						if (!res.ok || data?.ok !== true) throw new Error(data?.error ?? `HTTP ${res.status}`);
+						payloadError(res, data);
 						setState((s) => ({ ...s, saving: null, saved: true, off: next }));
 						reloadSettings();
 						quota.refresh();
@@ -204,7 +204,7 @@ import { DEFAULT_USD_TO_CNY } from "./../view.js";
 							loadCurrency();
 							throw new Error(t("setConflict"));
 						}
-						if (!res.ok || data?.ok !== true) throw new Error(data?.error ?? `HTTP ${res.status}`);
+						payloadError(res, data);
 						setCurrency((s) => ({ ...s, saving: false, saved: true, error: null }));
 						// The dashboard's cached payload prices with the old
 						// rules/rate — drop it and reload the current window.

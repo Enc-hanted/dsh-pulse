@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef, jsx, jsxs } from "./react.js";
 import { resolveRates, priceTier, ruleMaps, ruleFor, tierAtMs } from "../view.js";
-import { UNPRICED_HINT_TOKENS, catalogNames, fill, fmtTokens } from "./stores.js";
+import { UNPRICED_HINT_TOKENS, catalogNames, fill, fmtTokens, httpError } from "./stores.js";
 import { quotaDur, quotaEntryName, quotaRankEntries, quotaWindowCls, quotaWindowLabel } from "./quota.js";
 import { Btn, Float, HoverCardPrim, Tag, TooltipPrim, floatReady, relativeTimePrim, primitives } from "./adapter.js";
 import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntryOf, breaksSegments, bucketLabel, bucketOf, costOf, fmtClockMs, fmtCost, heatmapCells, heatmapLevel, isOffPeakDay, isOfficialProvider, keyMatchesFilter, modelAccentMap, modelFilterSet, modelKey, niceMax, splitModelKey } from "./../view.js";
@@ -1174,7 +1174,7 @@ import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, DEFAULT_USD_TO_CNY, accentEntry
 					headers: { accept: "application/json" },
 				})
 					.then(async (res) => {
-						if (!res.ok) throw new Error(`HTTP ${res.status}`);
+						httpError(res);
 						return res.json();
 					})
 					.then((data) => { if (alive) setState({ status: "ready", data, error: null }); })

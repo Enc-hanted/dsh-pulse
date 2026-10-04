@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useSyncExternalStore, jsx, jsxs } from "./react.js";
-import { fetchSettings, fill, invalidateSettings, loadStats, payloadCache, statsState, subscribeStats } from "./stores.js";
+import { fetchSettings, fill, invalidateSettings, loadStats, payloadCache, payloadError, statsState, subscribeStats } from "./stores.js";
 import { Btn, Input, PillBtn } from "./adapter.js";
 import { DEFAULT_USD_TO_CNY, accentEntryOf, buildView, daysBetween, familyRouteOf, fmtCost, localDay, modelAccentMap, modelKey, providerLabelOf, shiftDay } from "./../view.js";
 		//#region settings page
@@ -285,7 +285,7 @@ import { DEFAULT_USD_TO_CNY, accentEntryOf, buildView, daysBetween, familyRouteO
 							load();
 							throw new Error(t("setConflict"));
 						}
-						if (!res.ok || data?.ok !== true) throw new Error(data?.error ?? `HTTP ${res.status}`);
+						payloadError(res, data);
 						setState((s) => ({
 							...s, saving: false, saved: true, refold: data?.refold === true, error: null,
 							// Only the sections this save carried are persisted — a

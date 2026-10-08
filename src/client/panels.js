@@ -65,7 +65,15 @@ import { DEFAULT_USD_TO_CNY } from "./../view.js";
 				: state.kind === "newer" ? "dp_setMsg dp_setMsgOk" : "dp_setMsg";
 			return jsxs("div", { className: "dp_setPanel", children: [
 				jsx("div", { className: "dp_setSub", children: t("aboutTitle") }),
-				jsxs("div", { className: "dp_setRow dp_setRowMid", children: [
+					jsxs("div", { className: "dp_setRow dp_setRowMid", children: [
+					/* The mark is inlined (not an <img>) so its currentColor
+					 * strokes follow the theme's label color in every theme. */
+					jsxs("svg", { className: "dp_aboutLogo", viewBox: "0 0 512 512", role: "img", "aria-label": "dsh-pulse", children: [
+						jsxs("g", { transform: "translate(172.3 97.2) scale(20)", children: jsx("path", { fill: "none", stroke: "currentColor", strokeWidth: "1.1", strokeLinecap: "round", strokeLinejoin: "round",
+							d: "M8.844 13.742C8.967 12.328 8.45 10.4 8.45 9.65C8.45 8.94 8.88 8.43 9.6 8.43C11.285 8.43 12.106 8.281 12.685 8.104C13.71 7.791 14.585 6.768 15.055 5.945C15.137 5.803 14.99 5.641 14.829 5.671C13.829 5.86 12.828 5.376 11.827 4.978C10.659 4.514 9.491 4.707 8.935 4.876C8.805 4.915 8.658 4.819 8.636 4.686C8.468 3.643 7.405 2.615 5.498 2.238C4.54 2.048 3.748 1.574 3.347 1.202C3.252 1.113 3.088 1.125 3.03 1.242C2.628 2.059 2.168 3.82 5.248 6.115C5.82 6.494 6.31 6.785 6.574 7.637C6.72 8.104 6.157 9.168 6.061 9.368C5.157 11.27 5.089 12.19 4.926 13.742" }) }),
+						jsx("path", { fill: "none", stroke: "currentColor", strokeWidth: "22", strokeLinecap: "round", strokeLinejoin: "round",
+							d: "M36 372 H84 C90 354 102 354 108 372 H124 L134 396 L144 372 L158 294 L172 372 L180 396 L188 372 C194 354 206 354 212 372 H367 L379 396 L391 372 C398 354 410 354 416 372 H474" }),
+					] }),
 					jsx("span", { className: "dp_aboutVersion", children: `dsh-pulse ${DP_BUILD}` }),
 					line !== null && jsx("span", { className: cls, children: line }),
 					jsx(Btn, { fallbackClass: "dp_miniBtn",

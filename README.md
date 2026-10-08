@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+  <img src="assets/logo.svg" alt="dsh-pulse" width="240">
+</picture>
+
 # dsh-pulse
 
 **简体中文**（默认） · [English](#dsh-pulse-english)

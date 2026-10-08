@@ -1,0 +1,30 @@
+{
+  "$schema": "https://raw.githubusercontent.com/T-Auto/dsh-std/main/schema/dsh-plugin-0.15.schema.json",
+  "manifestVersion": "0.15",
+  "id": "dsh-pulse.pulse",
+  "name": "DSH Pulse",
+  "version": "0.6.0",
+  "facets": {
+    "host": { "entry": "./src/tui.js", "apiVersion": "v1alpha1" }
+  },
+  "requires": {
+    "contracts": [{ "apiVersion": "commands.dsh/v1alpha1", "kind": "Command" }]
+  },
+  "permissions": [
+    {
+      "name": "commands.invoke",
+      "scope": "dsh-pulse.pulse",
+      "reason": "注册 /pulse 迷你卡开关命令"
+    }
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "id": "dsh-pulse.pulse",
+        "title": "用量观测台",
+        "description": "用量观测台：迷你卡开关（输入框上方 · 点击进全量）"
+      }
+    ]
+  },
+  "subscriptions": []
+}

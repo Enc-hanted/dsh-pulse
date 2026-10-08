@@ -1,7 +1,7 @@
 import { useState, useEffect, jsx, jsxs } from "./react.js";
 import { NS, en, zh } from "./locale.js";
 import { loadPanels, loadTheme, openOverlay, savePanels, setTheme, subscribePanels, subscribeTheme } from "./stores.js";
-import { PulseDashboard } from "./csv.js";
+import { PulseDashboard } from "./dashboard.js";
 import { PricingPage } from "./settings.js";
 import { PulseCommandCard, PulseFooterAction, PulseOverlay, PulseSection } from "./slots.js";
 import { defineStore, Switch, Tag, primitives } from "./adapter.js";
@@ -104,16 +104,35 @@ import { defineStore, Switch, Tag, primitives } from "./adapter.js";
 				ctx.logger?.warn?.("dsh-pulse: /pulse menu contribution unavailable", error);
 				registerMenuFace(ctx);
 			}
-			ctx.slots.inject("settings.section", () => ctx.slots.register({
+			/** Seat diagnostics: `ctx.slots.inject` on a seat this host never
+			 *  declared HANGS (the callback simply never runs), and a refused
+			 *  registration used to vanish into a bare catch — a host upgrade
+			 *  that dropped a seat name would only ever surface as a missing
+			 *  UI block. Each seat now reports once: a delayed probe warns when
+			 *  the callback has not run (hanging absence — seats whose surfaces
+			 *  open lazily may legitimately trip it), the catch warns on
+			 *  synchronous refusal. */
+			const SEAT_PROBE_MS = 15000;
+			const injectSeat = (name, declare) => {
+				let seen = false;
+				setTimeout(() => {
+					if (!seen) ctx.logger?.warn?.(`dsh-pulse: seat "${name}" not exercised by this host within ${SEAT_PROBE_MS / 1000}s (absent, or its surface was never opened)`);
+				}, SEAT_PROBE_MS);
+				ctx.slots.inject(name, (...args) => {
+					seen = true;
+					declare(...args);
+				});
+			};
+			injectSeat("settings.section", () => ctx.slots.register({
 				name: "settings.section", id: "pulse", order: 25, label: () => t("nav"), inject: () => ({ t }),
 			}, PulseSection));
-			ctx.slots.inject("conversation.chat.commandview", () => ctx.slots.register({
+			injectSeat("conversation.chat.commandview", () => ctx.slots.register({
 				name: "conversation.chat.commandview", key: "pulse-usage", inject: () => ({ t }),
 			}, PulseCommandCard));
-			ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register({
+			injectSeat("sidebar.footer.action", () => ctx.slots.register({
 				name: "sidebar.footer.action", id: "pulse", order: 5, label: () => t("nav"), inject: () => ({ t }),
 			}, PulseFooterAction));
-			ctx.slots.inject("shell.overlay", () => ctx.slots.register({
+			injectSeat("shell.overlay", () => ctx.slots.register({
 				name: "shell.overlay", id: "pulse", order: 10, inject: () => ({ t }),
 			}, PulseOverlay));
 			/** The dashboard as a reusable Component Factory (0.1.7+ slots):
@@ -167,7 +186,7 @@ import { defineStore, Switch, Tag, primitives } from "./adapter.js";
 				ctx.effect(() => subscribePanels((panels) => {
 					footBalanceBound?.setEnabled?.(panels.footBalance !== false);
 				}), "dsh-pulse: foot-balance store sync");
-				ctx.effect(() => ctx.slots.inject("settings.general.item", () => ctx.slots.register({
+				ctx.effect(() => injectSeat("settings.general.item", () => ctx.slots.register({
 					name: "settings.general.item",
 					id: "pulse-foot-balance",
 					order: 20,
@@ -188,15 +207,22 @@ import { defineStore, Switch, Tag, primitives } from "./adapter.js";
 			 *  Plugin-manager and General-settings seats are 0.1.7 slot names;
 			 *  an older host that refuses an unknown slot must not take down
 			 *  the rest of the registration batch, so each seat refuses alone
-			 *  (same contract as the dashboard factory above). */
-			const seatAttempt = (attempt) => { try { attempt(); } catch { /* slot absent on this host */ } };
-			seatAttempt(() => ctx.effect(() => ctx.slots.inject("plugins.row.config", () => ctx.slots.register({
+			 *  (same contract as the dashboard factory above) — loudly now, so
+			 *  a dropped seat name is a log line instead of a missing UI block. */
+			const seatAttempt = (name, attempt) => {
+				try {
+					attempt();
+				} catch (error) {
+					ctx.logger?.warn?.(`dsh-pulse: seat "${name}" refused by this host`, error);
+				}
+			};
+			seatAttempt("plugins.row.config", () => ctx.effect(() => injectSeat("plugins.row.config", () => ctx.slots.register({
 				name: "plugins.row.config", key: "dsh-pulse#pulse", inject: () => ({ t }),
 			}, PulseRowConfig)), "dsh-pulse: row config"));
-			seatAttempt(() => ctx.effect(() => ctx.slots.inject("plugins.detail.badge", () => ctx.slots.register({
+			seatAttempt("plugins.detail.badge", () => ctx.effect(() => injectSeat("plugins.detail.badge", () => ctx.slots.register({
 				name: "plugins.detail.badge", id: "pulse", inject: () => ({ t }),
 			}, PulseDetailBadge)), "dsh-pulse: detail badge"));
-			seatAttempt(() => ctx.effect(() => ctx.slots.inject("plugins.detail.section", () => ctx.slots.register({
+			seatAttempt("plugins.detail.section", () => ctx.effect(() => injectSeat("plugins.detail.section", () => ctx.slots.register({
 				name: "plugins.detail.section", id: "pulse", inject: () => ({ t }),
 			}, PulseDetailSection)), "dsh-pulse: detail section"));
 		}

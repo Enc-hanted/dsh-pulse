@@ -9,7 +9,7 @@
  * name degrades to a no-op component instead of killing the mounting slot.
  */
 import * as primitivesModule from "@deepseek-ai/dsh-client-ui-primitives";
-import { useRef, jsx, jsxs } from "./react.js";
+import { forwardRef, useRef, jsx, jsxs } from "./react.js";
 
 		export const LEGACY_ICON_ALIASES = {
 			IconChevronDownOutline14: "IconChevronDownOutlineMedium",
@@ -17,6 +17,7 @@ import { useRef, jsx, jsxs } from "./react.js";
 			IconClockOutline16: "IconClockOutlineMedium",
 			IconCloseOutline16: "IconCloseOutlineMedium",
 			IconDataOutline16: "IconDataOutlineMedium",
+			IconDownloadOutline16: "IconDownloadOutlineMedium",
 			IconRefreshOutline16: "IconRefreshOutlineMedium",
 			IconSearchOutline16: "IconSearchOutlineMedium",
 			IconWarningOutline16: "IconWarningOutlineMedium",
@@ -29,6 +30,11 @@ import { useRef, jsx, jsxs } from "./react.js";
 					const modern = target[LEGACY_ICON_ALIASES[prop]];
 					return modern !== undefined ? modern : noopIcon;
 				}
+				// Any other icon name (a host rename, a call site that forgot its
+				// alias entry) degrades to the no-op icon — jsx(undefined) would
+				// kill the whole mounting slot, which the header comment promises
+				// never happens for icons. Non-icon names still fail loud.
+				if (typeof prop === "string" && /^Icon[A-Z]/.test(prop)) return noopIcon;
 				return undefined;
 			},
 		});
@@ -53,6 +59,10 @@ import { useRef, jsx, jsxs } from "./react.js";
  *  hosts, where every store-seat feature degrades to render-site props; the
  *  optional require lives in the factory envelope (globalThis.__dshPulseHost). */
 export const defineStore = globalThis.__dshPulseHost?.defineStore ?? null;
+/** The snapshot bus the local preference stores ride (panels/theme/overlay),
+ *  same engine and same envelope bridge; null falls back to the handwritten
+ *  snapshot+Set bus in stores.js. */
+export const createSnapshotStore = globalThis.__dshPulseHost?.createSnapshotStore ?? null;
 /** Portal capability for anchored floats (P3): createPortal when the host
  *  serves react-dom, else floats render inline (fixed positioning accepts
  *  transformed-ancestor risk only where the caller has none). */
@@ -65,11 +75,13 @@ export const createPortal = globalThis.__dshPulseHost?.reactDom?.createPortal ??
  *  tablist with roving arrow-key focus. Contract matches the official
  *  control: `options` are `{value, label}` in display order; `id` and
  *  `label` are required (the official control names each segment and the
- *  tablist itself); `className` is for layout placement only. */
-export function Seg({ id, value, options, onChange, label, className }) {
+ *  tablist itself); `className` is for layout placement only; `disabled`
+ *  locks the whole control (the fallback folds it into each segment's own
+ *  per-option disabled). */
+export function Seg({ id, value, options, onChange, label, className, disabled }) {
 	const Official = primitives.SegmentedControl;
 	if (typeof Official === "function") {
-		return jsx(Official, { id, value, options, onChange, label, className });
+		return jsx(Official, { id, value, options, onChange, label, className, disabled });
 	}
 	return jsx("div", {
 		className: className ? `dp_seg ${className}` : "dp_seg",
@@ -78,7 +90,7 @@ export function Seg({ id, value, options, onChange, label, className }) {
 		children: options.map((option) => jsx("button", {
 			type: "button",
 			className: `dp_segBtn${option.value === value ? " dp_segBtnActive" : ""}`,
-			disabled: option.disabled === true,
+			disabled: disabled === true || option.disabled === true,
 			onClick: () => onChange(option.value),
 			"aria-pressed": option.value === value,
 			children: option.label,
@@ -89,19 +101,26 @@ export function Seg({ id, value, options, onChange, label, className }) {
 /** Button (P1): the official Button (variant/size/icon seat, native props
  *  pass through) with the pre-P1 class kept ONLY for the fallback path, so
  *  old hosts render today's button and new hosts carry no dead class.
- *  `icon` rides the official icon seat and becomes the fallback's child. */
-export function Btn({ variant = "ghost", size = "md", icon, className, fallbackClass = "", children, ...rest }) {
+ *  `icon` rides the official icon seat and joins the fallback's children.
+ *  forwardRef keeps `ref` working in both paths — the official Button is a
+ *  ForwardRef component ("native button for focus management and overlay
+ *  anchors"), and the fallback forwards to its own native button; without
+ *  this, React 18 silently strips the prop and every anchor chained to a
+ *  Btn ref (the toolbar's date → calendar Float) loses its anchor. */
+export const Btn = forwardRef(function Btn({ variant = "ghost", size = "md", icon, className, fallbackClass = "", children, ...rest }, ref) {
 	const Official = primitives.Button;
 	if (typeof Official === "function") {
-		return jsx(Official, { variant, size, icon, className, ...rest, children });
+		return jsx(Official, { variant, size, icon, className, ...rest, ref, children });
 	}
+	const nodes = [icon, children].filter((child) => child !== undefined && child !== null);
 	return jsx("button", {
 		type: "button",
+		ref,
 		className: fallbackClass || className,
 		...rest,
-		children: icon !== undefined && icon !== null ? icon : children,
+		children: nodes.length === 1 ? nodes[0] : nodes,
 	});
-}
+});
 
 /** Pill-style toggle (P1): the official Pill (active state, button when
  *  onClick is given) with the pre-P1 classes on the fallback path. */

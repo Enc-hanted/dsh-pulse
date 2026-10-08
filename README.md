@@ -1,10 +1,8 @@
-<a id="top"></a>
-
 # dsh-pulse
 
-**简体中文**（默认） · [English](#dsh-pulse--english)
+**简体中文**（默认） · [English](#dsh-pulse-english)
 
-[dsh](https://github.com/deepseek-ai/deepseek-harness) 的会话用量与费用观测台。统计所有会话（活跃和已持久化的）的 token 用量，按内置的 DeepSeek 官方费率估算费用，并显示官方平台余额。一切运行在 UI 平面：没有模型可见的工具，不消耗任何 token。
+[dsh](https://github.com/deepseek-ai/deepseek-harness) 的会话用量与费用观测台。统计所有会话（活跃和已持久化的）的 token 用量，按内置的 DeepSeek 官方费率估算费用，并显示官方平台余额。Web 面板之外还有终端面：随第三方终端前端 [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI)（≥ 0.13.0）挂载，提供 `/pulse` 命令族（见[终端面](#终端面dsh-tui)）。两个前端都是纯界面，没有模型可见的工具，不消耗任何 token。
 
 ## 功能
 
@@ -31,7 +29,7 @@
 dsh plugin --profile web add -w dsh-pulse
 ```
 
-重启 `dsh web`，打开 **设置 → 用量观测台**。任意对话里 `/` 菜单的 **pulse** 一行会打开一个按该会话工作区限定的浮层——先看精简摘要，一个按钮切到完整观测台；侧栏底部按钮直接打开完整面板。所有入口共用同一个数据源 `GET /pulse/stats`。
+重启 `dsh web`，打开 **设置 → 用量观测台**。任意对话里 `/` 菜单的 **pulse** 一行会打开一个按该会话工作区限定的浮层——先看精简摘要，一个按钮切到完整观测台；侧栏底部按钮直接打开完整面板。完整观测台的左缘可拖拽无级调宽（600–1280px，宽过窗口自动让位；双击把手复位、←→ 微调），宽度与主题/面板同存浏览器本地。所有入口共用同一个数据源 `GET /pulse/stats`。
 
 `/` 菜单那一行是**客户端命令贡献**：dsh 只为自带的内置命令画图标，而贡献项可以带图标，且文案在每次打开菜单时求值（所以随界面语言走）。它打开的是插件自有的 `shell.overlay` 座位，因此菜单里只有一行——本插件不注册宿主命令，否则必然会多出一行没有图标的目录行（dsh 把贡献项与宿主命令按名字合并）。这里不修改 dsh 本身。
 
@@ -44,7 +42,7 @@ dsh plugin --profile web add -w dsh-pulse
 ```bash
 # 安装：任选一种来源
 dsh plugin --profile web add -w dsh-pulse                              # npm registry
-dsh plugin --profile web add -w /abs/path/to/dsh-pulse-0.5.1.tgz      # 打包的 tarball（本仓库版本 0.5.1）
+dsh plugin --profile web add -w /abs/path/to/dsh-pulse-0.6.0.tgz      # 打包的 tarball（本仓库版本 0.6.0）
 dsh plugin --profile web add -w link:/abs/path/to/dsh-pulse           # 源码检出（开发）
 dsh plugin --profile web add -w git+https://github.com/Enc-hanted/dsh-pulse
 
@@ -73,7 +71,7 @@ dsh plugin --profile web remove -w dsh-pulse
 | 官方余额快照（滚动 30 天，只存金额，不存 key） | `~/.dsh/storages/pulse_balance.json` | 插件唯一的私有持久文件 | 只丢「官方扣费」对账线历史 |
 | 订阅额度利用率快照（滚动 30 天，每窗口百分比点） | `~/.dsh/storages/pulse_quota.json` | 燃速预估的历史 | 只丢燃速斜线，下次查询重新积累 |
 | 单价 / 汇率 / 币种 / 面板开关 | profile 的 settings（`~/.dsh/settings.yaml` 或活跃 profile patch 的 `pulse` 行） | dsh settings | 回到默认 |
-| 主题 / 面板 / 预算 / 对比 | 浏览器 localStorage（`dsh-pulse:*`） | 浏览器 | 纯偏好，无用量数据 |
+| 主题 / 面板 / 预算 / 对比 / 浮层宽度 | 浏览器 localStorage（`dsh-pulse:*`） | 浏览器 | 纯偏好，无用量数据 |
 
 所以卸载重装（甚至删掉 `session_projcache`）之后，历史用量会完整重算，不需要任何迁移。请求级的 payload 缓存只在宿主进程内存里（短 TTL），重启即空，同样不含历史。
 
@@ -207,7 +205,7 @@ ctx.slots.inject("pulse.dashboard.panel", () => ctx.slots.register({
 
 ## 插件管理器与设置页席位
 
-除仪表盘外，插件还向宿主自身的席位贡献内容（席位缺失时静默降级）：
+除仪表盘外，插件还向宿主自身的席位贡献内容（席位缺失时降级，且每席在日志里告警一次——挂起型缺席由 15 秒延迟探测兜出，不再无声消失）：
 
 - **`plugins.row.config`**（键 `dsh-pulse#pulse`）——完整定价编辑器渲染在插件管理器的 bundle 详情页（`view: "page"`），列表中显示一行摘要（`view: "summary"`）。
 - **`plugins.detail.badge` / `plugins.detail.section`**——详情页标题旁的标签与页面内容下的介绍卡片。
@@ -215,23 +213,42 @@ ctx.slots.inject("pulse.dashboard.panel", () => ctx.slots.register({
 
 ## 兼容性
 
-已在 **@deepseek-ai/dsh 0.1.5-rc.3 与 0.1.7-alpha.2**（Windows，Node 24.14.1）上验证；dsh 要求 **Node ≥ 22.15**。同一份构建覆盖所有代际，各接缝在运行时探测：
+**v0.6.0 起插件只支持 dsh ≥ 0.2.0-rc.2（Node ≥ 22.19），0.1.x 线废弃不再适配**；以下为各代际的历史验证记录，保留备查。v0.4.4 及更早在 **0.1.5-rc.3** 真机验证过（当时走纯经典注册）；v0.4.5 引入的世代判别式曾把 0.1.5–0.1.6 经典线误路由（那些 provider 同样自带 describe/update），本版已改为结构探测修复——0.1.5-rc.3 / 0.1.6-alpha.2 / 0.1.7-alpha.2 / 0.2.0-rc.2 各代 provider 形态已对照 registry 实包逐一核对。同一份构建覆盖所有代际，各接缝在运行时探测：
 
 - **投影注册**：0.1.2-rc 宿主读取 `stateSchema` + `wire`，旧宿主（0.1.0-rc.x）读取旧版顶层 `schema`/`view`。
 - **持久化缓存**：在 0.1.2-rc 及以后插件自己走消费者读取阶梯（未播种会话用零 I/O 的 `cachedSnapshot` 行——0.1.7 之前带显式 cut、之后仅凭 header 身份——否则 `sessionQuery.readSession` + 同步 `coldSnapshot(meta, inheritedEventCount, events)`），旧宿主（0.1.2-rc 之前）仍用缓存自读取的异步 `coldSnapshot(id)`（按形参个数识别）。
-- **设置**：经典宿主在 `SettingsProvider` 上注册独立命名空间；0.1.7+ 宿主经 `SettingsForms` 写入条目配置并带版本号守卫（过期写入返回 HTTP 409）。展示类字段声明为 volatile，修改它们不会重启插件。
+- **设置**：世代判别式按结构探测（存在 arity ≥ 2 的 `register` 即经典 `SettingsProvider`——含 rc.7 这类 register/describe/update 三全的形态——否则走 `SettingsForms`）。经典宿主注册独立命名空间；0.1.7+ 宿主按条目 id 寻址写入条目配置并带版本号守卫（过期写入返回 HTTP 409；条目被改名时 GET 如实报不可写）。展示类字段声明为 volatile，修改它们不会重启插件；settings 服务中途卸载时，两条缝的复位清单一致（GET 报不可写、POST 503）。
+- **设置页校验取舍**：宿主设置页直接消费本插件的 schemastery `Config`，字段级校验与持久化是宿主的；插件自带的浮动设置页草稿校验是手写的（数字类型、跨行模型唯一性），未下发 `schema.toJSON()` 信封、未接 `dsh-client-schema-form` 的 `validateDraft`。这是有意取舍：草稿级校验拦不住跨行唯一性与 fx 下界这类语义，接入会用 schemastery 的英文报错替换现有本地化文案，还要为老宿主模块表多背一个软降级 external——当前表单规模不值得这个成本。
 - **客户端**：0.1.7 的图标改名（`IconXOutline16` → `IconXOutlineMedium`）已做桥接；仪表盘工厂只在 `slots.registerFactory` 存在的宿主上注册。旧版宿主（不含分时明细）仍可正常显示，费用按谷价估算。
 - **仅 0.1.7 的席位**：store 引擎（`dsh-client-store`）通过特性检测 + try/catch 引入——缺失时 store 席位、通用设置开关和侧栏实时同步退场，普通仪表盘照常工作。插件管理器席位（`plugins.row.config`、`plugins.detail.badge`、`plugins.detail.section`）与每个工厂注册各自独立拒绝，宿主拒绝任何一个未知槽位都不会拖垮其余注册。
-- **前端**：客户端半声明 `platform: "web"`，所以只有 Web 前端会加载它——`dsh-tui` 之类的其它前端没有这个面板；本插件也不注册宿主命令，所以那些前端的命令平面里没有 `/pulse`。**用量数据不受影响**：宿主半与前端无关，任何前端（Web / dsh-tui / headless / ACP）跑出来的会话都会被 `pulseUsage` 折叠，照常出现在 Web 面板里。
+- **前端**：客户端半声明 `platform: "web"`，所以 Web 面板只在 Web 前端出现；**终端面**自 v0.6.0 起随 `dsh-tui`（≥ 0.13.0）挂载并注册 `/pulse` 命令族（见下节）。**用量数据不受影响**：宿主半与前端无关，任何前端（Web / dsh-tui / headless / ACP）跑出来的会话都会被 `pulseUsage` 折叠，照常出现在任一宿主面里。
 
 统计载荷为 **schema 4**：在 schema 3 之上增加 `corpusSessions`（窗口之外还有多少会话），用来区分「从未记录过」和「该区间内没有用量」。客户端可读 schema 2–4，因此升级过程中宿主与浏览器 bundle 版本不一致也能继续工作。
+
+## 终端面（dsh-tui）
+
+同一个包在 [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI)（≥ 0.13.0，DeepSeek Harness 的第三方交互式终端前端）里挂载为终端面 `dsh-pulse/tui`，与 Web 面共享同一份折叠、定价与配置数据。
+
+**六个命令**（输入框 `/` 菜单）：`/pulse` 迷你卡开关（同 alt+p）；`/pulse-day` 今日日视图（面包屑 + 摘要 + 分时 gantt + 会话台账，`s` 切排序）；`/pulse-month` 本月月历热力 + 周趋势 + 模型分解；`/pulse-year` 近一年 53 周热力图；`/pulse-cost` 今日成本口径（场景内 `t` 在 cost/token 间切换）；`/pulse-sessions` 会话切换（打字过滤 + 两步确认）。
+
+**迷你卡**：输入框上方的 3 行封顶卡片（pointer-only，不占键盘）。今日行拆 ● 当前会话 / ○ 其余（今日切片，绝无终身累计），本月行带对数 sparkline，未计价份额成 ⚠ 行；点卡片体进全量视图，`×` 收起。**alt+p** 与 `/pulse` 是同一开关。**Esc** 在全量场景里逐级返回（日 → 月 → 年），顶层 Esc 回聊天；`?` 帮助、`e` 导出 CSV、`r` 强刷。
+
+**降级行为**：`tuiStatus` 缺席或注册被拒 → `/pulse` 与 alt+p 降级为直接开全量日视图；`sessionQuery` 缺席 → 场景红字「读取失败」、迷你卡 error 行；`tuiScenes` 缺席 → 场景面整体静默退出。命令注册优先走 dsh-tui 的受管路径，未通过准入时自动落到宿主文档化的 C-070 直注册边界——启动日志出现一条 `falling back to direct commands.register (C-070, unattributed)` 属预期行为，非故障。
+
+**0.2.0 相对 0.1.7 的已知降级**（宿主不再在会话头里暴露活跃时间戳）：被另一个进程追加的持久会话不会自动重折，需在场景里按 `r` 手动刷；持久会话的排序与 60 会话截断按创建时间而非最近活跃（与宿主 `listSessions` 自身的 newest-first 引擎序一致）。活会话不受影响——其事件日志长度经内存 `sessions` 服务充当折叠缓存版本戳，30 秒轮询照常重折。
+
+**诊断**：包根的 `dsh-plugin.json` 是面向 dsh-tui 0.13.0 manifest 准入的声明文件（单命令 `/pulse`——0.13.0 的投影器对多条 `commands.invoke` 会报 duplicate），可用宿主命令 `/plugins check <dsh-pulse 路径>` 做静态校验（应报 `compatible`）；环境变量 `PULSE_TUI_DEBUG=1` 会在插件加载时向 stderr 输出一行缝可见性 + 命令注册数诊断。
 
 ## 开发
 
 ```bash
-npm test                    # host / aggregate / view / tui / golden / style / manifest 七个套件
+npm test                    # host / aggregate / view / client-smoke / tui / golden / style / manifest 八个套件
 npm run build               # 改 src/ 后重新构建 lib/client.js（esbuild）
 ```
+
+其中 `client-smoke` 在 react 桩下把仪表盘的派生模型钩子真实执行一遍：打包器照不出「名字落在另一个函数作用域」的搬运事故，它是浏览器之外唯一的运行时防线。
+
+注释语言规约：JSDoc（对外契约、`@param`/`@returns`）一律英文；段落级设计注记可用中文；描述旧机制的注释随机制一起删，不与新代码叠放。
 
 特别致谢 [Linux Do](https://linux.do/) 社区。
 
@@ -239,13 +256,11 @@ MIT — 见 [LICENSE](./LICENSE)。
 
 ---
 
-<a id="english"></a>
+# dsh-pulse (English)
 
-# dsh-pulse — English
+[简体中文](#dsh-pulse) · **English**
 
-[简体中文](#top) · **English**
-
-Per-session usage and cost observatory for [dsh](https://github.com/deepseek-ai/deepseek-harness). Aggregates token usage across all sessions, estimates cost from built-in DeepSeek rates, and shows the official platform balance. Everything runs on the UI plane: no model-visible tools, zero tokens spent.
+Per-session usage and cost observatory for [dsh](https://github.com/deepseek-ai/deepseek-harness). Aggregates token usage across all sessions, estimates cost from built-in DeepSeek rates, and shows the official platform balance. Beyond the web panel there is a terminal face: it mounts into [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI) (≥ 0.13.0), a third-party terminal frontend, and serves the `/pulse` command family (see [Terminal face](#terminal-face-dsh-tui)). Both frontends are pure UI: no model-visible tools, zero tokens spent.
 
 ## Features
 
@@ -285,7 +300,7 @@ With a stored `DEEPSEEK_API_KEY`, the dashboard also shows the official balance 
 ```bash
 # install — pick one source
 dsh plugin --profile web add -w dsh-pulse                              # npm registry
-dsh plugin --profile web add -w /abs/path/to/dsh-pulse-0.5.1.tgz      # packed tarball (this repo: 0.5.1)
+dsh plugin --profile web add -w /abs/path/to/dsh-pulse-0.6.0.tgz      # packed tarball (this repo: 0.6.0)
 dsh plugin --profile web add -w link:/abs/path/to/dsh-pulse           # source checkout (development)
 dsh plugin --profile web add -w git+https://github.com/Enc-hanted/dsh-pulse
 
@@ -447,7 +462,7 @@ Entries receive the factory's `t` (the `dsh-pulse` locale), the **store seat** �
 
 ## Plugin-manager and settings-page seats
 
-Beyond the dashboard, the plugin contributes to the shell's own seats (all degrade silently when a seat is missing):
+Beyond the dashboard, the plugin contributes to the shell's own seats (each degrades when absent and warns once in the log — hanging absences are caught by a 15 s delayed probe, no more silent disappearance):
 
 - **`plugins.row.config`** keyed `dsh-pulse#pulse` — the full pricing editor rendered on the bundle's Plugins-page detail (`view: "page"`) and a one-line summary in the rows list (`view: "summary"`).
 - **`plugins.detail.badge` / `plugins.detail.section`** — a tag beside the detail title and an intro card under the page content.
@@ -455,23 +470,40 @@ Beyond the dashboard, the plugin contributes to the shell's own seats (all degra
 
 ## Compatibility
 
-Verified against **@deepseek-ai/dsh 0.1.5-rc.3 and 0.1.7-alpha.2** (Windows, Node 24.14.1); dsh requires **Node ≥ 22.15**. One build serves every generation — the seams are detected at runtime:
+**From v0.6.0 the plugin targets dsh ≥ 0.2.0-rc.2 (Node ≥ 22.19) only; the 0.1.x line is retired and no longer adapted.** The per-generation verification notes below are kept for reference. v0.4.4 and earlier were verified live on **0.1.5-rc.3** (back when the plugin rode the pure classic registration); the generation discriminator introduced in v0.4.5 misrouted the 0.1.5–0.1.6 classic line (those providers also carry describe/update) — this release fixes that with a structural probe, and the provider shapes of 0.1.5-rc.3 / 0.1.6-alpha.2 / 0.1.7-alpha.2 / 0.2.0-rc.2 have each been checked against their published packages. One build serves every generation — the seams are detected at runtime:
 
 - **Projection registration**: the 0.1.2-rc host reads `stateSchema` + `wire`, older hosts (0.1.0-rc.x) read the legacy top-level `schema`/`view` pair.
 - **Persisted cache**: on 0.1.2-rc and later the plugin drives the consumer-owned ladder itself (zero-I/O `cachedSnapshot` — with the explicit cut before 0.1.7, header-only identity after — otherwise `sessionQuery.readSession` + the synchronous `coldSnapshot(meta, inheritedEventCount, events)`), while pre-0.1.2-rc hosts keep the cache's self-reading async `coldSnapshot(id)` (detected by arity).
-- **Settings**: classic hosts register a per-plugin namespace on the `SettingsProvider`; 0.1.7+ hosts write the entry's config through `SettingsForms` under revision checks (stale writes get HTTP 409). Display fields are declared volatile, so those edits never restart the plugin.
+- **Settings**: the generation probe is structural — a `register` with arity ≥ 2 means the classic `SettingsProvider` (including rc.7-shaped providers that also carry describe/update), otherwise `SettingsForms`. Classic hosts register a per-plugin namespace; 0.1.7+ hosts write the entry's config through `SettingsForms`, addressed by the entry id under revision checks (stale writes get HTTP 409; a renamed entry reports itself as not writable). Display fields are declared volatile, so those edits never restart the plugin; when the settings service goes away mid-flight, both generations reset symmetrically (GET reports not-writable, POST 503).
+- **Settings-page validation tradeoff**: the host settings page consumes the plugin's schemastery `Config` directly, so field-level validation and persistence are the host's. The plugin's own floating settings page validates drafts by hand (number types, cross-row model uniqueness) and serves no `schema.toJSON()` envelope — `dsh-client-schema-form`'s `validateDraft` is deliberately not wired. Draft-level validation cannot express cross-row uniqueness or the fx lower bound, adoption would replace localized error copy with schemastery's English messages, and it would add a soft-degrading external for old module tables — not worth it at the current form size.
 - **Client**: the 0.1.7 icon rename (`IconXOutline16` → `IconXOutlineMedium`) is bridged, and the dashboard factory registers only where `slots.registerFactory` exists. Hosts without hourly tier details still render, with costs priced at off-peak rates.
 - **0.1.7-only seats**: the store engine (`dsh-client-store`) is required via a feature-detected, try-caught lookup — without it the store seats, the General-settings toggle and the live footer sync drop out while the plain dashboard keeps working. The plugin-manager seats (`plugins.row.config`, `plugins.detail.badge`, `plugins.detail.section`) and every factory registration refuse alone, so a host that rejects one unknown slot never takes down the rest of the registration batch.
-- **Frontends**: the client half declares `platform: "web"`, so only the Web frontend loads it — `dsh-tui` and other frontends get no panel, and the plugin registers no host command, so their command plane has no `/pulse`. **The data is unaffected**: the host half is frontend-agnostic, so sessions from any frontend (Web, dsh-tui, headless, ACP) are folded by `pulseUsage` and show up in the Web dashboard.
+- **Frontends**: the client half declares `platform: "web"`, so the Web panel appears on the Web frontend only; from v0.6.0 the **terminal face** mounts inside `dsh-tui` (≥ 0.13.0) and registers the `/pulse` command family (see the section below). **The data is unaffected**: the host half is frontend-agnostic, so sessions from any frontend (Web, dsh-tui, headless, ACP) are folded by `pulseUsage` and show up on either face.
 
 The stats payload is **schema 4**: schema 3 plus `corpusSessions` (how many sessions exist outside the window, which is what separates "nothing recorded yet" from "nothing in this range"). The client reads schemas 2–4, so a host and a browser bundle from different releases keep working through an upgrade.
+
+## Terminal face (dsh-tui)
+
+The same package mounts as the terminal face `dsh-pulse/tui` inside [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI) (≥ 0.13.0, a third-party interactive terminal frontend for DeepSeek Harness), sharing the fold, pricing and config data with the Web face.
+
+**Six commands** (the `/` menu): `/pulse` toggles the mini card (same as alt+p); `/pulse-day` opens today's day view (breadcrumb + summary + hourly gantt + session ledger, `s` switches sort); `/pulse-month` the month calendar heat + weekly trend + model breakdown; `/pulse-year` the 53-week year heatmap; `/pulse-cost` today's cost view (`t` toggles cost/token in-scene); `/pulse-sessions` the session switcher (type-to-filter + two-step confirm).
+
+**Mini card**: a 3-row-max card docked above the prompt (pointer-only, never takes the keyboard). The today line splits ● current session / ○ others (today slices, never lifetime totals), the month line carries a log-scaled sparkline, and the unpriced share becomes a ⚠ line; click the body to open the full view, `×` dismisses. **alt+p** and `/pulse` are the same toggle. **Esc** unwinds the full scene level by level (day → month → year), the top-most Esc returns to chat; `?` help, `e` CSV export, `r` force refresh.
+
+**Degradations**: `tuiStatus` absent or refused → `/pulse` and alt+p degrade to opening the full day view; `sessionQuery` absent → the scenes render a red 读取失败 line and the mini card shows its error state; `tuiScenes` absent → the scene face silently drops out. Command registration prefers dsh-tui's mediated path and falls back to the host-documented C-070 direct boundary when admission refuses — one `falling back to direct commands.register (C-070, unattributed)` line in the boot log is expected, not a fault.
+
+**Known 0.2.0 regressions vs 0.1.7** (the host no longer exposes last-activity timestamps in session headers): a persisted session appended by ANOTHER process does not refold automatically — press `r` in the scene to refresh; the persisted-session ordering and the 60-session cut follow creation time rather than last-activity (matching the host's own newest-first `listSessions` order). Live sessions are unaffected — their event-log length serves as the fold-cache version stamp via the in-memory `sessions` service, so the 30s poll keeps refolding them.
+
+**Diagnostics**: the package-root `dsh-plugin.json` is the manifest declaration for dsh-tui 0.13.0 admission (a single `/pulse` command — 0.13.0's projector rejects multiple `commands.invoke` entries as duplicates); verify it statically with the host command `/plugins check <dsh-pulse path>` (it should report `compatible`). Setting `PULSE_TUI_DEBUG=1` makes the plugin emit one stderr diagnostic line (seam visibility + command registration count) at load time.
 
 ## Development
 
 ```bash
-npm test                    # host / aggregate / view / tui / golden / style / manifest suites
+npm test                    # host / aggregate / view / client-smoke / tui / golden / style / manifest suites
 npm run build               # rebuild lib/client.js from src/ (esbuild)
 ```
+
+Of these, `client-smoke` executes the dashboard's derived-model hook for real under react stubs: the bundler cannot catch a name left behind in another function's scope, and this suite is the only runtime line of defense outside the browser.
 
 Special thanks to the [Linux Do](https://linux.do/) community.
 

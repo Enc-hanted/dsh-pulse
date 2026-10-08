@@ -11,18 +11,20 @@
  * @module dsh-pulse/view
  * Layout: the self-contained subsystems live in ./view/ — keys.js (model
  * keys + bucket ladder), routes.js (route families & provider identity),
- * aux.js (aux-call shapes), pricing-engine.js (rules → money), recon.js
- * (official-bill overlay), build-view.js (window aggregation + hourly),
- * quota-estimates.js (quota ms-window math). This module keeps the
+ * aux-calls.js (aux-call shapes), pricing-engine.js (rules → money),
+ * recon.js (official-bill overlay), build-view.js (window aggregation +
+ * hourly), quota-estimates.js (quota ms-window math), accents.js
+ * (per-model accent palette), official-pricing.js (official price
+ * schedules & strict rules). This module keeps the
  * session/turn views and money formatting, and remains the ONLY import
  * surface the plugin's other modules use (exports contract unchanged).
  */
 
-import { keyMatchesFilter, modelFilterSet, modelKey, splitModelKey } from "./view/keys.js";
+import { modelFilterSet, modelKey, splitModelKey } from "./view/keys.js";
 import { EMPTY_MODEL_ROW, EMPTY_TOKENS, tierAtMs } from "./view/build-view.js";
 import { AUX_MODEL_KEY, addDayModel, addTokens } from "./view/aux-calls.js";
 import { costOf, ruleFor, ruleMaps } from "./view/pricing-engine.js";
-import { resolveProviderFor } from "./view/routes.js";
+import { keyMatchesFilter, resolveProviderFor } from "./view/routes.js";
 
 export {
 	MODEL_SEP,
@@ -30,7 +32,7 @@ export {
 	bucketOf,
 	clampSpan,
 	daysBetween,
-	keyMatchesFilter,
+	dayStart,
 	localDay,
 	modelFilterSet,
 	modelKey,
@@ -39,11 +41,13 @@ export {
 	shiftDay,
 	splitModelKey,
 	weekStart,
+	ymd,
 } from "./view/keys.js";
 export {
 	ROUTE_FAMILIES,
 	familyRouteOf,
 	isOfficialProvider,
+	keyMatchesFilter,
 	providerLabelOf,
 	rollupKeyOf,
 } from "./view/routes.js";
@@ -144,6 +148,32 @@ export function moneyParts(total, currency) {
 /** The CNY face of moneyParts for call sites that print the symbol inline. */
 export function moneyCny(total) {
   return moneyParts(total, "CNY").text;
+}
+
+/** Money with an explicit unit tail: `¥12.34` for CNY, `12.34 USD` otherwise
+ *  — the single face for table cells and in-sentence amounts. */
+export function quotaMoney(total, currency) {
+  const money = moneyParts(total, currency);
+  return money.unit === "" ? money.text : `${money.text} ${money.unit}`;
+}
+
+/** `HH:MM` for an epoch-ms stamp; null for a non-finite input — the ONE
+ *  clock face (the fold's null contract wins over printing a fake midnight). */
+export function clockOf(ms) {
+	const d = new Date(ms);
+	if (!Number.isFinite(d.getTime())) return null;
+	return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/** Token-count formatting: 1.2k / 3.4M / 5.6B — the ONE abbreviation for
+ *  both faces (the two ladders had already split: 1.5B here printed as
+ *  1500.0M on the TUI). */
+export function fmtTokens(n) {
+	const v = Number(n) || 0;
+	if (v >= 1e9) return `${(v / 1e9).toFixed(1)}B`;
+	if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
+	if (v >= 1e3) return `${(v / 1e3).toFixed(1)}k`;
+	return String(Math.round(v));
 }
 
 /** `MM-DD HH:MM:SS` short stamp for an epoch-ms value (break ruler labels). */

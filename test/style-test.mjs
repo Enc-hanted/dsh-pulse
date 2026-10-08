@@ -24,6 +24,10 @@
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { zh as localeZh, en as localeEn } from "../src/client/locale.js";
 
 // R0: the sheets live in src/client/css.js — the source of truth. The class
 // corpus is every client module; the esbuild bundle no longer carries the
@@ -65,7 +69,7 @@ const styled = (tok) => cssClasses.has(tok) || [...cssClasses].some((cls) => cls
  *  class is removed or revived. */
 const DEAD_KNOWN = new Set([]);
 const UNSTYLED_KNOWN = new Set([
-  "dp_accentCustom", "dp_consRecon", "dp_hourWrap", "dp_zoomReset",
+  "dp_accentCustom", "dp_hourWrap", "dp_zoomReset",
 ]);
 
 let failed = 0;
@@ -129,7 +133,7 @@ test("the client factory evaluates against host externals (init-order lock)", ()
     assert.ok(captured !== null && typeof captured.factory === "function", "the bundle must register a factory");
     const stub = (name) => {
       if (name === "react") {
-        return { useState: () => [], useEffect: () => {}, useMemo: (fn) => fn(), useRef: () => ({}), useSyncExternalStore: () => null };
+        return { useState: () => [], useEffect: () => {}, useMemo: (fn) => fn(), useRef: () => ({}), useSyncExternalStore: () => null, forwardRef: (fn) => fn };
       }
       if (name === "react/jsx-runtime") return { jsx: () => null, jsxs: () => null };
       return {};
@@ -194,7 +198,7 @@ test("every cross-module reference is imported (no silent globals)", () => {
   }
   const importsOf = (text) => {
     const names = new Set();
-    for (const m of text.matchAll(/import\s*\{([^}]*)\}\s*from/g)) {
+    for (const m of text.matchAll(/(?:import|export)\s*\{([^}]*)\}\s*from/g)) {
       for (const part of m[1].split(",")) {
         const id = part.trim().split(/\s+as\s+/)[0].trim();
         if (id !== "") names.add(id);
@@ -226,6 +230,35 @@ test("every cross-module reference is imported (no silent globals)", () => {
   assert.deepEqual(offenders, [], `cross-module references without imports: ${offenders.join("; ")}`);
 });
 
+test("no client module carries dead imports (a split's debris is deleted, not inherited)", () => {
+  // The sibling of the silent-globals guard, from the other side: a module
+  // split that seeds every new file with the monolith's full import list
+  // leaves names that are imported and never used — invisible to the bundle
+  // (esbuild drops them) and to the guard above (they ARE imported). The
+  // charts split shipped ~90 of these before this lock existed. Every
+  // imported name must appear at least once outside its own import clause,
+  // judged on string/comment-stripped text. `export { x } from` is not an
+  // import (a re-export surface is legitimate); main.js is pure re-export.
+  const strip = (t) => t
+    .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
+    .replace(/'(?:[^'\\\n]|\\.)*'/g, "''")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\/\/[^\n]*/g, " ");
+  const offenders = [];
+  for (const [f, rawText] of corpus) {
+    if (f === "main.js") continue;
+    const text = strip(rawText);
+    for (const m of text.matchAll(/import\s*\{([^}]*)\}\s*from/g)) {
+      for (const part of m[1].split(",")) {
+        const id = part.trim().split(/\s+as\s+/)[0].trim();
+        if (id === "") continue;
+        if (text.split(id).length - 1 <= 1) offenders.push(`${f}: ${id}`);
+      }
+    }
+  }
+  assert.deepEqual(offenders, [], `imported but never used: ${offenders.join(", ")}`);
+});
+
 test("host Button is reached only through the adapter's Btn wrapper", () => {
   // A direct `primitives.Button` render crashes old hosts (the proxy yields
   // undefined) — the adapter's Btn is the only door, fallbackClass included.
@@ -236,14 +269,72 @@ test("host Button is reached only through the adapter's Btn wrapper", () => {
 });
 
 test("money notation has one exit — no inline ¥ templates", () => {
-  // moneyParts/moneyCny own the ¥ symbol; a hand-rolled `¥${fmtCost(x)}`
-  // reopens the two-notation bug (¥ and CNY printed side by side in tips).
-  const offenders = [...corpus]
-    .filter(([f, text]) => text.includes("¥${fmtCost"))
-    .map(([f]) => f);
+  // moneyParts/moneyCny/quotaMoney own every money face. Three regressions
+  // are locked out: a hand-rolled `¥${fmtCost(x)}` (the two-notation bug —
+  // ¥ and CNY printed side by side), a `...} CNY` template tail (the suffix
+  // family), and fmtCost reaching the screen outside its sanctioned homes —
+  // view.js (definitions), compare.js (the comparison page's self-consistent
+  // 「折合 {v}/月 + CNY 小字」 suffix notation, documented in locale.js).
+  const offenders = [];
+  for (const [f, text] of corpus) {
+    if (text.includes("¥${fmtCost")) offenders.push(`${f}: inline ¥`);
+    if (/\}\s*CNY`/.test(text)) offenders.push(`${f}: CNY template tail`);
+    if (f !== "view.js" && f !== "compare.js" && /[{>(]\s*fmtCost\(/.test(text)) offenders.push(`${f}: fmtCost on screen`);
+  }
   const tui = fs.readFileSync(new URL("../src/tui.js", import.meta.url), "utf8");
-  if (tui.includes("¥${fmtCost")) offenders.push("tui.js");
-  assert.deepEqual(offenders, [], `inline ¥ templates outside view.js moneyParts: ${offenders.join(", ")}`);
+  if (tui.includes("¥${fmtCost")) offenders.push("tui.js: inline ¥");
+  assert.deepEqual(offenders, [], `money faces outside the single exits: ${offenders.join(", ")}`);
+});
+
+test("the canvas harness artifact is fresh (regenerate after css.js edits)", () => {
+  // v4-canvas.html is the layout acceptance's base plate; its CSS is LIVE
+  // but only via a regen. A commit that edits css.js (or the template)
+  // without re-running scripts/build-canvas-demo.mjs must go red here, not
+  // silently re-validate layouts against a stale artifact. The generator's
+  // own timestamp line is excluded; everything else is byte-exact.
+  // The plate carries the author's real usage figures, so plate + generator
+  // + matrix are deliberately untracked (gitignored, author-local only);
+  // where the plate is absent (a fresh clone, CI) there is nothing to guard
+  // and this suite stands down.
+  const platePath = new URL("../v4-canvas.html", import.meta.url);
+  if (!fs.existsSync(platePath)) return;
+  const out = join(tmpdir(), `dsh-canvas-fresh-${process.pid}.html`);
+  const regen = spawnSync(process.execPath, [new URL("../scripts/build-canvas-demo.mjs", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"),],
+    { env: { ...process.env, CANVAS_OUT: out } });
+  try {
+    assert.equal(regen.status, 0, `canvas regen failed: ${regen.stderr}`);
+    const norm = (text) => text.split("\n").filter((line) => !line.includes("生成于")).join("\n");
+    const fresh = norm(fs.readFileSync(out, "utf8"));
+    const committed = norm(fs.readFileSync(new URL("../v4-canvas.html", import.meta.url), "utf8"));
+    assert.equal(fresh, committed, "v4-canvas.html is stale — run node scripts/build-canvas-demo.mjs");
+  } finally {
+    fs.rmSync(out, { force: true });
+  }
+});
+
+test("locale: zh/en share one key set, every key is consumed, leaves are strings", () => {
+  // The dictionaries are hand-maintained twins; without this lock a renamed
+  // key, a missed translation or a one-sided addition silently renders as
+  // undefined copy. Dynamic consumption is exempted by EXACT name: the act*
+  // trio rides a t(label) array and the rel* family a `rel${unit}` concat.
+  const EXEMPT = new Set(["actSessions", "actTurns", "actToolCalls", "relMinutes", "relHours", "relDays", "relMonths", "relYears"]);
+  const zhKeys = Object.keys(localeZh);
+  const enKeys = Object.keys(localeEn);
+  const missingInEn = zhKeys.filter((k) => !(k in localeEn));
+  const missingInZh = enKeys.filter((k) => !(k in localeZh));
+  assert.deepEqual([missingInEn, missingInZh], [[], []],
+    `zh/en key sets diverge — not in en: ${missingInEn}; not in zh: ${missingInZh}`);
+  const empty = [...zhKeys, ...enKeys].filter((k) => {
+    const v = localeZh[k] ?? localeEn[k];
+    return typeof v !== "string" || v.length === 0;
+  });
+  assert.deepEqual(empty, [], `locale leaves must be non-empty strings: ${empty}`);
+  const hay = [...corpus].filter(([f]) => f !== "locale.js").map(([, text]) => text).join("\n");
+  const dead = zhKeys.filter((k) => {
+    if (EXEMPT.has(k)) return false;
+    return !hay.includes(`"${k}"`) && !hay.includes("'".concat(k, "'")) && !hay.includes("`".concat(k, "`"));
+  });
+  assert.deepEqual(dead, [], `dead locale keys (zero quoted consumption): ${dead.join(", ")}`);
 });
 
 test("style props carry only dynamic values (static chrome lives in the sheets)", () => {
@@ -252,24 +343,53 @@ test("style props carry only dynamic values (static chrome lives in the sheets)"
   // an accent fill), SVG plot geometry, or float positioning. Every
   // `style: { ... }` object whose values are ALL string/number literals is
   // static chrome that migrated; a backtick, identifier or spread value
-  // marks a legitimate dynamic prop.
+  // marks a legitimate dynamic prop. CONDITIONAL style props
+  // (`style: cond ? { ... } : undefined`) are static inline just the same —
+  // the only exemption is an object whose every key is float positioning
+  // (left/top/right/bottom/transform, the tooltip edge-flip family).
   const offenders = [];
+  const scanObject = (f, capture, tag) => {
+    if (capture.includes("`")) return;
+    let any = false, allStatic = true;
+    const keys = [];
+    for (const part of capture.split(",")) {
+      const colon = part.indexOf(":");
+      if (colon < 0) { allStatic = false; break; }
+      any = true;
+      keys.push(part.slice(0, colon).trim());
+      if (!/^["'-\d]/.test(part.slice(colon + 1).trim())) { allStatic = false; break; }
+    }
+    if (any && allStatic) offenders.push(`${f}: ${tag}{ ${capture.trim().slice(0, 60)} }`);
+  };
   for (const [f, text] of corpus) {
     if (f === "css.js") continue;
-    for (const m of text.matchAll(/style: \{([^{}]*)\}/g)) {
-      const capture = m[1];
-      if (capture.includes("`")) continue;
-      let any = false, allStatic = true;
-      for (const part of capture.split(",")) {
-        const colon = part.indexOf(":");
-        if (colon < 0) { allStatic = false; break; }
-        any = true;
-        if (!/^["'-\d]/.test(part.slice(colon + 1).trim())) { allStatic = false; break; }
-      }
-      if (any && allStatic) offenders.push(`${f}: { ${capture.trim().slice(0, 60)} }`);
+    for (const m of text.matchAll(/style: \{([^{}]*)\}/g)) scanObject(f, m[1], "");
+    for (const m of text.matchAll(/style:\s*[^,{}]+?\?\s*\{([^{}]*)\}/g)) {
+      const keys = m[1].split(",").map((part) => part.slice(0, part.indexOf(":")).trim());
+      const FLOATS = new Set(["left", "top", "right", "bottom", "transform"]);
+      if (keys.length > 0 && keys.every((k) => FLOATS.has(k))) continue; // float positioning
+      scanObject(f, m[1], "conditional ");
     }
   }
   assert.deepEqual(offenders, [], `static inline styles must move to the sheet: ${offenders.join("; ")}`);
+});
+
+test("font sizes ride the token ladder (typography has one scale)", () => {
+  // Every font-size in the sheets resolves through the --dp-fs-* ladder (or
+  // clamp/calc for the ring/hero scaling faces). The one sanctioned
+  // exception: rowCss deliberately clones the host DeveloperToolsRow's
+  // 14px/12px metrics so the injected seat is indistinguishable from the
+  // surrounding rows — literals are allowed only inside that sheet.
+  const offenders = [];
+  for (const [name, text] of sheets) {
+    for (const m of text.matchAll(/font-size:([^;}`]+)/g)) {
+      const v = m[1].trim();
+      if (v.startsWith("var(--dp-fs-") || v.startsWith("clamp(") || v.startsWith("calc(") || v === "inherit") continue;
+      if (name === "rowCss" && /^\d+px$/.test(v)) continue;
+      offenders.push(`${name}: ${v}`);
+    }
+  }
+  assert.deepEqual(offenders, [], `font-size must use --dp-fs-* tokens (rowCss host-clone exempt): ${offenders.join(", ")}`);
 });
 
 /** Card-layout sizes come from the content or the container (em / cqw / % /
@@ -303,6 +423,58 @@ test("card layout sizes derive from content/container, not pixels", () => {
     }
   }
   assert.deepEqual(offenders, [], "layout px crept back into the card region");
+});
+
+// The cache zone must not carry a min-width that is narrower than the ring +
+// evidence pair it exists to hold. A floor was tried twice here and both
+// values produced a wrong form (17.5em booked the evidence at the ring's
+// ceiling and dropped the whole zone to its own banner; 10.5em under-booked
+// it and wrapped the evidence UNDER the ring). The pair's measured minimum is
+// ~434px, so a floor must be stated in that unit — never borrowed from another
+// element's clamp. This lock keeps a re-introduced floor honest.
+test("the cache zone floor, if any, covers the ring+evidence pair", () => {
+  const cacheRule = /\.dp_hCache\{([^}]*)\}/.exec(cssText);
+  assert.notEqual(cacheRule, null, ".dp_hCache must stay declared");
+  const minWidth = /min-width:([^;}]+)/.exec(cacheRule[1]);
+  if (minWidth === null) return;
+  const floor = /--dp-cache-floor:([^;]+);/.exec(cssText);
+  assert.notEqual(floor, null, `${minWidth[1]} references a floor that is not declared`);
+  const evidence = /([0-9.]+)em\)?\s*$/.exec(floor[1].replace(/\s+/g, ""));
+  assert.notEqual(evidence, null, `the floor must end in the evidence measure (got: ${floor[1]})`);
+  assert.ok(Number(evidence[1]) >= 14,
+    `the floor's evidence term is ${evidence[1]}em — the ring+evidence pair measures ~434px, so anything below ~14em of evidence wraps the pair inside the zone`);
+});
+
+// --- dsh alignment ledgers (host-name locks against silent degrade) --------
+
+const { HOST_ICON_NAMES } = await import("./fixtures/dsh-host-icons.mjs");
+const { HOST_DSW_TOKENS } = await import("./fixtures/dsw-host-tokens.mjs");
+
+test("every primitives.Icon* reference has a host name or a legacy alias", () => {
+  const adapterText = moduleText("adapter.js");
+  const aliasBlock = /export const LEGACY_ICON_ALIASES = \{([^}]*)\}/.exec(adapterText);
+  assert.notEqual(aliasBlock, null, "LEGACY_ICON_ALIASES must stay declared in adapter.js");
+  const aliasKeys = new Set([...aliasBlock[1].matchAll(/\b(Icon[A-Za-z0-9]+):/g)].map((m) => m[1]));
+  const refs = [...new Set([...jsText.matchAll(/primitives\.(Icon[A-Za-z0-9]+)/g)].map((m) => m[1]))];
+  assert.ok(refs.length > 0, "icon reference extraction found nothing — the call shape changed");
+  const unknown = refs.filter((name) => !aliasKeys.has(name) && !HOST_ICON_NAMES.has(name));
+  assert.deepEqual(unknown, [],
+    `icon names with no host generation and no LEGACY_ICON_ALIASES entry (the runtime degrades them to a blank): ${unknown.join(", ")}`);
+});
+
+test("themeCss rebinds only host-known --dsw-* token names", () => {
+  const themeSheet = sheets.get("themeCss");
+  assert.ok(themeSheet !== undefined, "themeCss sheet must exist");
+  const used = [...new Set([...themeSheet.matchAll(/(--dsw-[a-z0-9-]+):/g)].map((m) => m[1]))];
+  assert.ok(used.length > 0, "themeCss token extraction found nothing");
+  // Shrink-only exemptions: names the audited host generations never
+  // defined, carried by the css.js :where bridge and its fallback values.
+  // A name may leave this set (the host defined it); never add one —
+  // pick the host's real name instead.
+  const EXEMPT = new Set(["--dsw-alias-color-danger", "--dsw-alias-state-success"]);
+  const unknown = used.filter((token) => !HOST_DSW_TOKENS.has(token) && !EXEMPT.has(token));
+  assert.deepEqual(unknown, [],
+    `themeCss token names absent from the frozen host vocabulary (test/fixtures/dsw-host-tokens.mjs — re-audit the new host, then use its real name): ${unknown.join(", ")}`);
 });
 
 for (const [name, fn] of tests) {

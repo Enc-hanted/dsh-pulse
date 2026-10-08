@@ -11,10 +11,11 @@
 # the unified CNY total through `usdToCny`.
 # `costEnabled: false` hides the cost chip and the /pulse command cost line.
 # All of this is also editable live from the settings page (Settings →
-# 用量观测台 → 定价与费用): hosts up to 0.1.6 persist those edits to
-# `$DSH_HOME/settings.yaml`; 0.1.7+ hosts edit this patch's entry config
-# directly (the plugin re-applies with the fresh values). This patch stays
-# the composition `base` layer under the older hosts' user edits.
+# 用量观测台 → 定价与费用): 0.2.0 hosts write those edits straight into this
+# patch's entry config and the plugin re-applies with the fresh values (the
+# settings service's describe() no longer carries per-namespace rows, so the
+# entry config is the single live source). This patch stays the composition
+# `base` layer under the user's edits.
 #
 # `defaultDays` names the window served when the client sends no range; the
 # client normally requests an explicit `from`/`to`. The host half also
@@ -48,6 +49,29 @@
 
     - id: pulse-tui
       name: 'dsh-pulse/tui'
+      # cordis 4.0.4 (dsh 0.2.0) hides every non-injected service from this
+      # row's ctx.get — the four tui seams carry the mini card / commands /
+      # shortcuts / scenes, and the two data seams feed the observatory:
+      # `sessionQuery` is collect()'s only hard dependency (without it the
+      # scenes render 读取失败), `sessions` supplies the live session's
+      # event-log length as the fold-cache version stamp (without it the
+      # 30s poll never refolds the active session). All six are core
+      # services a booting dsh always mounts.
+      inject:
+        - tuiScenes
+        - tuiPluginHost
+        - tuiStatus
+        - tuiShortcuts
+        - sessionQuery
+        - sessions
+      config:
+        defaultDays: 30
+        topProjects: 8
+        usdToCny: 6.8
+        pricing: []
+        costEnabled: true
+        monthlyProviders: []
+        modelColors: {}
       disabled: !!js >-
         (() => {
           try {

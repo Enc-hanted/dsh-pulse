@@ -264,7 +264,10 @@ export function createQuotaService({ ctx, resolveConfig, llmServiceOf, llmDescri
         return null;
       }
     };
-    const fromSetting = llmDescribeOf()?.find((row) => row?.value !== null && typeof row?.value === "object")?.value?.providers?.[route]?.apiKeyEnv;
+    // describe() rows are keyed by the profile entry's id (renamable), so the
+    // row is addressed by its value shape — "the entry that configures this
+    // route's credentials" — instead of picking the first object-valued row.
+    const fromSetting = llmDescribeOf()?.find((row) => row?.value?.providers?.[route]?.apiKeyEnv !== undefined)?.value?.providers?.[route]?.apiKeyEnv;
     if (typeof fromSetting === "string" && fromSetting.length > 0) {
       const value = await resolveRef(fromSetting);
       if (value !== null) return { value, source: fromSetting };
@@ -337,7 +340,7 @@ export function createQuotaService({ ctx, resolveConfig, llmServiceOf, llmDescri
   const quotaCache = { at: 0, result: null };
   const serveQuota = async (req, res, url) => {
     if (req.method !== "GET" && req.method !== "HEAD") {
-      json(res, 405, { error: "method not allowed" });
+      json.err(res, 405, "method not allowed");
       return;
     }
     const refresh = url.searchParams.get("refresh") === "1";

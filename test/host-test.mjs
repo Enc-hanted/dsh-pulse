@@ -137,6 +137,22 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
     },
   };
 
+  /** rc.7 classic provider shape: register AND describe/update all present —
+   *  the exact shape a method-presence discriminator misroutes into the
+   *  SettingsForms seam (its describe lists only self-registered namespaces,
+   *  so a pulse row never appears and every write dies). The structural
+   *  probe (register present, arity ≥ 2) must pick the classic seam. */
+  const fakeRc7Settings = {
+    ...fakeSettings,
+    describe: () => [
+      { ns: "agent-presets", schema: { type: "object" }, value: { mode: "auto" } },
+      { ns: "client-locale", schema: { type: "object" }, value: { locale: "zh" } },
+    ],
+    update: async (ns) => {
+      throw new Error(`the classic seam must ride register()/scope.update, not provider.update (got ${ns})`);
+    },
+  };
+
   /** The 0.1.7+ SettingsForms generation: the plugin's Config lives on its
    *  loader entry; describe() carries live values plus a per-write revision,
    *  update()/replace() write the profile patch and refuse stale revisions
@@ -284,7 +300,7 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
     inject: (deps, callback) => {
       const services = {};
       if (withSettings && Array.isArray(deps) && deps.includes("settings")) {
-        services.settings = withSettings === "forms" ? fakeForms : fakeSettings;
+        services.settings = withSettings === "forms" ? fakeForms : withSettings === "rc7classic" ? fakeRc7Settings : fakeSettings;
       }
       if (withLlm && Array.isArray(deps) && deps.includes("llm")) services.llm = fakeLlm;
       if (Object.keys(services).length === 0) return undefined;
@@ -360,6 +376,26 @@ const config = { defaultDays: 30, topProjects: 8, pricing: [] };
   assert.deepEqual(stats.fx, { usdToCny: 6.8 }, "payload carries the fx rate");
   assert.deepEqual(stats.auxShape, { miss: 8000, hit: 1500, out: 1000, manual: false },
     "payload carries the seed aux shape for the client's self-calibration");
+}
+
+// --- classic provider that ALSO carries describe/update (the rc.7 shape) ----
+// The shape the old method-presence discriminator misrouted into the
+// SettingsForms seam: its describe() lists only self-registered namespaces,
+// no pulse row ever appears, GET claimed writable and every POST died with a
+// misleading 400. The structural probe (register present, arity ≥ 2) must
+// keep this on the classic seam.
+{
+  const env = makeCtx({ withSettings: "rc7classic" });
+  apply(env.ctx, config);
+  const got = JSON.parse((await env.serve("/pulse/settings")).body);
+  assert.equal(got.writable, true, "a classic provider with describe+update is still the classic seam");
+  assert.equal(got.revision, undefined, "the classic seam carries no revision");
+  const saved = JSON.parse((await env.serve("/pulse/settings", {
+    method: "POST",
+    body: { costEnabled: true, usdToCny: 7.1, pricing: [] },
+  })).body);
+  assert.equal(saved.ok, true, "the write rides register()'s user layer");
+  assert.equal(env.userSection().usdToCny, 7.1, "the write landed in the classic user layer");
 }
 
 // --- environment with a settings service: full wiring ------------------------

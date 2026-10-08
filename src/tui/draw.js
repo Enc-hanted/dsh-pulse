@@ -6,14 +6,11 @@
  */
 
 import { tokSum } from "./data.js";
-import { moneyCny } from "../view.js";
+import { clockOf, fmtTokens, moneyCny } from "../view.js";
 
-export function compactTokens(n) {
-	if (!Number.isFinite(n) || n <= 0) return "0";
-	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-	if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-	return String(Math.round(n));
-}
+// One abbreviation across both faces now — fmtTokens carries the B tier the
+// TUI ladder lacked (1.5e9 printed 1500.0M here, 1.5B on the web).
+export { fmtTokens, clockOf };
 
 /** Space-tight token abbreviation for squeezed table rows: 180.6M → 181M.
  *  Exported for test/tui-test.mjs. */
@@ -28,18 +25,52 @@ export function shortSessionId(id) {
 	return String(id ?? "").replace(/^session-/, "").slice(0, 8);
 }
 
-export function clockOf(ms) {
-	const d = new Date(ms);
-	if (!Number.isFinite(d.getTime())) return null;
-	return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+/** East-Asian Wide/Fullwidth ranges (the string-width convention: ambiguous
+ *  codepoints — box drawing, block elements, ▸, ≈, … — count 1, matching
+ *  both ink's measurer and terminals). The old `> 0xff → 2` heuristic
+ *  over-counted every symbol and staircase-d any row carrying one.
+ *  Exported for test/tui-test.mjs. */
+const WIDE_RANGES = [
+	[0x1100, 0x115f], [0x231a, 0x231b], [0x2329, 0x232a], [0x23e9, 0x23ec], [0x23f0, 0x23f0], [0x23f3, 0x23f3],
+	[0x25b6, 0x25b7], [0x25c0, 0x25c1], [0x25fc, 0x25fe],
+	[0x2614, 0x2615], [0x2648, 0x2653], [0x267f, 0x267f], [0x2693, 0x2693], [0x26a1, 0x26a1],
+	[0x26aa, 0x26ab], [0x26bd, 0x26be], [0x26c4, 0x26c5], [0x26ce, 0x26ce], [0x26d4, 0x26d4],
+	[0x26ea, 0x26ea], [0x26f2, 0x26f3], [0x26f5, 0x26f5], [0x26fa, 0x26fa], [0x26fd, 0x26fd],
+	[0x2705, 0x2705], [0x270a, 0x270b], [0x2728, 0x2728], [0x274c, 0x274c], [0x274e, 0x274e],
+	[0x2753, 0x2755], [0x2757, 0x2757], [0x2795, 0x2797], [0x27b0, 0x27b0], [0x27bf, 0x27bf],
+	[0x2b1b, 0x2b1c], [0x2b50, 0x2b50], [0x2b55, 0x2b55],
+	[0x2e80, 0x303e], [0x3041, 0x33ff], [0x3400, 0x4dbf], [0x4e00, 0x9fff],
+	[0xa000, 0xa4cf], [0xa960, 0xa97f], [0xac00, 0xd7a3],
+	[0xf900, 0xfaff], [0xfe10, 0xfe19], [0xfe30, 0xfe6f],
+	[0xff00, 0xff60], [0xffe0, 0xffe6],
+	[0x1f004, 0x1f004], [0x1f0cf, 0x1f0cf], [0x1f18e, 0x1f18e], [0x1f191, 0x1f19a],
+	[0x1f200, 0x1f320], [0x1f32d, 0x1f335], [0x1f337, 0x1f37c], [0x1f37e, 0x1f393], [0x1f3a0, 0x1f3ca],
+	[0x1f3cf, 0x1f3d3], [0x1f3e0, 0x1f3f0], [0x1f3f4, 0x1f3f4], [0x1f3f8, 0x1f43e], [0x1f440, 0x1f440],
+	[0x1f442, 0x1f4fc], [0x1f4ff, 0x1f53d], [0x1f54b, 0x1f54e], [0x1f550, 0x1f567], [0x1f57a, 0x1f57a],
+	[0x1f595, 0x1f596], [0x1f5a4, 0x1f5a4], [0x1f5fb, 0x1f64f], [0x1f680, 0x1f6c5], [0x1f6cc, 0x1f6cc],
+	[0x1f6d0, 0x1f6d2], [0x1f6d5, 0x1f6d7], [0x1f6eb, 0x1f6ec], [0x1f6f4, 0x1f6fc], [0x1f7e0, 0x1f7eb],
+	[0x1f90c, 0x1f93a], [0x1f93c, 0x1f945], [0x1f947, 0x1f978], [0x1f97a, 0x1f9cb], [0x1f9cd, 0x1f9ff],
+	[0x1fa70, 0x1fa74], [0x1fa78, 0x1fa7a], [0x1fa80, 0x1fa86], [0x1fa90, 0x1faa8], [0x1fab0, 0x1fab6],
+	[0x1fac0, 0x1fac2], [0x1fad0, 0x1fad6],
+	[0x20000, 0x2fffd], [0x30000, 0x3fffd],
+];
+
+function isWide(code) {
+	for (const [lo, hi] of WIDE_RANGES) {
+		if (code >= lo && code <= hi) return true;
+		if (code < lo) break;
+	}
+	return false;
 }
 
-/** Display width of a string (CJK and full-width forms count 2) —
- *  String.padEnd counts JS chars and staircase-d any CJK-heavy table.
+/** Display width of a string — CJK/fullwidth count 2, symbols count 1.
  *  Exported for test/tui-test.mjs. */
 export function displayWidth(s) {
 	let w = 0;
-	for (const ch of String(s ?? "")) w += ch.charCodeAt(0) > 0xff ? 2 : 1;
+	for (const ch of String(s ?? "")) {
+		const code = ch.codePointAt(0);
+		w += code > 0xff && isWide(code) ? 2 : code > 0xffff ? 2 : 1; // astral surrogates read wide-safe
+	}
 	return w;
 }
 
@@ -60,12 +91,28 @@ export function fitDisplay(text, width) {
 	const s = String(text ?? "");
 	let out = "", w = 0;
 	for (const ch of s) {
-		const cw = ch.charCodeAt(0) > 0xff ? 2 : 1;
+		const cw = displayWidth(ch);
 		if (w + cw > width) break;
 		out += ch;
 		w += cw;
 	}
 	return padDisplay(out, width);
+}
+
+/** fitDisplay, but a cut leaves an ellipsis so mid-word chops ("DSh Pulse
+ *  插") don't read as broken wrapping. The result is still exactly `width`
+ *  display columns. Exported for test/tui-test.mjs. */
+export function truncateDisplay(text, width) {
+	const s = String(text ?? "");
+	if (displayWidth(s) <= width) return padDisplay(s, width);
+	let out = "", w = 0;
+	for (const ch of s) {
+		const cw = displayWidth(ch);
+		if (w + cw > width - 1) break;
+		out += ch;
+		w += cw;
+	}
+	return padDisplay(`${out}…`, width);
 }
 
 /** Closing punctuation that may not START a wrapped line (basic kinsoku) —
@@ -122,9 +169,30 @@ export function hexMix(a, b, t) {
 
 function parseHex(color) {
 	const m = /^#?([0-9a-f]{6})$/i.exec(String(color ?? "").trim());
-	if (!m) return null;
-	const n = parseInt(m[1], 16);
-	return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+	if (m) {
+		const n = parseInt(m[1], 16);
+		return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+	}
+	// dsh-tui 0.13 palettes carry their colors as ink "rgb(r,g,b)" strings.
+	const r = /^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/.exec(String(color ?? "").trim());
+	return r ? [Number(r[1]), Number(r[2]), Number(r[3])] : null;
+}
+
+/** Year-grid tile colors — the GitHub contribution-graph idiom. The empty
+ *  lattice sits just above the terminal-background anchor so the 7×N grid
+ *  stays visible on any terminal (the old "vertical bars" regression was the
+ *  tile COLOR — a saturated badge fill — not background painting itself);
+ *  heat deepens toward accent, with the top step just under it so today's
+ *  solid accent tile stays distinguishable. Exported for test/tui-test.mjs. */
+export function yearTiles(anchor, accent) {
+	const a = accent ?? "#5f87ff";
+	return [
+		hexMix(anchor ?? "#000000", a, 0.18),
+		hexMix(anchor, a, 0.36),
+		hexMix(anchor, a, 0.58),
+		hexMix(anchor, a, 0.78),
+		hexMix(anchor, a, 0.92),
+	];
 }
 
 /** Five-step activity ramp: empty tint, then background → accent mixes. */
@@ -228,11 +296,14 @@ export function modelLayout(rightW) {
 
 /** Day-view 分时 gantt (pure; exported shape for tests): one row per
  *  session, one cell group per hour, ▓ band marking the peak-billing
- *  hours, plus the per-hour totals the old 活跃时段 strip showed.
- *  Exported for test/tui-test.mjs. */
+ *  hours, plus the per-hour totals the old 活跃时段 strip showed. The label
+ *  column and per-hour width scale with the terminal (the old fixed 12/2
+ *  was an 80-col budget that stranded half a 148-col row); `total` is the
+ *  合计 sparkline drawn at the SAME pitch as the spans so its peaks sit
+ *  under the hours they summarize. Exported for test/tui-test.mjs. */
 export function ganttRows(sessions, day, width, peakSet) {
-	const labelW = 12;
-	const colsPerHour = Math.max(1, Math.min(2, Math.floor((Math.max(width, 40) - labelW - 2) / 24)));
+	const labelW = Math.min(24, Math.max(12, Math.floor(Math.max(width, 40) * 0.14)));
+	const colsPerHour = Math.max(1, Math.min(4, Math.floor((Math.max(width, 40) - labelW - 2) / 24)));
 	const spanW = colsPerHour * 24;
 	const hours = new Array(24).fill(0);
 	const rows = sessions.map((s) => {
@@ -244,10 +315,11 @@ export function ganttRows(sessions, day, width, peakSet) {
 			hours[hh] += sum;
 			cells.push((sum > 0 ? "█" : " ").repeat(colsPerHour));
 		}
-		return { id: s.id, label: fitDisplay(s.title ?? shortSessionId(s.id), labelW), span: cells.join("") };
+		return { id: s.id, label: truncateDisplay(s.title ?? shortSessionId(s.id), labelW), span: cells.join("") };
 	});
 	let peakHour = 0, peakTok = 0;
 	hours.forEach((v, i) => { if (v > peakTok) { peakTok = v; peakHour = i; } });
 	const band = Array.from({ length: 24 }, (_, hh) => (peakSet?.has(hh) ? "▓" : " ").repeat(colsPerHour)).join("");
-	return { hours, peakHour, spanW, band, rows };
+	const total = sparkline(hours.flatMap((v) => Array(colsPerHour).fill(v)));
+	return { hours, peakHour, spanW, band, total, labelW, rows };
 }

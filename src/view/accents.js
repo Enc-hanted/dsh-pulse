@@ -2,10 +2,12 @@
  * Per-model accent subsystem: the deterministic accent palette (FNV hash,
  * OKLab spacing, the family gradient) and the accent map every surface
  * shares. Extracted verbatim from view.js; the facade re-exports every
- * name, so no importer changed. Core key helpers come back through the
- * facade (function declarations — cycle-safe at call time).
+ * name, so no importer changed. Sibling imports are horizontal only —
+ * keys/routes/aux-calls carry no back-edge here.
  */
-import { AUX_MODEL_KEY, modelKey, rollupKeyOf, splitModelKey } from "../view.js";
+import { modelKey, splitModelKey } from "./keys.js";
+import { rollupKeyOf } from "./routes.js";
+import { AUX_MODEL_KEY } from "./aux-calls.js";
 
 // --- per-model accent colors (deterministic across surfaces) -------------------
 

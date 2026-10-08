@@ -158,7 +158,7 @@ export function createBalanceService({ ctx, deepseekSection }) {
   const balanceCache = { at: 0, result: null };
   const serveBalance = async (req, res, url) => {
     if (req.method !== "GET" && req.method !== "HEAD") {
-      json(res, 405, { error: "method not allowed" });
+      json.err(res, 405, "method not allowed");
       return;
     }
     const refresh = url.searchParams.get("refresh") === "1";

@@ -45,8 +45,10 @@
  * theme.background → theme.accent so /theme re-skins the whole scene.
  *
  * ZERO top-level external imports (react/ink come through scene props);
- * node builtins only. Module `inject` stays EMPTY — every seam is
- * soft-probed at apply time (#183 discipline).
+ * node builtins only. Module `inject` stays EMPTY — the service seams are
+ * declared on the patch row's `inject:` list instead (cordis 4.0.4 / dsh
+ * 0.2.0 hides non-declared services from ctx.get), and apply() still
+ * soft-probes + degrades every one of them (#183 discipline).
  *
  * Layout: ./tui/data.js (folds + pricing + honesty), ./tui/draw.js (terminal
  * primitives), ./tui/scene.js (components + wiring). This module is the
@@ -56,10 +58,13 @@
 import { apply } from "./tui/scene.js";
 
 export { apply };
+export { cursorStep, resolveTheme } from "./tui/scene.js";
 
 export const name = "pulse-tui";
 
-/** No code-level service requirements: every seam is soft-probed (#183). */
+/** No code-level service requirements: the seams are declared on the patch
+ *  row's `inject:` list (cordis 4.0.4 hides non-declared services), while
+ *  apply() itself keeps soft-probing + degrading every seam (#183). */
 export const inject = [];
 
 export {
@@ -67,6 +72,11 @@ export {
 	peakHoursFor, miniCardModel,
 } from "./tui/data.js";
 export {
-	compactTokensTight, displayWidth, wrapDisplay, money,
-	sparkTrend, weeklyBars, modelLayout, ganttRows,
+	compactTokensTight, displayWidth, wrapDisplay, money, hexMix, fitDisplay,
+	truncateDisplay, sparkTrend, weeklyBars, modelLayout, ganttRows, yearTiles,
+	fmtTokens,
 } from "./tui/draw.js";
+export { layoutBudget } from "./tui/scene.js";
+export {
+	noteCurrentSession, pulseStripToggle, stripStore, _resetStripForTests,
+} from "./tui/strip.js";

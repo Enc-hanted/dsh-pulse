@@ -11,12 +11,20 @@
  */
 
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import esbuild from "esbuild";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+// The manifest's dsh.client.external is THE declaration of which host
+// module-table names this bundle consumes; esbuild's external list derives
+// from it so the two cannot drift. react-dom joins here — the factory
+// envelope requires it directly (portal capability), so it belongs on the
+// list even though no inner module imports it.
+const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+const external = [...new Set([...(manifest.dsh?.client?.external ?? []), "react-dom"])];
 
 const result = await esbuild.build({
   entryPoints: [join(root, "src", "client", "main.js")],
@@ -26,12 +34,7 @@ const result = await esbuild.build({
   target: "es2022",
   // Everything the host's module table serves; the envelope's factory-scoped
   // `require` resolves them at activation time (see the dsh.client contract).
-  external: [
-    "react",
-    "react/jsx-runtime",
-    "@deepseek-ai/dsh-client-ui-primitives",
-    "@deepseek-ai/dsh-client-store",
-  ],
+  external,
   write: false,
   logLevel: "warning",
 });
@@ -47,11 +50,11 @@ const out = `window.__ModuleLoader__.load({
 \t\tvar module = { exports: {} };
 \t\tvar exports = module.exports;
 \t\tObject.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
-\t\tlet hostDefineStore = null;
-\t\ttry { hostDefineStore = require("@deepseek-ai/dsh-client-store").defineStore ?? null; } catch { /* old module table */ }
+\t\tlet hostStore = null;
+\t\ttry { hostStore = require("@deepseek-ai/dsh-client-store"); } catch { /* old module table */ }
 \t\tlet reactDom = null;
 \t\ttry { reactDom = require("react-dom"); } catch { /* portal-less fallback */ }
-\t\tglobalThis.__dshPulseHost = { defineStore: hostDefineStore, reactDom };
+\t\tglobalThis.__dshPulseHost = { defineStore: hostStore?.defineStore ?? null, createSnapshotStore: hostStore?.createSnapshotStore ?? null, reactDom };
 ${inner}
 \t\treturn module.exports;
 \t}

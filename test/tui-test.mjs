@@ -15,7 +15,11 @@ import {
 	viewSlice, mergeRecord, money, wrapDisplay, displayWidth, eqId,
 	monthLabelOfWeek, compactTokensTight, sparkTrend, weeklyBars,
 	modelLayout, peakHoursFor, ganttRows, miniCardModel, pricingLabelOf,
+	apply, cursorStep, resolveTheme, hexMix, fitDisplay, truncateDisplay,
+	yearTiles, layoutBudget, fmtTokens,
+	noteCurrentSession, pulseStripToggle, stripStore, _resetStripForTests,
 } from "../src/tui.js";
+import { collect, foldCache } from "../src/tui/data.js";
 import { DEFAULT_USD_TO_CNY, MODEL_SEP, costOf } from "../src/view.js";
 
 /** v4 prices (per-million, CNY) — same shape as the built-in schedules. */
@@ -289,6 +293,96 @@ test("ganttRows: hour totals, peak hour, band and span share the same pitch", ()
 	assert.ok(g.band.slice(17 * 2, 17 * 2 + 2) === "▓▓", "hour 17 sits in the peak band");
 });
 
+test("ganttRows: the total row rides the span pitch, label column scales with width", () => {
+	const sessions = [{ id: "a", title: "短", record: { hoursByDay: { "2026-08-20": { "9": { m: { input: 10, output: 0, cacheRead: 0, cacheWrite: 0 } } } } } }];
+	const narrow = ganttRows(sessions, "2026-08-20", 80, null);
+	assert.equal(narrow.spanW, 48, "80 cols keeps 2 cells per hour");
+	assert.equal(narrow.total.length, narrow.spanW, "total sparkline shares the span pitch (was half-width)");
+	assert.equal(narrow.labelW, 12, "80-col budget keeps the 12-col label column");
+	assert.equal(displayWidth(narrow.rows[0].label), 12, "labels stay padded to the label column");
+	assert.ok(narrow.total.slice(9 * 2, 9 * 2 + 2) > "▁", "hour 9 rises on the total row, aligned under its column");
+
+	const wide = ganttRows(sessions, "2026-08-20", 148, null);
+	assert.equal(wide.spanW, 96, "148 cols buys 4 cells per hour");
+	assert.equal(wide.labelW, 20, "wide budgets widen the label column");
+	assert.equal(wide.total.length, wide.spanW, "wide total stays on the span pitch");
+	const truncated = ganttRows([{ id: "a", title: "一个特别特别特别特别长的会话标题远远超过标签列宽", record: { hoursByDay: {} } }], "2026-08-20", 148, null);
+	assert.ok(truncated.rows[0].label.trim().endsWith("…"), "wide-budget truncation leaves an ellipsis");
+	assert.equal(displayWidth(truncated.rows[0].label), 20);
+});
+
+test("displayWidth: East-Asian-wide counts 2, symbols count 1 (ink/terminal convention)", () => {
+	assert.equal(displayWidth("中"), 2);
+	assert.equal(displayWidth("あ"), 2);
+	assert.equal(displayWidth("한"), 2);
+	assert.equal(displayWidth("Ａ"), 2, "fullwidth latin counts 2");
+	assert.equal(displayWidth("ab"), 2);
+	assert.equal(displayWidth("▸"), 1, "ambiguous triangle counts 1 — it renders 1 (the old >0xff→2 staircase-d the current row)");
+	assert.equal(displayWidth("█"), 1);
+	assert.equal(displayWidth("▁"), 1);
+	assert.equal(displayWidth("▶"), 2, "U+25B6 is East-Asian Wide");
+	assert.equal(displayWidth("●"), 1);
+	assert.equal(displayWidth("…"), 1);
+	assert.equal(displayWidth("≈"), 1);
+	assert.equal(displayWidth("¥"), 1);
+	assert.equal(displayWidth("⚠"), 1);
+	assert.equal(fitDisplay("当前会话", 12), "当前会话    ");
+	assert.equal(displayWidth(truncateDisplay("一个特别长的会话标题", 10)), 10);
+	assert.ok(truncateDisplay("一个特别长的会话标题", 10).includes("…"));
+	assert.equal(truncateDisplay("短", 10), "短        ", "no ellipsis when it fits");
+});
+
+test("hexMix: parses ink rgb() strings (0.13 palette format) as well as hex", () => {
+	assert.equal(hexMix("#000000", "#7DA1DE", 0.5), "#3f516f", "sanity: hex path");
+	assert.equal(hexMix("rgb(0,0,0)", "rgb(125,161,222)", 0), "#000000");
+	assert.equal(hexMix("rgb(0,0,0)", "rgb(125,161,222)", 1), "#7da1de");
+	assert.equal(hexMix("rgb(0,0,0)", "rgb(125,161,222)", 0.5), "#3f516f", "rgb() path agrees with hex path");
+	assert.equal(hexMix("nonsense", "#7DA1DE", 0.3), "#7DA1DE", "unparseable falls to the right operand");
+});
+
+test("yearTiles: lattice keeps the grid visible, top heat stays under today's accent", () => {
+	const dark = yearTiles("#000000", "#7DA1DE");
+	assert.equal(dark.length, 5);
+	for (const c of dark) assert.match(c, /^#[0-9a-f]{6}$/, `tile must be a hex color: ${c}`);
+	assert.equal(new Set(dark).size, 5, "five distinct steps");
+	assert.notEqual(dark[0], "#000000", "the empty lattice must be visible, not transparent");
+	assert.notEqual(dark[4], "#7da1de", "top heat sits just under today's solid accent tile");
+	const light = yearTiles("#ffffff", "#3F6CC4");
+	assert.ok(parseInt(light[0].slice(1, 3), 16) > 200, "light-theme lattice anchors near white");
+});
+
+test("cursorStep: year heatmap arrows are the month grid's transpose", () => {
+	const K = (over = {}) => ({ leftArrow: false, rightArrow: false, upArrow: false, downArrow: false, shift: false, ...over });
+	// day: ±1 day, shift fast-path ±7
+	assert.equal(cursorStep("day", K({ upArrow: true })), -1);
+	assert.equal(cursorStep("day", K({ downArrow: true })), 1);
+	assert.equal(cursorStep("day", K({ leftArrow: true })), -1);
+	assert.equal(cursorStep("day", K({ upArrow: true, shift: true })), -7);
+	// month: rows=weeks, cols=weekdays → ←→ ±1 day, ↑↓ ±1 week
+	assert.equal(cursorStep("month", K({ leftArrow: true })), -1);
+	assert.equal(cursorStep("month", K({ rightArrow: true })), 1);
+	assert.equal(cursorStep("month", K({ upArrow: true })), -7);
+	assert.equal(cursorStep("month", K({ downArrow: true })), 7);
+	// year: rows=weekdays, cols=weeks → ←→ ±1 week, ↑↓ ±1 day
+	assert.equal(cursorStep("year", K({ leftArrow: true })), -7, "left moves one column (week) left");
+	assert.equal(cursorStep("year", K({ rightArrow: true })), 7);
+	assert.equal(cursorStep("year", K({ upArrow: true })), -1, "up moves one row (weekday) up");
+	assert.equal(cursorStep("year", K({ downArrow: true })), 1);
+	assert.equal(cursorStep("year", K({ upArrow: true, shift: true })), -7, "shift stays the ±7 fast path");
+	assert.equal(cursorStep("year", null), 0);
+});
+
+test("resolveTheme: 0.13 hands a NAME — objects pass through, names resolve, unknowns degrade", () => {
+	const palette = { accent: "rgb(125,161,222)", text: "rgb(232,230,224)" };
+	assert.equal(resolveTheme({}, "dark"), resolveTheme(undefined, "dark"), "string names fall back to the built-in mist values");
+	assert.equal(resolveTheme({ getTheme: () => palette }, "dark"), palette, "a ui.getTheme probe wins when the host exports one");
+	assert.equal(resolveTheme(null, palette), palette, "0.1.x object shape passes through untouched");
+	const light = resolveTheme({}, "light");
+	const dark = resolveTheme({}, "dark");
+	assert.notEqual(light.accent, dark.accent, "light/dark fallbacks differ");
+	assert.ok(dark.accent && dark.text, "fallbacks carry accent and text");
+});
+
 test("miniCardModel: today splits ● current vs ○ others, month slice reports unpriced share", () => {
 	const pricing = makePricing({ rules: [{ model: "deepseek-v4-pro", input: 4, cacheRead: 0.8, output: 16 }] });
 	const pro = `${MODEL_SEP}deepseek-v4-pro`;
@@ -365,10 +459,204 @@ test("mergeRecord folds auxByDay (counts + title estimates) into the merged corp
 	assert.equal(target.auxByDay["2026-09-28"].titleKey, "deepseek-v4-pro");
 });
 
+/* ---- dsh 0.2.0 adaptation locks: data-layer shapes + C-070 fallback ---- */
+
+const localDayOf = (ts) => {
+	const d = new Date(ts);
+	const p = (n) => String(n).padStart(2, "0");
+	return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
+const DAY_TS = new Date("2026-08-20T14:00:00").getTime();
+const messageEvent = (ts, input) => ({
+	type: "assistant/message",
+	time: ts,
+	data: {
+		usage: { inputTokens: input, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+		message: { source: { provider: "deepseek", model: "deepseek-v4-pro" } },
+	},
+});
+const titleEvent = (title) => ({ type: "session/title", data: { title } });
+
+/** 0.2.0-stubbed ctx: headers carry only {version, id, createdAt, cwd} and
+ *  listSessions records expose {header, live, persisted}. */
+function stubCollectCtx({ listed, read }) {
+	const reads = [];
+	const ctx = {
+		get(name) {
+			if (name === "sessionQuery") {
+				return {
+					listSessions: async () => listed,
+					readSession: async (id) => { reads.push(id); return read(id); },
+				};
+			}
+			return undefined; // sessions / settings / sessionProjectionCache absent
+		},
+	};
+	return { ctx, reads };
+}
+
+test("collect on 0.2.0 shapes: {session} key, createdAt-only header, title from the fold", async () => {
+	const createdAt = DAY_TS - 86_400_000;
+	const day = localDayOf(DAY_TS);
+	const header = { version: 1, id: "sess-020-a", createdAt, cwd: "D:/proj" };
+	const { ctx, reads } = stubCollectCtx({
+		listed: [{ header: structuredClone(header), live: false, persisted: true }],
+		read: () => ({
+			session: structuredClone(header),
+			inheritedEventCount: 0,
+			events: [messageEvent(DAY_TS, 1_000_000), titleEvent("事件起的标题")],
+		}),
+	});
+	const result = await collect(ctx, {});
+	assert.equal(result.empty, false);
+	assert.equal(reads.length, 1);
+	assert.ok(result.record.byDay[day], "0.2.0 readSession {session} key must still fold into the day window");
+	assert.equal(result.record.byDay[day].input, 1_000_000);
+	assert.equal(result.sessions[0].title, "事件起的标题",
+		"0.2.0 headers carry no title — the fold's session/title capture must supply it");
+	assert.equal(foldCache.get("sess-020-a").version, createdAt, "closed 0.2.0 sessions stamp on createdAt");
+});
+
+test("pulseStripToggle: show / repeat / refusal / teardown, no leaked poll", () => {
+	_resetStripForTests();
+	const disposed = [];
+	const mkCtx = (register) => ({
+		get: (name) => (name === "tuiStatus" ? { registerView: register } : undefined),
+		logger: { warn() {} },
+	});
+	// 1. first show registers under the host row cap and starts the poll
+	let registered = null;
+	stripStore.ctx = mkCtx((view) => { registered = view; return () => disposed.push("A"); });
+	assert.equal(pulseStripToggle(true), true);
+	assert.equal(registered.key, "pulse");
+	assert.equal(registered.maxRows, 3);
+	assert.ok(stripStore.timer, "the 30s poll runs only after a successful registration");
+	// 2. same-direction repeat is a no-op
+	assert.equal(pulseStripToggle(true), false);
+	// 3. refusal downgrades and leaves NO timer residue (the old order
+	//    started the poll before registerView and leaked it on refusal)
+	stripStore.ctx = mkCtx(() => "not-a-function");
+	assert.equal(pulseStripToggle(false), true, "teardown of the shown card");
+	assert.equal(stripStore.timer, null);
+	assert.equal(pulseStripToggle(true), false, "refused");
+	assert.equal(stripStore.timer, null);
+	// 4. teardown disposes and clears the poll; no-arg means toggle
+	stripStore.ctx = mkCtx(() => () => disposed.push("B"));
+	assert.equal(pulseStripToggle(true), true);
+	assert.equal(pulseStripToggle(), true);
+	assert.deepEqual(disposed, ["A", "B"]);
+	assert.equal(stripStore.timer, null);
+	// seam: the scene's live-session stash feeds the ●当前 marker
+	noteCurrentSession("sess-42");
+	_resetStripForTests();
+});
+
+test("fmtTokens: one abbreviation for both faces, B tier included", () => {
+	assert.equal(fmtTokens(1.5e9), "1.5B");
+	assert.equal(fmtTokens(830_400), "830.4k");
+	assert.equal(fmtTokens(0), "0");
+	// the tight variant keeps its M-capped compact face for squeezed rows
+	assert.equal(compactTokensTight(1.5e9), "1500M");
+});
+
+test("layoutBudget: the year grid takes what it needs, the inspector keeps the rest", () => {
+	const cal = { unpriced: [], windowCost: { estimated: false }, peak: 0, offpeak: 0 };
+	// 200 columns: two-column layout with the whole 53-week year resident.
+	const wide = layoutBudget({ contentW: 200, termRows: 50, cal, month: "2026-10", monthMode: false });
+	assert.equal(wide.twoCol, true);
+	assert.equal(wide.fitWeeks, 53);
+	assert.ok(wide.modelN >= 2);
+	// 80 columns single-column: healthy rows, no extras dropped.
+	const mid = layoutBudget({ contentW: 80, termRows: 40, cal, month: "2026-10", monthMode: false });
+	assert.equal(mid.twoCol, false);
+	assert.equal(mid.fitWeeks, 53);
+	assert.equal(mid.dropTrend, false);
+	// 48 columns: the window slices to the gutter + weeks (paging fallback),
+	// and a starved terminal drops trend/tier before the model rows vanish.
+	const narrow = layoutBudget({ contentW: 48, termRows: 30, cal, month: "2026-10", monthMode: false });
+	assert.equal(narrow.twoCol, false);
+	assert.equal(narrow.fitWeeks, 45);
+	assert.equal(narrow.dropTrend, true);
+	// month mode: fixed 44-col grid; fitWeeks is meaningless (0); offset/total
+	// come from the month and weekCount is their honest ceil-divided pair.
+	const month = layoutBudget({ contentW: 200, termRows: 50, cal, month: "2026-10", monthMode: true });
+	assert.equal(month.leftW, 44);
+	assert.equal(month.fitWeeks, 0);
+	assert.equal(month.total, 31);
+	assert.ok(month.offset >= 0 && month.offset <= 6);
+	assert.equal(month.weekCount, Math.ceil((month.offset + 31) / 7));
+});
+
+test("foldCache freshness: live seq growth refolds, closed sessions stay cached", async () => {
+	const day = localDayOf(DAY_TS);
+	const createdAt = DAY_TS - 60_000;
+	const mkHeader = (id) => ({ version: 1, id, createdAt, cwd: "D:/proj" });
+	let seq = 4;
+	const store = new Map([["sess-live", { get seq() { return seq; } }]]);
+	const eventsFor = (id) => id === "sess-live"
+		? (seq >= 9 ? [messageEvent(DAY_TS, 1_000_000), messageEvent(DAY_TS, 500_000)] : [messageEvent(DAY_TS, 1_000_000)])
+		: []; // the closed session carries no usage — it isolates the live assertion
+	const listed = [
+		{ header: mkHeader("sess-live"), live: true, persisted: true },
+		{ header: mkHeader("sess-closed"), live: false, persisted: true },
+	];
+	const reads = [];
+	const ctx = {
+		get(name) {
+			if (name === "sessionQuery") return {
+				listSessions: async () => listed,
+				readSession: async (id) => {
+					reads.push(id);
+					return { session: structuredClone(mkHeader(id)), inheritedEventCount: 0, events: eventsFor(id) };
+				},
+			};
+			if (name === "sessions") return { get: (id) => store.get(id) };
+			return undefined;
+		},
+	};
+	const first = await collect(ctx, {});
+	assert.equal(first.record.byDay[day].input, 1_000_000);
+	assert.equal(foldCache.get("sess-live").version, seq, "live sessions stamp on the in-memory log length");
+	seq = 9;
+	const second = await collect(ctx, {});
+	assert.equal(second.record.byDay[day].input, 1_500_000, "seq growth must invalidate the fold and pick up new usage");
+	assert.equal(reads.filter((id) => id === "sess-closed").length, 1,
+		"closed sessions keep their stable createdAt stamp and stay cached");
+});
+
+/** apply()-level stub: the mediated host admission always throws (what a
+ *  manifest-less plugin hits on dsh-tui 0.13.0); commands.register records. */
+function stubApplyCtx() {
+	const registered = [];
+	const warns = [];
+	return {
+		registered, warns,
+		ctx: {
+			get(name) {
+				if (name === "tuiScenes") return { register: () => () => {}, open: () => true };
+				if (name === "tuiPluginHost") return { registerCommand: () => { throw new Error("COMPONENT_NOT_ADMITTED: no manifest identity"); } };
+				if (name === "commands") return { register: (def) => { registered.push(def.name); } };
+				return undefined; // tuiStatus / tuiShortcuts — degrade paths
+			},
+			effect(fn) { fn(); },
+			logger: { warn: (m) => warns.push(String(m)) },
+		},
+	};
+}
+
+test("apply falls back to direct commands.register when mediated admission throws (C-070)", async () => {
+	const { ctx, registered, warns } = stubApplyCtx();
+	await apply(ctx, {});
+	assert.deepEqual(registered, ["pulse", "pulse-day", "pulse-month", "pulse-year", "pulse-cost", "pulse-sessions"],
+		"all six commands must land via the documented C-070 direct boundary");
+	assert.equal(warns.filter((w) => w.includes("C-070")).length, 1, "the mediated fallback warns once per apply, not once per command");
+	assert.equal(warns.length, 1, "no per-command failure spam on the fallback path");
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
 	try {
-		fn();
+		await fn();
 		console.log(`  ok  ${name}`);
 	} catch (error) {
 		failed += 1;

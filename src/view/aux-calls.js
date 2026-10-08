@@ -4,6 +4,10 @@
  * the fold shares.
  */
 
+import { AUX_PRICE_AS } from "../pricing-facts.js";
+
+export { AUX_PRICE_AS };
+
 /** The auxiliary-call pseudo model (official `web_search` / title LLM).
  *  Locally only the request count exists — no usage event — so its tokens
  *  are shape-derived ESTIMATES (single-call shape measured against the
@@ -31,12 +35,8 @@ export function auxShapeOf(value) {
   return { miss: miss ?? seed.miss, hit: hit ?? seed.hit, out: out ?? seed.out };
 }
 
-/** The model id the aux pseudo-model's requests BILL as (the search LLM rides
- *  the retired `deepseek-v4-flash` name, which the platform routes to
- *  `deepseek-flash`). ONE constant for the whole plugin: the aggregate fold
- *  classifies those events' peak tier under the same id ({@link import}ed by
- *  `aggregate.js`), so a platform rename is a one-line change everywhere. */
-export const AUX_PRICE_AS = "deepseek-flash";
+/** The model id the aux pseudo-model's requests BILL as — re-exported from
+ *  pricing-facts.js, which is the constant's single home. */
 
 export function addTokens(bucket, tokens) {
   bucket.input += tokens.input || 0;

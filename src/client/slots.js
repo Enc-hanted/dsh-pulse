@@ -1,8 +1,8 @@
-import { useState, useEffect, useMemo, useSyncExternalStore, jsx, jsxs } from "./react.js";
+import { useState, useEffect, useMemo, useRef, useSyncExternalStore, jsx, jsxs } from "./react.js";
 import { recordTokens } from "../view.js";
-import { fill, fmtTokens, loadPanels, loadStats, loadTheme, openOverlay, overlayState, setOverlayOpen, setTheme, statsState, subscribeOverlay, subscribePanels, subscribeStats, subscribeTheme, useBalance, usePulseStats } from "./stores.js";
+import { WIDTH_MAX, WIDTH_MIN, fill, fmtTokens, loadPanels, loadStats, loadTheme, loadWidth, openOverlay, overlaySnapshot, setOverlayOpen, setTheme, setWidth, statsState, subscribeOverlay, subscribePanels, subscribeStats, subscribeTheme, subscribeWidth, useBalance, useEscape, usePulseStats } from "./stores.js";
 import { focusProjectLabel } from "./charts.js";
-import { PulseDashboard } from "./csv.js";
+import { PulseDashboard } from "./dashboard.js";
 import { PricingPage } from "./settings.js";
 import { ComparePage } from "./compare.js";
 import { PanelsPage } from "./panels.js";
@@ -30,9 +30,12 @@ import { buildView, cacheHitRateOf, costOf, localDay, moneyCny, sessionModelRows
 				["compare", t("compare")],
 				["panels", t("panels")],
 			];
-			const tabButtons = tabs.map(([target, label], i) => jsx(Btn, { fallbackClass: "dp_miniBtn",
+			const tabButtons = tabs.map(([target, label], i) => jsx(Btn, {
+				// Right-anchor rides the sheet class on BOTH Btn channels: the
+				// official path drops fallbackClass, the fallback prefers it.
+				fallbackClass: i === 0 ? "dp_miniBtn dp_setLinkEnd" : "dp_miniBtn",
+				className: i === 0 ? "dp_setLinkEnd" : undefined,
 				variant: target === page ? "primary" : "outline", size: "sm",
-				style: i === 0 ? { marginLeft: "auto" } : undefined,
 				onClick: () => setPage(target),
 				children: label,
 			}, target));
@@ -353,16 +356,42 @@ import { buildView, cacheHitRateOf, costOf, localDay, moneyCny, sessionModelRows
 		 *  and the full observatory the sidebar button opens. The summary hands
 		 *  over to the observatory in place, so the seat never stacks. */
 		export function PulseOverlay({ t, renderFactorySlot }) {
-			const overlay = useSyncExternalStore(subscribeOverlay, () => overlayState);
+			const overlay = useSyncExternalStore(subscribeOverlay, overlaySnapshot);
 			const open = overlay.open;
 			const summary = overlay.mode === "summary";
 			const stats = useSyncExternalStore(subscribeStats, () => statsState);
-			useEffect(() => {
-				if (!open) return;
-				const onKey = (e) => { if (e.key === "Escape") setOverlayOpen(false); };
-				document.addEventListener("keydown", onKey);
-				return () => document.removeEventListener("keydown", onKey);
-			}, [open]);
+			/** 浮层卡无级宽度：偏好走 width store（theme/panels 同款 localStorage），
+			 *  null = 880 表格默认。拖动期间直写卡片 style——重排归浏览器，不经
+			 *  React；松手（或 pointercancel）才提交偏好。左缘把手兼作 slider
+			 *  语义（←→ ±40px），双击复位。 */
+			const cardRef = useRef(null);
+			const gripDrag = useRef(null);
+			const [width, setWidthLive] = useState(loadWidth);
+			useEffect(() => subscribeWidth(setWidthLive), []);
+			const onGripDown = (e) => {
+				if (e.button !== 0 || cardRef.current === null) return;
+				e.preventDefault();
+				gripDrag.current = { x: e.clientX, w: cardRef.current.getBoundingClientRect().width };
+				e.currentTarget.setPointerCapture?.(e.pointerId);
+			};
+			const onGripMove = (e) => {
+				const d = gripDrag.current;
+				if (d === null || cardRef.current === null) return;
+				cardRef.current.style.width = `${Math.max(WIDTH_MIN, Math.min(WIDTH_MAX, Math.round(d.w + (d.x - e.clientX))))}px`;
+			};
+			const onGripUp = (e) => {
+				const d = gripDrag.current;
+				gripDrag.current = null;
+				if (d === null) return;
+				setWidth(d.w + (d.x - e.clientX));
+			};
+			const onGripKey = (e) => {
+				if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+				e.preventDefault();
+				const cur = Math.round(cardRef.current?.getBoundingClientRect().width ?? 880);
+				setWidth(cur + (e.key === "ArrowLeft" ? -40 : 40));
+			};
+			useEscape(open, () => setOverlayOpen(false));
 			if (!open) return null;
 			/** The refresh/close actions live in a `dp_overlayActions` layer
 			 *  pinned to the card's top-right corner (absolute, never scrolled
@@ -399,7 +428,20 @@ import { buildView, cacheHitRateOf, costOf, localDay, moneyCny, sessionModelRows
 				children: jsx("div", {
 					className: `dp_overlayCard${summary ? " dp_overlayCardSummary" : ""}`,
 					role: "dialog", "aria-label": t("title"),
+					ref: cardRef,
+					style: !summary && width !== null ? { width: `${width}px` } : undefined,
 					children: [
+						!summary && jsx("div", {
+							className: "dp_ovlGrip", title: t("ovlGrip"),
+							role: "slider", "aria-label": t("ovlGrip"),
+							"aria-valuemin": WIDTH_MIN, "aria-valuemax": WIDTH_MAX,
+							"aria-valuenow": width ?? 880, "aria-valuetext": `${width ?? 880}px`,
+							tabIndex: 0,
+							onPointerDown: onGripDown, onPointerMove: onGripMove,
+							onPointerUp: onGripUp, onPointerCancel: onGripUp,
+							onDoubleClick: () => setWidth(null),
+							onKeyDown: onGripKey,
+						}),
 						jsx("div", { className: "dp_overlayScroll", children: body }),
 						jsxs("div", { className: "dp_overlayActions", children: summary ? [closeBtn] : [refreshBtn, closeBtn] }),
 					],

@@ -4,7 +4,7 @@
  * and the catalog-backed provider resolution the session views share.
  */
 
-import { modelKey } from "./keys.js";
+import { modelKey, splitModelKey } from "./keys.js";
 
 export const ROUTE_FAMILIES = [
   { family: "deepseek", label: "DeepSeek", routes: ["deepseek-official", "deepseek-account"], accountBalance: true },
@@ -40,6 +40,16 @@ export function isOfficialProvider(provider) {
 export function rollupKeyOf(provider, model) {
   const entry = familyRouteOf(provider);
   return modelKey(entry === null ? provider : entry.family, model);
+}
+
+/** Does one (possibly composite) model key pass the filter set? Lives beside
+ *  `rollupKeyOf` because a bare-id match must also cover the route's family
+ *  rollup — that is route-family semantics, not key arithmetic. */
+export function keyMatchesFilter(set, key) {
+  if (set === null) return true;
+  const raw = String(key);
+  const split = splitModelKey(raw);
+  return set.has(raw) || set.has(split.model) || set.has(rollupKeyOf(split.provider, split.model));
 }
 
 /** All catalog providers that serve a model id (by id or display name),

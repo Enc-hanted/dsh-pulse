@@ -4,8 +4,6 @@
  * Foundational — no sibling imports.
  */
 
-import { rollupKeyOf } from "./routes.js";
-
 /** Separator between provider and model in composite model keys. Model ids
  *  are printable, so a NUL can never appear inside a bare key — a composite
  *  key is unambiguous against a legacy provider-less one. */
@@ -29,11 +27,24 @@ export function splitModelKey(key) {
   return idx === -1 ? { provider: "", model: k } : { provider: k.slice(0, idx), model: k.slice(idx + MODEL_SEP.length) };
 }
 
+/** Zero-padded `YYYY-MM-DD` from year/month/day numbers (the ONE date
+ *  assembly face — localDay, the calendar's monday rollover and the
+ *  toolbar's parsed range all ride it). */
+export function ymd(y, m, d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${String(y).padStart(4, "0")}-${p(m)}-${p(d)}`;
+}
+
 /** Local-timezone `YYYY-MM-DD` for a Unix epoch millisecond stamp. */
 export function localDay(timeMs) {
   const d = new Date(timeMs);
-  const p = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  return ymd(d.getFullYear(), d.getMonth() + 1, d.getDate());
+}
+
+/** Local midnight (epoch ms) of a `YYYY-MM-DD` string. */
+export function dayStart(day) {
+  const [y, m, d] = String(day).split("-").map(Number);
+  return new Date(y, m - 1, d, 0, 0, 0, 0).getTime();
 }
 
 /** Add (or subtract) whole days from a `YYYY-MM-DD` string, local time. */
@@ -131,14 +142,6 @@ export function modelFilterSet(model, models) {
     .filter((m) => typeof m === "string" && m !== "");
   if (list.length > 0) return new Set(list);
   return model === "" || model === null || model === undefined ? null : new Set([String(model)]);
-}
-
-/** Does one (possibly composite) model key pass the filter set? */
-export function keyMatchesFilter(set, key) {
-  if (set === null) return true;
-  const raw = String(key);
-  const split = splitModelKey(raw);
-  return set.has(raw) || set.has(split.model) || set.has(rollupKeyOf(split.provider, split.model));
 }
 
 // --- provider route families --------------------------------------------------

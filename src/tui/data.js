@@ -13,6 +13,7 @@ import {
 	costOf, strictRulesWith, fullRulesWith,
 	shiftDay, DEFAULT_USD_TO_CNY, splitModelKey,
 } from "../view.js";
+import { PEAK_HOURS } from "../pricing-facts.js";
 
 const TOKEN_KEYS = ["input", "output", "cacheRead", "cacheWrite"];
 
@@ -35,9 +36,11 @@ export function eqId(a, b) {
 }
 
 /** Read one session through `sessionQuery` and fold it into a pulse record.
- *  Folding is memoized on the header's version stamp (updatedAt & co.) —
- *  an unchanged session refolds into the cached record instead of paying
- *  the full decode on every 30s poll and every scene reopen. `r` clears. */
+ *  Folding is memoized on the caller's version stamp — 0.1.x header activity
+ *  fields when present, else (0.2.0) the live session's in-memory log length
+ *  or the header's createdAt (see collect). An unchanged stamp refolds into
+ *  the cached record instead of paying the full decode on every 30s poll and
+ *  every scene reopen. `r` clears. */
 export const foldCache = new Map(); // id → { version, header, record }
 
 async function foldSession(sessionQuery, id, version) {
@@ -45,7 +48,10 @@ async function foldSession(sessionQuery, id, version) {
 	if (hit && hit.version === version) return { header: hit.header, record: hit.record };
 	const loaded = await sessionQuery.readSession(id);
 	const events = Array.isArray(loaded) ? loaded : Array.isArray(loaded?.events) ? loaded.events : [];
-	const header = loaded?.header ?? null;
+	// 0.2.0 renamed the header key `header` → `session` (dsh-session-query
+	// readSession); keep both shapes so a future rename cannot silently
+	// blank every header downstream.
+	const header = loaded?.header ?? loaded?.session ?? null;
 	const record = foldEvents(events, {});
 	foldCache.set(id, { version, header, record });
 	if (foldCache.size > 240) foldCache.delete(foldCache.keys().next().value);
@@ -260,12 +266,36 @@ export async function collect(ctx, entryConfig) {
 	const listed = await sessionQuery.listSessions();
 	const items = (Array.isArray(listed) ? listed : listed?.items ?? []).map((entry) => ({
 		header: entry?.header ?? entry ?? {},
+		live: entry?.live === true,
 	}));
 	if (items.length === 0) return { empty: true, config: resolveConfig(ctx, entryConfig), loadedAt: Date.now() };
-	const recency = (item) => {
+	const stampOf = (item) => {
 		const raw = item.header?.updatedAt ?? item.header?.lastActivityAt ?? item.header?.time ?? 0;
 		return typeof raw === "string" ? Date.parse(raw) || 0 : Number(raw) || 0;
 	};
+	const createdAtOf = (item) => {
+		const raw = item.header?.createdAt ?? 0;
+		return typeof raw === "string" ? Date.parse(raw) || 0 : Number(raw) || 0;
+	};
+	// 0.2.0 headers keep only createdAt — no last-activity stamp survives, so
+	// ordering drifts from last-active to creation order (the engine's own
+	// listSessions newest-first order; documented degradation). The fold
+	// version additionally takes the live session's event-log length from
+	// the in-memory `sessions` store — a growing log yields a growing stamp,
+	// so the 30s poll refolds the active session instead of serving a stale
+	// cache forever. Closed sessions stay on the stable createdAt stamp; a
+	// session appended by ANOTHER process still needs a manual `r` refresh.
+	const liveSeqOf = (item) => {
+		if (!item.live) return 0;
+		try {
+			const seq = Number(ctx.get("sessions", false)?.get?.(item.header.id)?.seq);
+			return Number.isSafeInteger(seq) && seq > 0 ? seq : 0;
+		} catch {
+			return 0;
+		}
+	};
+	const recency = (item) => stampOf(item) || createdAtOf(item);
+	const versionOf = (item) => stampOf(item) || liveSeqOf(item) || createdAtOf(item);
 	const ordered = [...items].sort((a, b) => recency(b) - recency(a));
 	const cwd = ordered[0].header?.cwd ?? "";
 	const project = projectOf(cwd, 1);
@@ -276,14 +306,19 @@ export async function collect(ctx, entryConfig) {
 	for (const item of inProject) {
 		let folded = null;
 		try {
-			folded = await foldSession(sessionQuery, item.header.id, recency(item));
+			folded = await foldSession(sessionQuery, item.header.id, versionOf(item));
 		} catch {
 			continue; // one unreadable session must not kill the rollup
 		}
 		mergeRecord(merged, folded.record);
 		sessions.push({
 			id: item.header.id,
-			title: sessionTitleOf(ctx, item.header),
+			// Title chain: header fields / projection cache first, then the
+			// fold's own `session/title` event capture (zero extra I/O) —
+			// 0.2.0 headers carry no title, so the event line is often the
+			// only human-readable name left. shortSessionId stays the final
+			// fallback (scene-side).
+			title: sessionTitleOf(ctx, item.header) ?? folded.record?.title ?? null,
 			recency: recency(item),
 			record: folded.record,
 		});
@@ -450,7 +485,7 @@ export function peakHoursFor(rules, day) {
 	for (const rule of rules ?? []) {
 		if (!rule?.peak) continue;
 		if (rule.weekdaysOnly !== false && weekend) continue;
-		const hours = Array.isArray(rule.peakHours) && rule.peakHours.length > 0 ? rule.peakHours : [9, 10, 11, 14, 15, 16, 17];
+		const hours = Array.isArray(rule.peakHours) && rule.peakHours.length > 0 ? rule.peakHours : PEAK_HOURS;
 		set ??= new Set();
 		for (const h of hours) if (Number.isInteger(h) && h >= 0 && h <= 23) set.add(h);
 	}

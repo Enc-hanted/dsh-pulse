@@ -56,4 +56,48 @@ assert.ok(bundle.includes('key: "pulse-usage"'),
 assert.ok(host.includes('pathname === "/pulse/update-check"'), "the manual update check route is registered");
 assert.ok(bundle.includes('fetch("/pulse/update-check"'), "the settings panel owns the only check trigger");
 
+// --- dsh alignment: dependency declaration & seat ledger -------------------
+
+// The manifest's dsh.client.external is the one declaration of which host
+// module-table names this bundle consumes (esbuild's external list derives
+// from it at build time); every require() target in the served artifact —
+// including the envelope's own react-dom — must be covered by it,
+// full-specifier equality.
+const bundleRequires = [...new Set([...bundle.matchAll(/\brequire\("([^"]+)"\)/g)].map((m) => m[1]))];
+assert.ok(bundleRequires.length > 0, "require extraction found nothing — the envelope shape changed");
+const missingExternal = bundleRequires.filter((name) => !(manifest.dsh?.client?.external ?? []).includes(name));
+assert.deepEqual(missingExternal, [],
+  `bundle requires not declared in dsh.client.external: ${missingExternal.join(", ")}`);
+
+// Seat ledger: the seat names the client half references, locked against
+// this hand-maintained table so a host upgrade that drops one is a diff to
+// review here instead of a missing UI block discovered in the wild. The
+// lock is source ↔ table only — host packages are not on the test
+// dependency tree, so "exists on the running host" stays a smoke-test duty.
+// Provenance per listed host generation: which trees the seat name was
+// grep-verified against. Audited 2026-10-04 across the local npx host
+// caches: 0.2.0-rc.2 (npm tree + desktop client-ui packages) and
+// 0.1.7-alpha.2 carry all 8; 0.1.0-rc.7 carries only the five non-plugins
+// seats — its npm tree has no "plugins.*" literal anywhere, so on that
+// generation the three plugin-page seats ride the injectSeat warn-once
+// degradation by design.
+const SEAT_LEDGER = {
+	"settings.section": ["0.2.0-rc.2", "0.1.7-alpha.2", "0.1.0-rc.7"],
+	"settings.general.item": ["0.2.0-rc.2", "0.1.7-alpha.2", "0.1.0-rc.7"],
+	"conversation.chat.commandview": ["0.2.0-rc.2", "0.1.7-alpha.2", "0.1.0-rc.7"],
+	"sidebar.footer.action": ["0.2.0-rc.2", "0.1.7-alpha.2", "0.1.0-rc.7"],
+	"shell.overlay": ["0.2.0-rc.2", "0.1.7-alpha.2", "0.1.0-rc.7"],
+	"plugins.row.config": ["0.2.0-rc.2", "0.1.7-alpha.2"],
+	"plugins.detail.badge": ["0.2.0-rc.2", "0.1.7-alpha.2"],
+	"plugins.detail.section": ["0.2.0-rc.2", "0.1.7-alpha.2"],
+};
+const seatRefs = [...new Set([...readFileSync(join(root, "src", "client", "plugin.js"), "utf8")
+  .matchAll(/\b(?:ctx\.slots\.inject|injectSeat)\(\s*"([a-zA-Z0-9._-]+)"/g)].map((m) => m[1]))];
+assert.ok(seatRefs.length > 0, "seat extraction found nothing — the inject call shape changed");
+const unknownSeats = seatRefs.filter((name) => !(name in SEAT_LEDGER));
+assert.deepEqual(unknownSeats, [],
+  `seats referenced but not in SEAT_LEDGER (verify against the target host, then add): ${unknownSeats.join(", ")}`);
+const staleSeats = Object.keys(SEAT_LEDGER).filter((name) => !seatRefs.includes(name));
+assert.deepEqual(staleSeats, [], `SEAT_LEDGER entries no longer referenced (prune): ${staleSeats.join(", ")}`);
+
 console.log("manifest-test: version stamp, single menu row and no-dsh-patch invariants hold");

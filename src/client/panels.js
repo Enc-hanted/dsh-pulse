@@ -1,8 +1,8 @@
 import { useState, useEffect, jsx, jsxs } from "./react.js";
 import { DP_BUILD } from "./css.js";
-import { THEMES, fetchSettings, fill, invalidateSettings, loadPanels, loadStats, payloadCache, payloadError, savePanels, setTheme, statsState, useQuota } from "./stores.js";
+import { THEMES, fetchSettings, fill, invalidateSettings, loadPanels, loadStats, payloadCache, payloadError, postSettings, savePanels, setTheme, statsState, useQuota } from "./stores.js";
 import { quotaWindowLabel } from "./quota.js";
-import { Btn, Checkbox, HoverCardPrim, Input, Seg, TooltipPrim } from "./adapter.js";
+import { Btn, Checkbox, Input, Seg } from "./adapter.js";
 import { DEFAULT_USD_TO_CNY } from "./../view.js";
 		//#region panels page
 		/** Display settings — which observatory panels render, plus the
@@ -113,19 +113,14 @@ import { DEFAULT_USD_TO_CNY } from "./../view.js";
 			const toggle = (provider, on) => {
 				const next = on ? state.off.filter((id) => id !== provider) : [...new Set([...state.off, provider])];
 				setState((s) => ({ ...s, saving: provider, error: null, saved: false }));
-				fetch("/pulse/settings", {
-					method: "POST", credentials: "same-origin",
-					headers: { "content-type": "application/json", accept: "application/json" },
-					body: JSON.stringify({ quotaOff: next, revision: state.revision }),
+				postSettings({ quotaOff: next, revision: state.revision }, {
+					onConflict: () => {
+						setState((s) => ({ ...s, saving: null, error: t("setConflict") }));
+						reloadSettings();
+					},
 				})
-					.then(async (res) => {
-						const data = await res.json().catch(() => ({}));
-						if (res.status === 409 || data?.conflict !== undefined) {
-							setState((s) => ({ ...s, saving: null, error: t("setConflict") }));
-							reloadSettings();
-							return;
-						}
-						payloadError(res, data);
+					.then(({ conflict }) => {
+						if (conflict) return;
 						setState((s) => ({ ...s, saving: null, saved: true, off: next }));
 						reloadSettings();
 						quota.refresh();
@@ -192,19 +187,14 @@ import { DEFAULT_USD_TO_CNY } from "./../view.js";
 					return;
 				}
 				setCurrency((s) => ({ ...s, saving: true, saved: false, error: null }));
-				fetch("/pulse/settings", {
-					method: "POST", credentials: "same-origin",
-					headers: { "content-type": "application/json", accept: "application/json" },
-					body: JSON.stringify({ currency: currency.code, usdToCny: fx, revision: currency.revision }),
+				postSettings({ currency: currency.code, usdToCny: fx, revision: currency.revision }, {
+					onConflict: () => {
+						invalidateSettings();
+						loadCurrency();
+					},
 				})
-					.then(async (res) => {
-						const data = await res.json().catch(() => ({}));
-						if (res.status === 409 || data?.conflict !== undefined) {
-							invalidateSettings();
-							loadCurrency();
-							throw new Error(t("setConflict"));
-						}
-						payloadError(res, data);
+					.then(({ conflict }) => {
+						if (conflict) throw new Error(t("setConflict"));
 						setCurrency((s) => ({ ...s, saving: false, saved: true, error: null }));
 						// The dashboard's cached payload prices with the old
 						// rules/rate — drop it and reload the current window.

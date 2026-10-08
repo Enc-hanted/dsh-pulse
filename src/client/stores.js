@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useSyncExternalStore } from "./react.js";
 import { modelKey, providerLabelOf, splitModelKey } from "./../view.js";
+import { createSnapshotStore } from "./adapter.js";
 		//#region utils
 		/** ONE conversion of a failed fetch Response into a thrown Error —
 		 *  every read face composes it; the message ("HTTP 500") is the
@@ -21,20 +22,50 @@ import { modelKey, providerLabelOf, splitModelKey } from "./../view.js";
 		 *  threshold, deliberately not a pricing rule: nothing here decides what
 		 *  a model costs. */
 		export const UNPRICED_HINT_TOKENS = 5000;
-		/** Token-count formatting: 1.2k / 3.4M / 5.6B. */
-		export function fmtTokens(n) {
-			const v = Number(n) || 0;
-			if (v >= 1e9) return `${(v / 1e9).toFixed(1)}B`;
-			if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
-			if (v >= 1e3) return `${(v / 1e3).toFixed(1)}k`;
-			return String(Math.round(v));
+		/** ONE Escape-close skeleton for every overlay surface. `capture`
+		 *  stages the listener ahead of the host's bubble handlers; `consume`
+		 *  stops the event so an open expansion doesn't ALSO dismiss the host
+		 *  overlay (its dialog listens for Escape too). `target` keeps each
+		 *  surface's original listener home — a host that stopPropagation()s
+		 *  on document would otherwise lose window bubble listeners. onEscape
+		 *  rides a ref, so a fresh closure per render never rebinds. */
+		export function useEscape(open, onEscape, { capture = false, consume = false, target = "document" } = {}) {
+			const escapeRef = useRef(onEscape);
+			escapeRef.current = onEscape;
+			useEffect(() => {
+				if (!open) return undefined;
+				const onKey = (e) => {
+					if (e.key !== "Escape") return;
+					if (consume) e.stopPropagation();
+					escapeRef.current();
+				};
+				const t = target === "window" ? window : document;
+				t.addEventListener("keydown", onKey, capture);
+				return () => t.removeEventListener("keydown", onKey, capture);
+			}, [open, capture, consume, target]);
 		}
-		/** Locale-stable short time for the generated-at stamp. */
-		export function fmtClock(ms) {
-			const d = new Date(Number(ms) || 0);
-			const p = (x) => String(x).padStart(2, "0");
-			return `${p(d.getHours())}:${p(d.getMinutes())}`;
+		/** ONE write skeleton for POST /pulse/settings: the method/credentials/
+		 *  headers envelope and the 409 judgment (a revisioned host answers 409
+		 *  or a {conflict} body when the section moved underneath us). The
+		 *  caller's onConflict performs its own refresh flow; a non-conflict
+		 *  response runs payloadError's throw-on-failure gate. Resolves
+		 *  {conflict, data} so each surface keeps its own conflict face. */
+		export async function postSettings(body, { onConflict } = {}) {
+			const res = await fetch("/pulse/settings", {
+				method: "POST", credentials: "same-origin",
+				headers: { "content-type": "application/json", accept: "application/json" },
+				body: JSON.stringify(body),
+			});
+			const data = await res.json().catch(() => ({}));
+			const conflict = res.status === 409 || data?.conflict !== undefined;
+			if (conflict) onConflict?.();
+			else payloadError(res, data);
+			return { conflict, data };
 		}
+		// fmtTokens / fmtClock ride the view.js primitives (their single home);
+		// the clock's null-on-garbage contract replaces the old fake midnight.
+		export { fmtTokens } from "../view.js";
+		export { clockOf as fmtClock } from "../view.js";
 		/** Replace `{key}` placeholders in a copy string. */
 		export function fill(text, vars) {
 			return String(text).replace(/\{(\w+)\}/g, (_, key) => (key in vars ? String(vars[key]) : `{${key}}`));
@@ -271,6 +302,31 @@ import { modelKey, providerLabelOf, splitModelKey } from "./../view.js";
 		export function invalidateSettings() { settingsCache.value = null; settingsCache.at = 0; }
 		//#endregion
 
+		//#region local preference buses
+		/** ONE bus skeleton behind the three local preference stores (panels,
+		 *  theme, overlay): the host's snapshot engine when the module table
+		 *  serves it (0.1.7+), the handwritten snapshot+Set bus otherwise.
+		 *  Snapshots are replaced, never mutated — the engine deep-freezes in
+		 *  dev and `useSyncExternalStore` keys on reference identity. */
+		function makeBus(init) {
+			if (createSnapshotStore !== null) {
+				const engine = createSnapshotStore(init);
+				return {
+					get: () => engine.getSnapshot(),
+					set: (next) => engine.set(next),
+					subscribe: (listener) => engine.subscribe(listener),
+				};
+			}
+			let state = init;
+			const listeners = new Set();
+			return {
+				get: () => state,
+				set: (next) => { state = next; for (const listener of [...listeners]) listener(next); },
+				subscribe: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
+			};
+		}
+		//#endregion
+
 		//#region panels store
 		/** Per-panel visibility for the observatory surfaces (dashboard panels
 		 *  plus the sidebar balance). Local preferences only — nothing here
@@ -291,17 +347,20 @@ import { modelKey, providerLabelOf, splitModelKey } from "./../view.js";
 			} catch (error) { /* private mode or quota — fall through to defaults */ }
 			return { ...PANEL_DEFAULTS };
 		}
+		/** The bus seeds from the loaded preferences. Persistence deliberately
+		 *  stays hand-written instead of the engine's `persist` opt: attach
+		 *  restores the raw stored value wholesale, without the defaults merge
+		 *  (and theme's whitelist) that `load*` applies at seed time. */
+		export const panelsBus = makeBus(loadPanels());
 		export function savePanels(panels) {
 			try { localStorage.setItem(PANELS_STORAGE, JSON.stringify(panels)); } catch (error) { /* non-fatal */ }
-			for (const listener of [...panelsListeners]) listener(panels);
+			panelsBus.set(panels);
 		}
 		/** Change bus for the panel preferences: the General-settings row (and
 		 *  any other surface) flips a toggle once, every mounted consumer sees
 		 *  it without a remount. */
-		export const panelsListeners = new Set();
 		export function subscribePanels(listener) {
-			panelsListeners.add(listener);
-			return () => panelsListeners.delete(listener);
+			return panelsBus.subscribe(listener);
 		}
 		//#endregion
 
@@ -347,17 +406,63 @@ import { modelKey, providerLabelOf, splitModelKey } from "./../view.js";
 		export function saveTheme(theme) {
 			try { localStorage.setItem(THEME_STORAGE, theme); } catch (error) { /* non-fatal */ }
 		}
-		/** Module-level theme bus: the settings picker updates every mounted
-		 *  surface (page / card / floating overlay) without a reload. */
-		export const themeListeners = new Set();
+		/** Same bus skeleton as panels; the whitelist lives in setTheme and the
+		 *  legacy-value fallback in loadTheme (the engine's bare persist would
+		 *  restore stale names verbatim). */
+		export const themeBus = makeBus(loadTheme());
 		export function setTheme(theme) {
 			if (!THEMES.includes(theme)) return;
 			saveTheme(theme);
-			for (const listener of themeListeners) listener(theme);
+			themeBus.set(theme);
 		}
 		export function subscribeTheme(listener) {
-			themeListeners.add(listener);
-			return () => { themeListeners.delete(listener); };
+			return themeBus.subscribe(listener);
+		}
+		//#endregion
+
+		//#region width store
+		/** 浮层观测台卡的拖拽宽度（px），theme/panels 同款的 localStorage 纯
+		 *  偏好。null = 880 表格默认（未拖过、或双击把手复位）——新装用户
+		 *  与老部署零变化。钳制区间两端都有依据：下限守仪表盘最密表格
+		 *  （对账/额度行）的列最小值之和（≈460px，卡内容列 562 起留有冗余），
+		 *  上限之外卡就不再是浮层卡；比窗口还宽的情形由浮层卡表上的
+		 *  `max-width:calc(100vw - 48px)` 兜底，存档值原样保留。 */
+		export const WIDTH_STORAGE = "dsh-pulse:width";
+		export const WIDTH_MIN = 600;
+		export const WIDTH_MAX = 1280;
+		export function loadWidth() {
+			try {
+				const raw = localStorage.getItem(WIDTH_STORAGE);
+				if (raw !== null) {
+					const n = Math.round(Number(raw));
+					if (Number.isFinite(n) && n >= WIDTH_MIN && n <= WIDTH_MAX) return n;
+				}
+			} catch (error) { /* private mode or quota — fall through to default */ }
+			return null;
+		}
+		export function saveWidth(width) {
+			try {
+				if (width === null) localStorage.removeItem(WIDTH_STORAGE);
+				else localStorage.setItem(WIDTH_STORAGE, String(width));
+			} catch (error) { /* non-fatal */ }
+		}
+		/** Same bus skeleton as theme; the clamp lives in setWidth and the
+		 *  stale-value fallback in loadWidth. */
+		export const widthBus = makeBus(loadWidth());
+		export function setWidth(width) {
+			if (width === null) {
+				saveWidth(null);
+				widthBus.set(null);
+				return;
+			}
+			const n = Math.round(Number(width));
+			if (!Number.isFinite(n)) return;
+			const next = Math.max(WIDTH_MIN, Math.min(WIDTH_MAX, n));
+			saveWidth(next);
+			widthBus.set(next);
+		}
+		export function subscribeWidth(listener) {
+			return widthBus.subscribe(listener);
 		}
 		//#endregion
 
@@ -367,26 +472,25 @@ import { modelKey, providerLabelOf, splitModelKey } from "./../view.js";
 		 *  opens, `full` the observatory the sidebar button opens — and which
 		 *  session it speaks for. The snapshot object is replaced, never
 		 *  mutated, so `useSyncExternalStore` sees a new reference exactly when
-		 *  something changed. */
-		export let overlayState = { open: false, mode: "full", focus: null };
-		export const overlayListeners = new Set();
-		export const publishOverlay = (next) => {
-			overlayState = next;
-			for (const listener of overlayListeners) listener(next);
-		};
+		 *  something changed. No persistence by design: a reload always starts
+		 *  closed (the engine's persist opt would change that). */
+		export const overlayBus = makeBus({ open: false, mode: "full", focus: null });
+		/** Live snapshot for useSyncExternalStore's getSnapshot. */
+		export const overlaySnapshot = () => overlayBus.get();
 		/** Open the seat on one face, optionally for one invoking session. */
 		export function openOverlay(mode, focus = null) {
-			if (overlayState.open && overlayState.mode === mode && overlayState.focus === focus) return;
-			publishOverlay({ open: true, mode, focus });
+			const state = overlayBus.get();
+			if (state.open && state.mode === mode && state.focus === focus) return;
+			overlayBus.set({ open: true, mode, focus });
 		}
 		/** Close the seat; the last face and focus stay for the next open. */
 		export function setOverlayOpen(value) {
-			if (overlayState.open === value) return;
-			publishOverlay({ ...overlayState, open: value });
+			const state = overlayBus.get();
+			if (state.open === value) return;
+			overlayBus.set({ ...state, open: value });
 		}
 		export function subscribeOverlay(listener) {
-			overlayListeners.add(listener);
-			return () => { overlayListeners.delete(listener); };
+			return overlayBus.subscribe(listener);
 		}
 		//#endregion
 

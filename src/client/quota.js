@@ -2,8 +2,7 @@ import { useState, useMemo, jsx, jsxs } from "./react.js";
 import { quotaDayStart } from "../view.js";
 import { Seg } from "./adapter.js";
 import { fill, fmtTokens } from "./stores.js";
-import { BudgetCard } from "./dashboard.js";
-import { fmtCost, moneyParts, quotaBurn, quotaCalibrate, quotaCoverage, quotaFeeShare, quotaMonthlyFee, quotaProjectAttribution, quotaWindowTokens } from "./../view.js";
+import { quotaBurn, quotaCalibrate, quotaCoverage, quotaFeeShare, quotaMonthlyFee, quotaMoney, quotaProjectAttribution, quotaWindowTokens } from "./../view.js";
 		//#region subscription quota surfaces
 		/** Compact duration words for reset countdowns (<1h → minutes, <48h →
 		 *  hours, else days). Locale-aware through the panel's `t`. */
@@ -39,10 +38,6 @@ import { fmtCost, moneyParts, quotaBurn, quotaCalibrate, quotaCoverage, quotaFee
 			const mm = String(at.getMonth() + 1).padStart(2, "0");
 			const dd = String(at.getDate()).padStart(2, "0");
 			return `${mm}-${dd}`;
-		};
-		export const quotaMoney = (value, currency) => {
-			const money = moneyParts(value, currency);
-			return money.unit === "" ? money.text : `${money.text} ${money.unit}`;
 		};
 		/** Display face: plan name once a query answered, else the adapter's
 		 *  label, else the catalog/route name. */

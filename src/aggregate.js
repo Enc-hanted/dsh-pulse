@@ -20,21 +20,12 @@
  */
 
 import { z } from "zod";
+import { AUX_PRICE_AS, BEIJING_OFFSET_MS, DEFAULT_USD_TO_CNY, PEAK_HOURS } from "./pricing-facts.js";
+import { dayStart, localDay, modelKey } from "./view/keys.js";
 
-import { AUX_PRICE_AS, DEFAULT_USD_TO_CNY, modelKey } from "./view.js";
-
-/** Local-timezone `YYYY-MM-DD` for a Unix epoch millisecond stamp. */
-export function localDay(timeMs) {
-  const d = new Date(timeMs);
-  const p = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
-
-/** Local midnight (epoch ms) of a `YYYY-MM-DD` string. */
-export function dayStart(day) {
-  const [y, m, d] = String(day).split("-").map(Number);
-  return new Date(y, m - 1, d, 0, 0, 0, 0).getTime();
-}
+// Calendar primitives live in view/keys.js — their single home — and are
+// re-exported here so existing aggregate imports keep working.
+export { dayStart, localDay };
 
 /**
  * Project label from a session working directory: the trailing `depth`
@@ -220,22 +211,9 @@ function hourKey(timeMs) {
   return String(new Date(timeMs).getHours()).padStart(2, "0");
 }
 
-/**
- * Fixed UTC+8 offset for pricing-tier classification: DeepSeek's peak
- * windows are defined in Beijing time, and the fold must not depend on the
- * host's local timezone (Asia/Shanghai has no DST, so a constant offset is
- * exact).
- */
-export const BEIJING_OFFSET_MS = 8 * 3600000;
-
-/**
- * Default peak hours (Beijing time, 0–23): DeepSeek's official windows
- * 09:00–12:00 and 14:00–18:00. Stored as an hour set rather than start/end
- * pairs so any provider's disjoint windows — including ones that wrap
- * midnight — are the same shape: a boolean per hour.
- */
-import { PEAK_HOURS } from "./pricing-facts.js";
-export { PEAK_HOURS };
+// Peak-tier pricing facts live in pricing-facts.js — their single home —
+// and are re-exported here so existing aggregate imports keep working.
+export { BEIJING_OFFSET_MS, PEAK_HOURS };
 
 /** The composite model key auxiliary calls bill under — derived from the ONE
  *  constant the pricing side uses (`AUX_PRICE_AS`), so the tier classification
@@ -492,13 +470,12 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 10 } = 
         // Peak/off-peak split (Beijing-time hours, weekday-scoped per the
         // rule) per day and model, the cost estimate's tier source for any
         // window length.
-        next.tiersByDay = { ...state.tiersByDay };
         const dayTiers = { ...(state.tiersByDay[day] ?? {}) };
         const modelTiers = { ...(dayTiers[key] ?? EMPTY_TIER()) };
         const tierSpec = hoursOf(key);
         addTier(modelTiers, usage, tierAt(event.time, { hours: tierSpec.hours, weekdaysOnly: tierSpec.weekdaysOnly }));
         dayTiers[key] = modelTiers;
-        next.tiersByDay = { ...next.tiersByDay, [day]: dayTiers };
+        next.tiersByDay = { ...state.tiersByDay, [day]: dayTiers };
         withFirstDay(next, day);
         return next;
       }
@@ -822,7 +799,8 @@ function turnPreviewOf(data) {
 
 /** One `assistant/message` usage event compacted for the session timeline,
  *  or null when the event has no usable usage. */
-function compactUsage(event) {  const usage = event?.data?.usage;
+function compactUsage(event) {
+  const usage = event?.data?.usage;
   if (usage === null || typeof usage !== "object") return null;
   const input = num(usage.inputTokens);
   const output = num(usage.outputTokens);

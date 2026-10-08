@@ -3,7 +3,7 @@ import { UNPRICED_HINT_TOKENS, fill, fmtTokens } from "./stores.js";
 import { quotaDur, quotaEntryName, quotaRankEntries, quotaWindowCls, quotaWindowLabel } from "./quota.js";
 import { Btn, TooltipPrim, primitives } from "./adapter.js";
 import { balanceRunwayDays, statSideRow } from "./charts.js";
-import { fmtCost, moneyParts } from "../view.js";
+import { moneyParts } from "../view.js";
 		//#region heroCard
 		/**
 		 * The dashboard's head canvas (the fluid redesign): ONE adaptive card
@@ -119,11 +119,11 @@ import { fmtCost, moneyParts } from "../view.js";
 				balanceResolved && jsxs("span", { className: "dp_hMetrics", children: [
 					Number(balanceData.granted) > 0 && jsxs("span", { className: "dp_hMetric", children: [
 						jsx("span", { className: "dp_consLabel", children: t("consStatGranted") }),
-						jsx("b", { className: "dp_hMetricOk", children: fmtCost(balanceData.granted) }),
+						jsx("b", { className: "dp_hMetricOk", children: moneyParts(balanceData.granted, balanceData.currency).text }),
 					] }, "granted"),
 					Number(balanceData.topped) > 0 && jsxs("span", { className: "dp_hMetric", children: [
 						jsx("span", { className: "dp_consLabel", children: t("consStatTopped") }),
-						jsx("b", { children: fmtCost(balanceData.topped) }),
+						jsx("b", { children: moneyParts(balanceData.topped, balanceData.currency).text }),
 					] }, "topped"),
 					balanceData.isAvailable !== true && jsx("span", { className: "dp_balanceWarn", children: t("balanceUnavailable") }, "warn"),
 				] }),
@@ -207,6 +207,9 @@ import { fmtCost, moneyParts } from "../view.js";
 			// 数据，统一落在画布底部的通栏脚行（dp_hFoot）。
 			const rate = typeof totals?.cacheHitRate === "number" && Number.isFinite(totals.cacheHitRate)
 				? Math.max(0, Math.min(1, totals.cacheHitRate)) : null;
+			/** The row's own title carries what the narrow-canvas fold hides,
+			 *  so the total input stays recoverable on hover. */
+			const cacheTotalIn = (totals.cacheRead || 0) + (totals.input || 0) + (totals.cacheWrite || 0);
 			const R = 48;
 			const C = 2 * Math.PI * R;
 			/** The no-data state keeps the ring but drops the two always-zero
@@ -215,10 +218,10 @@ import { fmtCost, moneyParts } from "../view.js";
 			const sideRows = rate === null
 				? [jsx("div", { className: "dp_ringSideRow", children: jsx("span", { children: t("cacheNa") }) }, "na")]
 				: [
-					jsxs("div", { className: "dp_ringSideRow", children: [
+					jsxs("div", { className: "dp_ringSideRow", title: `${t("sideHit")} ${fmtTokens(totals.cacheRead)} / ${t("sideTotal")} ${fmtTokens(cacheTotalIn)}`, children: [
 						jsx("span", { children: `${t("sideHit")} ` }),
 						jsx("b", { className: "dp_hitVal", children: fmtTokens(totals.cacheRead) }),
-						jsx("span", { className: "dp_hitSub", children: ` / ${t("sideTotal")} ${fmtTokens((totals.cacheRead || 0) + (totals.input || 0) + (totals.cacheWrite || 0))}` }),
+						jsx("span", { className: "dp_hitSub", children: ` / ${t("sideTotal")} ${fmtTokens(cacheTotalIn)}` }),
 					] }, "of"),
 					statSideRow(t("sideUncached"), fmtTokens((totals.input || 0) + (totals.cacheWrite || 0)), "uncached"),
 					statSideRow(t("sideOutput"), fmtTokens(totals.output || 0), "output"),

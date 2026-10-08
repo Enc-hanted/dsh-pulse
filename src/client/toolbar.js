@@ -2,7 +2,7 @@ import { useState, useMemo, useRef, jsx, jsxs } from "./react.js";
 import { Btn, Float, Input, Seg, floatReady } from "./adapter.js";
 import { ModelMultiPicker, SearchPicker } from "./charts.js";
 import { fill } from "./stores.js";
-import { daysBetween, localDay, shiftDay } from "./../view.js";
+import { daysBetween, localDay, shiftDay, ymd } from "./../view.js";
 		//#region toolbar
 		/** Range / project / model selector row driving the client-side view.
 		 *  Project and model pickers embed a search input for large corpora. */
@@ -42,7 +42,7 @@ import { daysBetween, localDay, shiftDay } from "./../view.js";
 				if (mm < 1 || mm > 12 || dd < 1) return null;
 				const probe = new Date(yy, mm - 1, dd, 12);
 				if (probe.getMonth() !== mm - 1 || probe.getDate() !== dd) return null;
-				return `${String(yy).padStart(4, "0")}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+				return ymd(yy, mm, dd);
 			};
 			/** Accept 2026-09-24, 2026/9/24, or 09-24 / 9/24 (current year). */
 			const parseDay = (raw) => {
@@ -208,7 +208,7 @@ import { daysBetween, localDay, shiftDay } from "./../view.js";
 				rangeKey === "custom" && jsxs("div", { className: "dp_toolbarGroup", children: [
 					jsx(Btn, {
 						ref: dateBtnRef,
-variant: "outline", size: "sm", fallbackClass: "dp_dateBtn",
+						variant: "outline", size: "sm", fallbackClass: "dp_dateBtn",
 						onClick: () => setCalOpen(true),
 						// A one-day range says so once — "09-28 ~ 09-28" is noise.
 						children: custom.from && custom.to ? (custom.from === custom.to ? custom.from : `${custom.from} ~ ${custom.to}`) : t("rangeCustom"),

@@ -1,12 +1,9 @@
 import { useState, useEffect, useMemo, useSyncExternalStore, jsx, jsxs } from "./react.js";
-import { fetchSettings, fill, invalidateSettings, loadStats, payloadCache, payloadError, statsState, subscribeStats } from "./stores.js";
+import { fetchSettings, fill, invalidateSettings, loadStats, payloadCache, postSettings, statsState, subscribeStats } from "./stores.js";
 import { Btn, Input, PillBtn } from "./adapter.js";
 import { PEAK_HOURS } from "../pricing-facts.js";
-import { DEFAULT_USD_TO_CNY, accentEntryOf, buildView, daysBetween, familyRouteOf, fmtCost, localDay, modelAccentMap, modelKey, providerLabelOf, shiftDay } from "./../view.js";
+import { DEFAULT_USD_TO_CNY, accentEntryOf, buildView, daysBetween, familyRouteOf, localDay, modelAccentMap, modelKey, moneyCny, providerLabelOf, shiftDay } from "./../view.js";
 		//#region settings page
-		/** Official default peak hours (Beijing time) — the editor's fallback
-		 *  display and the save-side default for rows without a custom window. */
-		export const OFFICIAL_PEAK_HOURS = PEAK_HOURS;
 
 		/**
 		 * Build the editor's row list from the model catalog ONLY (the Models
@@ -157,7 +154,7 @@ import { DEFAULT_USD_TO_CNY, accentEntryOf, buildView, daysBetween, familyRouteO
 			 *  official set so the edit is "change one hour", not "clear all";
 			 *  deselecting every hour is meaningful — explicit flat pricing. */
 			const toggleHour = (i, hour) => patchRow(i, (row) => {
-				const base = row.peakHours ?? [...OFFICIAL_PEAK_HOURS];
+				const base = row.peakHours ?? [...PEAK_HOURS];
 				const next = base.includes(hour) ? base.filter((h) => h !== hour) : [...base, hour].sort((a, b) => a - b);
 				return { ...row, peakHours: next, dirty: true };
 			});
@@ -268,25 +265,19 @@ import { DEFAULT_USD_TO_CNY, accentEntryOf, buildView, daysBetween, familyRouteO
 
 			const persist = (payload) => {
 				setState((s) => ({ ...s, saving: true, saved: false, refold: false, error: null }));
-				fetch("/pulse/settings", {
-					method: "POST",
-					credentials: "same-origin",
-					headers: { "content-type": "application/json", accept: "application/json" },
-					// The revision observed at read time: a revisioned host (0.1.7+)
-					// refuses the write when the section moved underneath us.
-					body: JSON.stringify({ ...payload, revision: state.revision }),
+				// The revision observed at read time: a revisioned host refuses
+				// the write when the section moved underneath us (409/conflict).
+				postSettings({ ...payload, revision: state.revision }, {
+					onConflict: () => {
+						// Another surface won the race. Drop the shared settings
+						// cache so the reload observes the fresh revision, and
+						// refresh the local copy for a clean retry.
+						invalidateSettings();
+						load();
+					},
 				})
-					.then(async (res) => {
-						const data = await res.json().catch(() => ({}));
-						if (res.status === 409 || data?.conflict !== undefined) {
-							// Another surface won the race. Drop the shared settings
-							// cache so the reload observes the fresh revision, and
-							// refresh the local copy for a clean retry.
-							invalidateSettings();
-							load();
-							throw new Error(t("setConflict"));
-						}
-						payloadError(res, data);
+					.then(({ conflict, data }) => {
+						if (conflict) throw new Error(t("setConflict"));
 						setState((s) => ({
 							...s, saving: false, saved: true, refold: data?.refold === true, error: null,
 							// Only the sections this save carried are persisted — a
@@ -433,7 +424,7 @@ import { DEFAULT_USD_TO_CNY, accentEntryOf, buildView, daysBetween, familyRouteO
 							] }),
 							jsxs("div", { className: "dp_peakGrid", role: "group", "aria-label": t("setPeakHours"), children: [
 								Array.from({ length: 24 }, (_, h) => {
-									const on = (row.peakHours ?? OFFICIAL_PEAK_HOURS).includes(h);
+									const on = (row.peakHours ?? PEAK_HOURS).includes(h);
 									return jsx("button", {
 										type: "button",
 										className: `dp_hourCell${on ? " dp_hourCellOn" : ""}`,
@@ -561,7 +552,7 @@ import { DEFAULT_USD_TO_CNY, accentEntryOf, buildView, daysBetween, familyRouteO
 						state.error !== null && jsx("span", { className: "dp_setMsg dp_setMsgErr", children: fill(t("setFailed"), { err: state.error }) }),
 					] }),
 					preview !== null && preview.configured === true && jsxs("div", { className: "dp_setPreview", children: [
-						`${fill(t("setPreview"), { n: daysBetween(stats.data.fromDay, stats.data.toDay) })}: ${fmtCost(preview.total ?? 0)} CNY`,
+						`${fill(t("setPreview"), { n: daysBetween(stats.data.fromDay, stats.data.toDay) })}: ${moneyCny(preview.total ?? 0)}`,
 						(preview.convertedFromUsd || 0) > 0 ? ` · ${fill(t("fxNote"), { r: preview.usdToCny })}` : "",
 					] }),
 					!state.writable && jsx("span", { className: "dp_setMsg dp_setMsgErr", children: t("setNotWritable") }),

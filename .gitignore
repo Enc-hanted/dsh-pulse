@@ -6,3 +6,10 @@ package-lock.json
 .tmp-*
 .shots/
 .playwright-mcp/
+.smoke-tui/
+# 作者本地区：过程文档与画布 harness（画布夹具数据是作者真实用量）
+/archive/
+/v4-canvas.html
+/scripts/build-canvas-demo.mjs
+/scripts/shoot-canvas-matrix.mjs
+.zcodeignore/

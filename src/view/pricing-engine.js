@@ -5,10 +5,14 @@
  * windowed face.
  */
 
-import { keyMatchesFilter, modelFilterSet, modelKey, rangeKeys, splitModelKey } from "./keys.js";
+import { modelFilterSet, modelKey, rangeKeys, splitModelKey } from "./keys.js";
+import { keyMatchesFilter } from "./routes.js";
 import { EMPTY_TOKENS } from "./build-view.js";
 import { AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, auxDayUsage, auxShapeOf } from "./aux-calls.js";
 import { isOffPeakDay, officialRulesFor } from "./official-pricing.js";
+import { DEFAULT_USD_TO_CNY } from "../pricing-facts.js";
+
+export { DEFAULT_USD_TO_CNY };
 
 /**
  * The ONE definition of the cache hit rate: reads over (uncached input +
@@ -103,8 +107,6 @@ export function ruleFor(maps, key) {
  *   configured (never "unpriced"), even without a rate rule.
  * @returns {{configured: boolean, total: number|null, currency: string|null, usdToCny: number, convertedFromUsd: number, unpriced: object}}
  */
-export const DEFAULT_USD_TO_CNY = 6.8;
-
 export function costOf(models, pricing, fx = {}, monthly = []) {
   const maps = ruleMaps(pricing);
   const monthlySet = new Set(Array.isArray(monthly) ? monthly : []);

@@ -1,0 +1,28 @@
+{
+  "name": "dsh-pulse-usage-query",
+  "version": "0.1.0",
+  "description": "Optional model-visible usage_query tool over dsh-pulse aggregates: aggregate numbers only, and nothing changes until you insert its row into your profile patch yourself",
+  "type": "module",
+  "main": "src/index.js",
+  "license": "MIT",
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.19",
+    "dsh": ">=0.2.1-alpha.5"
+  },
+  "peerDependencies": {
+    "dsh-pulse": "0.6.1"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-pulse",
+    "usage",
+    "tool",
+    "model-visible",
+    "opt-in"
+  ]
+}

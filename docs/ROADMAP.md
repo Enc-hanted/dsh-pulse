@@ -38,7 +38,7 @@
   - #4-路A：投影读取收敛为单一 0.1.7+ 形态（含 tui/data.js 标题读取）；护栏 B（启动断言 + 503 闸门）+ 护栏 C（真实 dsh-session-projection-cache 原型 arity 钉死，devDep 0.2.1-alpha.5）。
   - #5：`src/pricing/ratecard.json` 版本化费率卡（v1）驱动 pricing-facts；`./pricing` 服务面导出；update-check 报费率卡版本；出站零新增。
   - #8：fold 增 `toolHistogramByDay`（stateVersion 11，additive-optional）；`view/anomaly.js` 纯检测器（燃速突增/循环指纹）挂 payload.anomalies；web 仪表盘「异常观测」节（可关、空则退场、文案纯数字）；style-test 禁词护栏已武装。**TUI 条带未做**（web 已覆盖数据面；TUI 面留下一轮）；goal 花费线未做（数据面无 goal 边界事件，待核实形状后补，避免编造关联）。
-  - #9：`buildStats` 已从宿主入口导出；独立包 packages/dsh-pulse-usage-query 由 subagent 实施中。
+  - #9：**完成**（`2af16d5`）。独立包 packages/dsh-pulse-usage-query：seam 对照 0.2.1-alpha.5 快照逐行核实（`ctx.tools.register` + 手写 ToolDefinition，证据在包内 docs/seam-notes.md）；核心依赖注入、经真实 buildStats 聚合；形状白名单测试（键固定、字符串 ≤80、无 \u0000）入测试链；默认不挂载（无命令/路由/配置/自启用路径）。待用户实机验收：手动挂载后问宿主「今天花了多少」。
 - **2026-10-19（第一批，`60ac306` + `678186c` + `b328dfb`）：D0 + #1 + #3 落地**（v0.6.1，全测绿于重装后的 0.2.1-alpha.5 树）：
   - D0-甲拍板：地板 `>=0.2.1-alpha.5`；seam 两包迁 peer `>=0.2.1-alpha.5 <0.3` + devDep 钉实包；飞行前核对 0.1.7→0.2.1 差异为纯注释；启动 seam 版本日志进 host apply()。
   - #1：`locale/en.json`/`zh.json` + `./icon` 导出；manifest-test 断言契约（键集、体积、exports 完整性）。

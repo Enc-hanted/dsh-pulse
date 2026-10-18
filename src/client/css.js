@@ -364,7 +364,7 @@
 		 *  one-year `immutable` cache, so "which revision is on screen" must be
 		 *  answerable without guessing — and a re-executed bundle (HMR swap)
 		 *  must update the stylesheet instead of leaving the first one in place. */
-		export const DP_BUILD = "0.7.0";
+		export const DP_BUILD = "0.6.1";
 		if (typeof document !== "undefined") {
 			let tag = document.querySelector("style[data-plugin-css=" + JSON.stringify(cssTagId) + "]");
 			if (tag === null) {

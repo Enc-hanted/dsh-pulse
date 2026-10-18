@@ -2,7 +2,7 @@
 
 发布以 GitHub tag 为准。本文件收录自 README 迁出的**宿主兼容性历史备注**，供仍运行旧版 dsh 的使用者备查；当前支持矩阵见 README 的「兼容性」一节。
 
-## v0.7.0
+## v0.6.1
 
 - **宿主地板抬至 dsh ≥ 0.2.1-alpha.5**（Node ≥ 22.19 不变）。`dsh-credentials`/`dsh-storage-domain` 从 dependencies（钉 0.2.0-rc.2，且本地树实为 0.1.7-alpha.2 陈旧副本）迁至 peerDependencies（`>=0.2.1-alpha.5 <0.3`）：宿主对链接根的解析拦截只接管 peer 名单内的包，此前插件在 0.2.1 宿主里实际加载的是自带旧副本。迁移后运行时一律使用宿主副本；devDependencies 固定 `0.2.1-alpha.5` 供本地测试对真实包跑接缝。两包 0.1.7→0.2.1 之间的差异已逐行核对为纯注释，无行为变化。
 - **启动 seam 版本日志**：host 半 apply() 时输出一行——dsh-pulse 版本 + 两个 seam 包的实载版本。版本偏斜从此在宿主日志直接可见，不再需要解剖 node_modules。

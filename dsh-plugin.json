@@ -3,7 +3,7 @@
   "manifestVersion": "0.15",
   "id": "dsh-pulse.pulse",
   "name": "DSH Pulse",
-  "version": "0.7.0",
+  "version": "0.6.1",
   "facets": {
     "host": { "entry": "./src/tui.js", "apiVersion": "v1alpha1" }
   },

@@ -32,11 +32,11 @@
 
 ## 实施进度
 
-- **2026-10-19：D0 + #1 + #3 落地**（commit `60ac306`，v0.7.0，全测绿于重装后的 0.2.1-alpha.5 树）：
+- **2026-10-19：D0 + #1 + #3 落地**（v0.6.1，全测绿于重装后的 0.2.1-alpha.5 树）：
   - D0-甲拍板：地板 `>=0.2.1-alpha.5`；seam 两包迁 peer `>=0.2.1-alpha.5 <0.3` + devDep 钉实包；飞行前核对 0.1.7→0.2.1 差异为纯注释；启动 seam 版本日志进 host apply()。
   - #1：`locale/en.json`/`zh.json` + `./icon` 导出；manifest-test 断言契约（键集、体积、exports 完整性）。
   - #3：lockfile 入库 + CI `npm ci` + windows 矩阵；`files` 瘦身；护栏 A（seam 禁入 dependencies，schemastery 白名单）；本地 6 个 tgz 与 .tmp 清理。
-  - 遗留验证（需重启宿主）：① 宿主日志应出现 `dsh-pulse 0.7.0 on seams dsh-credentials 0.2.1-alpha.5 / dsh-storage-domain 0.2.1-alpha.5`——若 seam 显示非 0.2.1-alpha.5 即解析接管未生效；② 插件管理器列表应显示双语标题/描述 + logo 图标；③ CI 双平台绿。
+  - 遗留验证（需重启宿主）：① 宿主日志应出现 `dsh-pulse 0.6.1 on seams dsh-credentials 0.2.1-alpha.5 / dsh-storage-domain 0.2.1-alpha.5`——若 seam 显示非 0.2.1-alpha.5 即解析接管未生效；② 插件管理器列表应显示双语标题/描述 + logo 图标；③ CI 双平台绿。
   - 注意：`60ac306` 同时裹入了工作树中此前未提交的用户改动（截图 3 张 + screenshots.json + pricing-facts/view 等）；如需归属清晰可 `git reset --soft HEAD~1` 拆分（未推送）。
 
 ---

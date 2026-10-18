@@ -442,6 +442,29 @@ import { AUX_CALL_FEE, AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, cost
 			 *  too; the expanded panel folds the local token reconciliation on
 			 *  top of the stats payload above. */
 			const quota = useQuota(panels.quota !== false);
+			/** Anomaly watch lines (#8): strictly observational strings from the
+			 *  payload's detector block — numbers and identifiers only, never a
+			 *  verdict (style-test bans advisory wording from these keys). The
+			 *  whole section self-hides when there is nothing to report. */
+			const anomalyLines = useMemo(() => {
+				if (data === null) return null;
+				const block = data.anomalies;
+				if (block === null || typeof block !== "object") return null;
+				const lines = [];
+				for (const spike of Array.isArray(block.burnRate) ? block.burnRate : []) {
+					lines.push(fill(t("anomalyBurn"), {
+						day: String(spike.day ?? "?"), tokens: fmtTokens(spike.tokens ?? 0),
+						baseline: fmtTokens(spike.baseline ?? 0), ratio: String(spike.ratio ?? "?"),
+					}));
+				}
+				for (const loop of Array.isArray(block.loops) ? block.loops : []) {
+					lines.push(fill(t("anomalyLoop"), {
+						day: String(loop.day ?? "?"), tool: String(loop.tool ?? "?"),
+						n: String(loop.count ?? "?"), tokens: fmtTokens(loop.dayTokens ?? 0),
+					}));
+				}
+				return lines.length === 0 ? null : lines;
+			}, [data, t]);
 
 			/** ── 退出保留 ────────────────────────────────────────────────
 			 *  视图快照：任何窗口状态变化后 300ms 防抖落盘——连续保存而非
@@ -1027,6 +1050,12 @@ import { AUX_CALL_FEE, AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, cost
 						monthly: data.monthly, models, auxShape: calib.shape, catalog, names, t,
 						focusSessionId: focusSession === null ? null : focusSession.id,
 					}),
+				] })),
+				/** 异常观测：纯数字行（燃速倍数、工具循环计数），无可报时整节退场。 */
+				dimWrap(panels.anomaly !== false && anomalyLines !== null && jsxs("div", { children: [
+					jsx("div", { className: "dp_panelTitle", children: t("anomalyTitle") }),
+					jsxs("div", { children: anomalyLines.map((line, index) =>
+						jsx("div", { className: "dp_balanceSub", children: line }, index)) }),
 				] })),
 				// Extension panels from other client plugins (`pulse.dashboard.panel`
 				// child slot). Rendered only in the loaded, non-empty view; the

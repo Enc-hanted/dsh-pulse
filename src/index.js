@@ -9,6 +9,16 @@ import {
 	mergePricingRows, effectivePricing, peakMapOf, peakMapKey, effectiveUsdToCny,
 } from "./host/pricing-config.js";
 export { Config };
+
+/**
+ * The shared aggregation entry (`/pulse/stats` and any embedded consumer —
+ * the optional usage_query tool package — fold the corpus through this one
+ * function, so embedded answers can never drift from the dashboard).
+ * Signature: `(ctx, resolveConfig, input, snapshotsOf?) → Promise<payload>`.
+ *
+ * @function buildStats
+ */
+export { buildStats };
 import {
   balanceSpendSeries, buildPayload, localDay, normalizePeakHours, projectOf,
   pulseProjectionDefinition, resolveWindow, sliceRecord, timelineEvents, PEAK_HOURS,

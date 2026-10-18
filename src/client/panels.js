@@ -19,6 +19,7 @@ import { DEFAULT_USD_TO_CNY } from "./../view.js";
 			["models", t("panelModels"), t("panelDescModels")],
 			["projects", t("panelProjects"), t("panelDescProjects")],
 			["sessions", t("panelSessions"), t("panelDescSessions")],
+			["anomaly", t("panelAnomaly"), t("panelDescAnomaly")],
 		];
 		/** Numeric semantic-version compare: `a` newer than `b` → >0. The
 		 *  prerelease suffix is ignored, which is what this comparison needs

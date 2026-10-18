@@ -312,6 +312,22 @@ test("the canvas harness artifact is fresh (regenerate after css.js edits)", () 
   }
 });
 
+test("anomaly copy stays observational: no advisory wording anywhere", () => {
+  // #8's hard boundary, made executable: the anomaly panel may state
+  // NUMBERS and IDENTIFIERS ("today: X, P95 of the last 7 days: Y"), never
+  // judge the user. Banned from every anomaly.* value in BOTH languages.
+  // No anomaly.* keys exist yet — this lock arms itself the day they do.
+  const BANNED = ["建议", "应该", "值得吗", "请考虑", "consider", "should", "worth it", "recommend"];
+  const keys = Object.keys(localeZh).filter((k) => k.startsWith("anomaly"));
+  for (const key of keys) {
+    for (const [label, dict] of [["zh", localeZh], ["en", localeEn]]) {
+      const value = String(dict[key] ?? "");
+      const hit = BANNED.filter((word) => value.includes(word));
+      assert.deepEqual(hit, [], `${label}.${key} carries advisory wording: ${hit.join(", ")}`);
+    }
+  }
+});
+
 test("locale: zh/en share one key set, every key is consumed, leaves are strings", () => {
   // The dictionaries are hand-maintained twins; without this lock a renamed
   // key, a missed translation or a one-sided addition silently renders as

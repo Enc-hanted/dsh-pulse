@@ -1,0 +1,18 @@
+{
+  "wire": {
+    "usages": {
+      "limit_5h": { "used_ratio": 0.25, "reset_time": 1792411200000 },
+      "limit_7d": { "used_ratio": 0.5, "reset_time": 1792497600 }
+    },
+    "user": { "membership": { "level": "pro" } }
+  },
+  "normalized": {
+    "plan": { "name": "Kimi For Coding", "level": "pro", "cycle": null, "renewsAt": null },
+    "fee": null,
+    "windows": [
+      { "id": "5h", "kind": "requests", "used": null, "total": null, "usedPct": 25, "resetsAt": 1792411200000, "windowMs": 18000000 },
+      { "id": "7d", "kind": "requests", "used": null, "total": null, "usedPct": 50, "resetsAt": 1792497600000, "windowMs": 604800000 }
+    ],
+    "extras": []
+  }
+}

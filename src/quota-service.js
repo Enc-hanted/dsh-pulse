@@ -11,8 +11,10 @@
  * a built-in adapter claims it (and the user has not switched it off via
  * `quotaOff`); every fetch is user-triggered or a 60-second-cadence poll —
  * never a timer of its own. The host half owns the seams (`resolveConfig`,
- * the llm service and its describe rows); the service owns adapters, wire
- * posture and the snapshot store.
+ * the llm service and its describe rows); the provider adapters
+ * (./quota-adapters/, contract in ./quota-adapters/types.js) own the wire;
+ * this service owns the orchestration only — credential resolution, adapter
+ * selection, the reply cache/timeout policy and the snapshot store.
  */
 
 import { credentialKey, credentialRef } from "@deepseek-ai/dsh-credentials";
@@ -21,8 +23,11 @@ import { z as zv } from "zod";
 
 import { openRollingGlobalDomain } from "./rolling-domain.js";
 import { json } from "./http-helpers.js";
+import { kimiAdapter } from "./quota-adapters/kimi.js";
+import { minimaxAdapter } from "./quota-adapters/minimax.js";
+import { qclampPct, qstr } from "./quota-adapters/shared.js";
+import { zaiAdapter } from "./quota-adapters/zai.js";
 
-const QUOTA_TIMEOUT_MS = 10000;
 const QUOTA_CACHE_MS = 60000;
 const QUOTA_SNAPSHOT_ROLL_MS = 30 * 24 * 3600 * 1000;
 const QUOTA_SNAPSHOT_MAX = 2000;
@@ -49,191 +54,13 @@ const quotaDomainSpec = defineDomain({
   },
 });
 
-/** One defensive number: finite → number, anything else → null. */
-const qnum = (value) => {
-  const n = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(n) ? n : null;
-};
-const qclampPct = (value) => {
-  const n = qnum(value);
-  return n === null ? null : Math.max(0, Math.min(100, n));
-};
-/** Provider reset timestamps come in epoch ms, epoch s, or ISO strings with
- *  over-long fractional seconds; normalize all three to epoch ms. */
-const qtime = (value) => {
-  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value >= 1e12 ? Math.round(value) : Math.round(value * 1000);
-  if (typeof value === "string" && value !== "") {
-    const normalized = value.replace(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})\d+/, "$1");
-    const parsed = Date.parse(normalized);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return null;
-};
-const qstr = (value) => (typeof value === "string" && value.length > 0 ? value : null);
-
-/** (unit, number) → window id/span for z.ai's limit encoding. Observed
- *  pairs: (3,5) = 5-hour session window, (6,1) = weekly on the CN console,
- *  (6,7) = weekly internationally, (5,1) = monthly tool quota. */
-const zaiWindowSpec = (unit, number) => {
-  if (unit === 3) return { id: number === 5 ? "5h" : `h${number}`, windowMs: number > 0 ? number * 3600000 : null };
-  if (unit === 6) return { id: "7d", windowMs: 7 * 86400000 };
-  if (unit === 5) return { id: "month", windowMs: 30 * 86400000 };
-  return { id: unit !== null && number !== null ? `u${unit}n${number}` : "window", windowMs: null };
-};
-
-/** Sort key: shorter (more immediate) windows first; unknown spans last. */
-const windowOrder = (a, b) => (a.windowMs ?? Infinity) - (b.windowMs ?? Infinity);
-
-/** z.ai / bigmodel coding plan: `GET /api/monitor/usage/quota/limit` for the
- *  window utilization (token windows report a percentage only — the CN
- *  console hides absolute counts) plus `GET /api/biz/subscription/list` for
- *  the plan name and fee. Verified live against open.bigmodel.cn (Bearer
- *  auth) and documented for api.z.ai by openusage/CodexBar. */
-const zaiFetch = async ({ host, key }) => {
-  const headers = { authorization: `Bearer ${key}`, accept: "application/json" };
-  const [quotaRes, subRes] = await Promise.all([
-    fetchJson(`${host}/api/monitor/usage/quota/limit`, headers),
-    fetchJson(`${host}/api/biz/subscription/list`, headers).catch(() => null),
-  ]);
-  const data = quotaRes?.data;
-  const limits = Array.isArray(data?.limits) ? data.limits : [];
-  const windows = [];
-  const extras = [];
-  for (const limit of limits) {
-    if (limit === null || typeof limit !== "object") continue;
-    const resetsAt = qtime(limit.nextResetTime);
-    if (limit.type === "TOKENS_LIMIT") {
-      const spec = zaiWindowSpec(qnum(limit.unit), qnum(limit.number));
-      if (windows.some((w) => w.id === spec.id)) continue;
-      windows.push({ id: spec.id, kind: "tokens", usedPct: qclampPct(limit.percentage), resetsAt, windowMs: spec.windowMs, used: null, total: null });
-    } else if (limit.type === "TIME_LIMIT") {
-      const total = qnum(limit.usage);
-      const used = qnum(limit.currentValue);
-      const pct = qclampPct(limit.percentage) ?? (total !== null && total > 0 && used !== null ? qclampPct((used / total) * 100) : null);
-      extras.push({ id: "tools", label: null, used, total, usedPct: pct, resetsAt });
-    }
-  }
-  windows.sort(windowOrder);
-  let plan = null;
-  let fee = null;
-  const subs = Array.isArray(subRes?.data) ? subRes.data : [];
-  const active = subs.find((entry) => entry?.status === "VALID" && typeof entry?.productName === "string") ?? null;
-  if (active !== null) {
-    plan = {
-      name: active.productName,
-      level: qstr(data?.level),
-      cycle: qstr(active.billingCycle),
-      renewsAt: qstr(active.nextRenewTime),
-    };
-    const price = qnum(active.actualPrice) ?? qnum(active.initialPrice);
-    if (price !== null && typeof active.billingCycle === "string") {
-      fee = { amount: price, currency: "CNY", cycle: active.billingCycle };
-    }
-  }
-  return { plan, fee, windows, extras };
-};
-
-/** Kimi For Coding: `GET /coding/v1/usages`. The rendering norm every
- *  adapter follows: a window carries used/total counts ONLY when the
- *  provider states a true absolute quota — a ratio-only source renders a
- *  percentage track and never a fabricated "x/100 次" count. Kimi's
- *  windows are ratios (`used_ratio`), so they ride pct-only, 5h and 7d
- *  alike. The legacy flat `usage` object keeps ratio precedence.
- *  Verified live against api.kimi.com. */
-const kimiFetch = async ({ host, key }) => {
-  const body = await fetchJson(`${host}/coding/v1/usages`, { authorization: `Bearer ${key}`, accept: "application/json" });
-  const windows = [];
-  const ratioWindow = (id, windowMs, limit) => {
-    if (limit === null || typeof limit !== "object") return;
-    const usedPct = qclampPct(Number(limit.used_ratio) * 100);
-    if (usedPct === null) return;
-    windows.push({ id, kind: "requests", used: null, total: null, usedPct, resetsAt: qtime(limit.reset_time), windowMs });
-  };
-  const usage = body?.usage;
-  if (usage !== null && typeof usage === "object") {
-    const used = qnum(usage.used);
-    const total = qnum(usage.limit);
-    const usedPct = qclampPct(used !== null && total !== null && total > 0 ? (used / total) * 100 : null);
-    if (usedPct !== null) {
-      windows.push({ id: "7d", kind: "requests", used: null, total: null, usedPct, resetsAt: qtime(usage.resetTime), windowMs: 7 * 86400000 });
-    }
-  }
-  const ratios = body?.usages;
-  if (ratios !== null && typeof ratios === "object") {
-    if (windows.some((w) => w.id === "5h") === false) ratioWindow("5h", 5 * 3600000, ratios.limit_5h);
-    if (windows.some((w) => w.id === "7d") === false) ratioWindow("7d", 7 * 86400000, ratios.limit_7d);
-  }
-  windows.sort(windowOrder);
-  const level = qstr(body?.user?.membership?.level);
-  return { plan: { name: "Kimi For Coding", level, cycle: null, renewsAt: null }, fee: null, windows, extras: [] };
-};
-
-/** MiniMax coding/token plan: `GET /v1/token_plan/remains`. Community-
- *  documented (MiniMax-M2 issue #99): `current_interval_usage_count` and
- *  `current_weekly_usage_count` hold REMAINING counts, not used — prefer
- *  the explicit `*_remaining_percent` fields when present. Not yet live-
- *  verified; a schema drift surfaces as an unparsable reply, never as
- *  fabricated numbers. */
-const minimaxFetch = async ({ host, key }) => {
-  const body = await fetchJson(`${host}/v1/token_plan/remains`, { authorization: `Bearer ${key}`, accept: "application/json" });
-  if (body?.base_resp !== undefined && body?.base_resp !== null && qnum(body.base_resp.status_code) !== 0) {
-    throw new Error(`minimax status ${String(body.base_resp.status_code ?? "?")}`);
-  }
-  const rows = Array.isArray(body?.model_remains) ? body.model_remains : [];
-  const remainingPct = (total, remaining) => (total !== null && total > 0 && remaining !== null ? qclampPct(100 - (remaining / total) * 100) : null);
-  const fold = (id, windowMs, pick) => {
-    let usedPct = null;
-    let resetsAt = null;
-    let used = null;
-    let total = null;
-    for (const row of rows) {
-      if (row === null || typeof row !== "object") continue;
-      const rowTotal = qnum(pick(row).total);
-      const rowRemaining = qnum(pick(row).remaining);
-      const rowPct = qclampPct(pick(row).remainingPercent) ?? remainingPct(rowTotal, rowRemaining);
-      if (rowPct === null) continue;
-      usedPct = usedPct === null ? rowPct : Math.max(usedPct, rowPct);
-      total = total ?? rowTotal;
-      used = used ?? (rowTotal !== null && rowRemaining !== null ? Math.max(0, rowTotal - rowRemaining) : null);
-      resetsAt = resetsAt ?? qtime(pick(row).end) ?? qtime(pick(row).remains);
-    }
-    if (usedPct !== null) windows.push({ id, kind: "requests", used, total, usedPct, resetsAt, windowMs });
-  };
-  const windows = [];
-  fold("5h", 5 * 3600000, (row) => ({ total: row.current_interval_total_count, remaining: row.current_interval_usage_count, remainingPercent: row.current_interval_remaining_percent, end: row.end_time, remains: row.remains_time }));
-  fold("7d", 7 * 86400000, (row) => ({ total: row.current_weekly_total_count, remaining: row.current_weekly_usage_count, remainingPercent: row.current_weekly_remaining_percent, end: row.weekly_end_time, remains: row.remains_time }));
-  windows.sort(windowOrder);
-  return { plan: { name: "MiniMax Coding Plan", level: null, cycle: null, renewsAt: null }, fee: null, windows, extras: [] };
-};
-
-/** One JSON GET with the shared outbound posture: bounded, redirect-free,
- *  and failures mapped to cause codes only (no URLs, no keys). */
-const fetchJson = async (url, headers) => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), QUOTA_TIMEOUT_MS);
-  try {
-    const response = await fetch(url, { headers, redirect: "error", signal: controller.signal });
-    if (response.ok !== true) throw new Error(`HTTP ${response.status}`);
-    return await response.json();
-  } catch (error) {
-    throw new Error(String(error?.cause?.code ?? error?.message ?? error?.name ?? "request failed"));
-  } finally {
-    clearTimeout(timer);
-  }
-};
-
-/** Built-in subscription adapters. A route qualifies by provider id (the
- *  Models page's route key); `label` is the display face every provider
- *  entry echoes (the plan name supersedes it once a query succeeded);
- *  `envKeys` are the well-known ambient names tried after the deployment's
- *  own refs. The general quota norm: counts come only from true absolute
- *  quotas — ratio-only sources emit `usedPct` with `used: null, total:
- *  null`, and the renderer never invents a count from a ratio. */
-const QUOTA_ADAPTERS = [
-  { id: "zai-coding", label: "GLM Coding Plan", routes: ["zai-coding-cn", "zai-coding", "zai"], envKeys: ["ZAI_CODING_CN_API_KEY", "GLM_CODING_CN_API_KEY", "ZAI_API_KEY", "GLM_API_KEY"], hostFor: (route) => (route === "zai-coding-cn" ? "https://open.bigmodel.cn" : "https://api.z.ai"), fetch: zaiFetch },
-  { id: "kimi-coding", label: "Kimi For Coding", routes: ["kimi-coding", "kimi"], envKeys: ["KIMI_CODING_API_KEY", "KIMI_API_KEY"], hostFor: () => "https://api.kimi.com", fetch: kimiFetch },
-  { id: "minimax", label: "MiniMax Coding Plan", routes: ["minimax", "minimax-coding", "minimax-cn"], envKeys: ["MINIMAX_API_KEY", "MINIMAX_CODING_API_KEY"], hostFor: () => "https://api.minimaxi.com", fetch: minimaxFetch },
-];
+/** Built-in subscription adapters (src/quota-adapters/*.js), in claim
+ *  priority order — the first match() to claim a provider id wins. `label`
+ *  is the display face every provider entry echoes (the plan name
+ *  supersedes it once a query succeeded); `envKeys` are the well-known
+ *  ambient names tried after the deployment's own refs. The general quota
+ *  norm lives in src/quota-adapters/types.js. */
+const QUOTA_ADAPTERS = [zaiAdapter, kimiAdapter, minimaxAdapter];
 
 /**
  * Create the quota service.
@@ -356,7 +183,7 @@ export function createQuotaService({ ctx, resolveConfig, llmServiceOf, llmDescri
       for (const provider of llmService.listProviders()) {
         const route = typeof provider?.id === "string" ? provider.id : "";
         if (route === "") continue;
-        const adapter = QUOTA_ADAPTERS.find((candidate) => candidate.routes.includes(route));
+        const adapter = QUOTA_ADAPTERS.find((candidate) => candidate.match(route));
         if (adapter === undefined) continue;
         const displayName = typeof provider.name === "string" && provider.name !== "" ? provider.name : route;
         if (off.has(route)) {
@@ -374,7 +201,11 @@ export function createQuotaService({ ctx, resolveConfig, llmServiceOf, llmDescri
         return { provider: route, adapter: adapter.id, label: adapter.label, displayName, ok: false, configured: false, error: "no credential resolved" };
       }
       try {
-        const result = await adapter.fetch({ route, key: credential.value, host: adapter.hostFor(route) });
+        // The route-scoped credential thunk the SPI hands the adapter — the
+        // same fact resolved above, so the key still lives only in this one
+        // outbound Authorization header.
+        const resolveCredential = async () => credential;
+        const result = await adapter.fetchQuota({ route, host: adapter.hostFor(route), resolveCredential });
         await recordQuotaSnapshots(route, result);
         return {
           provider: route, adapter: adapter.id, label: adapter.label, displayName,

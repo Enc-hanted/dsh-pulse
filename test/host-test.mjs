@@ -8,6 +8,7 @@
 import { strict as assert } from "node:assert";
 import { apply, Config } from "../src/index.js";
 import { localDay } from "../src/aggregate.js";
+import { SessionProjectionCache } from "@deepseek-ai/dsh-session-projection-cache";
 
 const DAY = 86400000;
 const noon = (offsetDays) => {
@@ -21,19 +22,20 @@ const daysAgo = (n) => localDay(noon(-n));
 /** Build a fresh stubbed harness context; `withSettings` mounts a fake
  *  `settings` service whose user layer is editable through the fake scope,
  *  `withLlm` mounts a fake `llm` service serving one provider's model
- *  catalog, `legacyCache` swaps the 0.1.2-rc projection cache (sync
- *  `coldSnapshot(meta, cut, events)` over a caller-supplied log plus the
- *  zero-I/O `cachedSnapshot` fast path) for the pre-0.1.2 self-reading async
- *  one, and `alphaCache` swaps in the 0.1.7-alpha generation instead (the
- *  explicit cut is gone from `cachedSnapshot(meta, keys)`), proving the
- *  plugin serves every generation. `deferSettings` queues
+ *  catalog, `seamBroken` swaps the projection cache for a wrong-shaped one
+ *  (the retired pre-0.1.2 self-reading seam) to prove guardrail B fails
+ *  loudly. The default cache stub is THE supported seam shape (0.1.7+:
+ *  `cachedSnapshot(meta, keys)` arity 2, synchronous caller-supplied
+ *  `coldSnapshot(session, cut, events)`) — the 0.2.1 floor dropped every
+ *  older generation. `deferSettings` queues
  *  the inject callback instead of running it at apply time, simulating a
  *  settings service that mounts after the plugin. */
-function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCredentials = false, withStorageDomain = false, legacyCache = false, alphaCache = false, withQuota = false }) {
+function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCredentials = false, withStorageDomain = false, seamBroken = false, withQuota = false }) {
   const routes = [];
   const commands = [];
   const coldReads = [];
   const fastReads = [];
+  const logErrors = [];
   const settingsWatches = new Set();
   let registeredUnit = null;
   let registerCount = 0;
@@ -247,37 +249,21 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
       },
     },
     sessions: { get: (id) => (id === "live1" ? { id } : undefined) },
-    sessionProjectionCache: legacyCache === true ? {
-      // pre-0.1.2-rc generation: self-reading async coldSnapshot(id)
+    sessionProjectionCache: seamBroken === true ? {
+      // A deliberately WRONG shape (the retired pre-0.1.2 self-reading seam):
+      // guardrail B must flag it at apply() and the stats route must 503.
       coldSnapshot: async (id) => {
         coldReads.push({ id });
         if (id === "broken1") throw new Error("no persisted log");
         return { asOfSeq: 4, values: id === "cold2" ? cold2Values : coldValues };
       },
-    } : alphaCache === true ? {
-      // 0.1.7-alpha generation: `cachedSnapshot(meta, keys)` dropped the
-      // explicit cut (arity 2), while coldSnapshot keeps the synchronous
-      // caller-supplied fold. A stray legacy 3-arg call would land the
-      // numeric cut in `keys`; like the real registry's `new Set(keys)` it
-      // must throw, never pass silently.
+    } : {
+      // The supported generation (0.1.7+): `cachedSnapshot(meta, keys)`
+      // matches stored rows by header-borne lifecycle identity, and
+      // coldSnapshot keeps the synchronous caller-supplied fold.
       cachedSnapshot: (header, keys) => {
         fastReads.push(header.id);
         if (header.isSeeded !== false) return undefined;
-        if (keys !== undefined && !keys.includes("pulseUsage")) return undefined;
-        const values = coldRows.get(header.id);
-        return values === undefined ? undefined : { asOfSeq: 4, values };
-      },
-      coldSnapshot: (meta, inheritedEventCount, events) => {
-        coldReads.push({ id: meta.id, cut: inheritedEventCount, events: events.length });
-        if (meta.id === "broken1") throw new Error("no persisted log");
-        return { asOfSeq: 4, values: coldValues };
-      },
-    } : {
-      // 0.1.2-rc generation: zero-I/O stored-row read plus a synchronous
-      // fold over the caller-supplied log
-      cachedSnapshot: (header, cut, keys) => {
-        fastReads.push(header.id);
-        if (header.isSeeded !== false || cut !== 0) return undefined;
         if (keys !== undefined && !keys.includes("pulseUsage")) return undefined;
         const values = coldRows.get(header.id);
         return values === undefined ? undefined : { asOfSeq: 4, values };
@@ -296,7 +282,7 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
       return null;
     },
     effect: (fn) => { const disposer = fn(); return () => { if (typeof disposer === "function") disposer(); }; },
-    logger: { warn: () => {} },
+    logger: { warn: () => {}, error: (m) => logErrors.push(String(m)) },
     inject: (deps, callback) => {
       const services = {};
       if (withSettings && Array.isArray(deps) && deps.includes("settings")) {
@@ -339,7 +325,7 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
   }
 
   return {
-    ctx, routes, commands, coldReads, fastReads, serve,
+    ctx, routes, commands, coldReads, fastReads, logErrors, serve,
     unit: () => registeredUnit,
     registerCount: () => registerCount,
     userSection: () => userSection,
@@ -405,10 +391,10 @@ apply(env.ctx, config);
 // --- the projection unit registered with the official contract --------------
 assert.notEqual(env.unit(), null, "projection unit registered");
 assert.equal(env.unit().key, "pulseUsage");
-assert.equal(env.unit().stateVersion, 10);
+assert.equal(env.unit().stateVersion, 11);
 assert.equal(env.registerCount(), 1, "one registration at load");
 assert.deepEqual(env.unit().view(env.unit().init()), {
-  byDay: {}, modelsByDay: {}, hoursByDay: {}, tiersByDay: {}, turnsByDay: {}, toolCallsByDay: {}, auxByDay: {}, firstDay: null, title: null,
+  byDay: {}, modelsByDay: {}, hoursByDay: {}, tiersByDay: {}, turnsByDay: {}, toolCallsByDay: {}, toolHistogramByDay: {}, auxByDay: {}, firstDay: null, title: null,
 });
 assert.equal(env.routes.length, 1, "/pulse route registered");
 assert.equal(env.routes[0].kind, "prefix");
@@ -443,7 +429,7 @@ assert.equal(cold.subagent, true);
 assert.equal(cold.project, "repo");
 assert.equal(cold.day, daysAgo(3));
 assert.deepEqual(cold.turnsByDay, { [daysAgo(3)]: 1 });
-// the 0.1.2-rc ladder: seeded cold1 skipped its zero-I/O fast path (unknown
+// the read ladder: seeded cold1 skipped its zero-I/O fast path (unknown
 // cut) and folded from the readSession body, which arrived with its exact
 // inherited cut and complete log
 assert.deepEqual(env.fastReads, ["broken1", "cold2"], "only unseeded headers touch the fast path");
@@ -521,7 +507,7 @@ const peakChange = JSON.parse((await env.serve("/pulse/settings", {
 assert.equal(peakChange.ok, true);
 assert.equal(peakChange.refold, true, "peak-hours save predicts a re-fold");
 assert.equal(env.registerCount(), 2, "peak-hours change re-registers the projection");
-assert.equal(env.unit().stateVersion, 11, "bumped state version invalidates persisted rows");
+assert.equal(env.unit().stateVersion, 12, "bumped state version invalidates persisted rows");
 await new Promise((resolve) => setTimeout(resolve, 20));
 assert.ok(env.coldReads.length > coldReadsBefore, "background warm-up re-folds the cold corpus");
 
@@ -548,7 +534,7 @@ assert.equal(resetSettings.costEnabled, true);
 assert.equal(resetSettings.pricing.length, 2, "official defaults back");
 assert.deepEqual(resetSettings.fx, { usdToCny: 6.8 }, "fx re-inherits the default");
 assert.equal(env.registerCount(), 4, "reset drops the custom hours → re-fold back to official");
-assert.equal(env.unit().stateVersion, 13);
+assert.equal(env.unit().stateVersion, 14);
 
 // a provider-scoped rule coexists with the wildcard official default: same
 // model id, two effective rules, and the provider survives the round trip
@@ -963,29 +949,40 @@ assert.ok(env.coldReads.length <= before + 3, "shared flight reads the cold corp
   assert.equal(missing.ok, false);
 }
 
-// --- legacy cache generation (pre-0.1.2-rc): the self-reading async seam -------
+// --- guardrail B: a wrong-shaped cache seam fails loudly, never silently ----
+// The retired pre-0.1.2 self-reading seam stands in for "a future host
+// reshaped the seam": apply() must log one error and /pulse/stats must 503
+// instead of serving a silently empty dashboard.
 {
-  const env = makeCtx({ withSettings: false, legacyCache: true });
+  const env = makeCtx({ withSettings: false, seamBroken: true });
   apply(env.ctx, config);
-  const stats = JSON.parse((await env.serve("/pulse/stats?days=9")).body);
-  assert.equal(stats.sessions.length, 3, "legacy self-reading coldSnapshot serves the cold corpus");
-  assert.ok(env.coldReads.some((entry) => entry.id === "cold1"), "legacy path folded cold1 from its id alone");
-  assert.equal(env.fastReads.length, 0, "legacy generation has no zero-I/O fast path");
+  assert.ok(env.logErrors.some((line) => line.includes("seam shape mismatch")),
+    "apply() logs the seam shape mismatch once, loudly");
+  const denied = await env.serve("/pulse/stats?days=13");
+  assert.equal(denied.status, 503, "the stats route refuses to serve on a broken seam");
+  assert.ok(String(denied.body).includes("seam shape mismatch"), "the 503 names the actual mismatch");
+  // A healthy re-apply clears the gate (the plugin reloads, the seam passes).
+  const healthy = makeCtx({ withSettings: false });
+  apply(healthy.ctx, config);
+  assert.equal(healthy.logErrors.length, 0, "a correctly-shaped seam logs no error");
+  assert.equal((await healthy.serve("/pulse/stats?days=14")).status, 200, "a correctly-shaped seam serves stats");
 }
 
-// --- 0.1.7-alpha cache generation: the zero-I/O read drops the explicit cut -----
-// `days=10`, not the legacy block's `days=9`: the payload TTL cache is
-// module-level and keyed by window, so an equal window would serve the
-// previous environment's folded payload and never touch this ctx.
+// --- guardrail C: the stub matrix cannot drift from the real seam package ----
+// The dev tree pins the REAL @deepseek-ai/dsh-session-projection-cache
+// (the package whose service the host injects as `sessionProjectionCache`),
+// so a host release that reshapes the seam fails HERE on `npm install &&
+// npm test` at the moment the devDependency is bumped — not in the wild as
+// a silently empty dashboard. The hand-written stub above stays as the
+// behavioral fixture; this block is the shape contract against reality.
 {
-  const env = makeCtx({ withSettings: false, alphaCache: true });
-  apply(env.ctx, config);
-  const stats = JSON.parse((await env.serve("/pulse/stats?days=10")).body);
-  assert.equal(stats.sessions.length, 3, "alpha cache serves the same corpus shape");
-  const cold2 = stats.sessions.find((s) => s.id === "cold2");
-  assert.deepEqual(cold2.byDay[daysAgo(6)], { input: 20, output: 5, cacheRead: 100, cacheWrite: 0 }, "alpha zero-I/O rows serve the unseeded session through the 2-arg call");
-  assert.deepEqual(env.fastReads, ["broken1", "cold2"], "alpha fast path still claims only unseeded headers");
-  assert.deepEqual(env.coldReads.map((entry) => entry.id), ["cold1"], "seeded session still folds from its log on the alpha host");
+  const real = SessionProjectionCache.prototype;
+  assert.equal(typeof real.coldSnapshot, "function", "the real cache class still exposes coldSnapshot");
+  assert.ok(real.coldSnapshot.length >= 3,
+    `real coldSnapshot arity changed to ${real.coldSnapshot.length} — the 0.2.1 floor's single-shape fold path must be updated together with the stub`);
+  assert.equal(typeof real.cachedSnapshot, "function", "the real cache class still exposes cachedSnapshot");
+  assert.equal(real.cachedSnapshot.length, 2,
+    `real cachedSnapshot arity changed to ${real.cachedSnapshot.length} — the zero-I/O fast path call shape must be updated together with the stub`);
 }
 
 // --- volatile Config fields: display edits never re-fold, pricing does ----------

@@ -6,6 +6,7 @@ import {
   sessionGroups, sessionModelRows, shiftDay, statsFingerprint, weekStart,
   quotaBurn, quotaCalibrate, quotaCoverage, quotaFeeShare, quotaMonthlyFee, quotaProjectAttribution, quotaWindowTokens,
 } from "../src/view.js";
+import { burnRateSpikes, loopFingerprints, detectAnomalies } from "../src/view/anomaly.js";
 
 const D = "2026-08-14"; // a Friday
 assert.equal(weekStart(D), "2026-08-10", "Monday-start week");
@@ -1512,6 +1513,46 @@ assert.equal(sameIdAmbiguous[0].sessions[0].cost.configured, true, "official wil
   assert.equal(filtered.hours.filter((h) => h.cost > 0).length, 0, "a non-matching filter empties the day");
   // invalid day keys fold to zeros, not NaN
   assert.equal(hourlyCostSeries(sessions, "nope", { pricing: [RULE] }).hours[9].cost, 0);
+}
+
+// --- anomaly detection (#8): three fixtures, observational numbers only -----
+{
+  const d = (n) => shiftDay(D, n);
+  const burn = (tokens) => ({ input: tokens, output: 0, cacheRead: 0, cacheWrite: 0 });
+  const daysOf = (counts) => Object.fromEntries(counts.map(([n, t]) => [d(n), burn(t)]));
+  // normal: a quiet, steady week — nothing to report
+  const steady = [{ id: "s1", byDay: daysOf([[0, 10000], [1, 10000], [2, 11000], [3, 9000], [4, 10000], [5, 10500]]) }];
+  assert.deepEqual(burnRateSpikes(steady), [], "a steady week reports no burn spikes");
+  // spike: quiet baseline, one loud day (12× the P95, far above the floor)
+  const spike = [{ id: "s2", byDay: daysOf([[0, 10000], [1, 10000], [2, 10000], [3, 10000], [4, 10000], [5, 120000]]) }];
+  const spikes = burnRateSpikes(spike);
+  assert.equal(spikes.length, 1);
+  assert.equal(spikes[0].day, d(5));
+  assert.equal(spikes[0].tokens, 120000);
+  assert.equal(spikes[0].baseline, 10000);
+  assert.equal(spikes[0].ratio, 12);
+  // below the absolute floor: a 10× day of tiny numbers is noise, not a spike
+  const tiny = [{ id: "s3", byDay: daysOf([[0, 100], [1, 100], [2, 100], [3, 100], [4, 100], [5, 1000]]) }];
+  assert.deepEqual(burnRateSpikes(tiny), [], "the minTokens floor keeps quiet histories silent");
+  // loop fingerprint: one session, one loud day, ONE tool 40 times
+  const loopRecord = {
+    id: "s4", title: "stuck",
+    byDay: daysOf([[0, 1000], [1, 1000], [2, 1000], [3, 1000], [4, 50000]]),
+    toolHistogramByDay: { [d(4)]: { bash: 40, read: 2 } },
+  };
+  const loops = loopFingerprints([loopRecord]);
+  assert.equal(loops.length, 1);
+  assert.equal(loops[0].sessionId, "s4");
+  assert.equal(loops[0].tool, "bash");
+  assert.equal(loops[0].count, 40);
+  assert.equal(loops[0].dayTokens, 50000);
+  assert.equal(loops[0].medianDayTokens, 1000);
+  // deliberate batch work: same call count on a normal-burn day → quiet
+  const batch = { ...loopRecord, byDay: daysOf([[0, 1000], [1, 1000], [2, 1000], [3, 1000], [4, 3000]]) };
+  assert.deepEqual(loopFingerprints([batch]), [], "40 calls on a normal-burn day is work, not a loop");
+  // missing histogram (records folded before stateVersion 11) never errors
+  assert.deepEqual(detectAnomalies([{ id: "s5", byDay: daysOf([[0, 50000]]) }]), { burnRate: [], loops: [] },
+    "records without a histogram yield empty anomalies, never errors");
 }
 
 console.log("view-test: all assertions passed");

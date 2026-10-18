@@ -4,6 +4,7 @@
   "description": "Cross-session usage & cost observatory for dsh — daily token charts, cache hit ring, 90d/1y heatmaps, model and project breakdowns, adaptive color themes and CSV export in the web UI",
   "type": "module",
   "main": "src/index.js",
+  "types": "./types/index.d.ts",
   "engines": {
     "node": ">=22.19",
     "dsh": ">=0.2.1-alpha.5"
@@ -22,6 +23,7 @@
     "./view": "./src/view.js",
     "./client": "./lib/client.js",
     "./tui": "./src/tui.js",
+    "./pricing": "./src/pricing/index.js",
     "./locale/en.json": "./locale/en.json",
     "./locale/zh.json": "./locale/zh.json",
     "./icon": "./assets/logo.svg",
@@ -29,13 +31,14 @@
   },
   "files": [
     "src",
+    "types",
     "lib/client.js",
     "locale",
     "assets/logo.svg",
     "assets/logo-dark.svg",
     "cordis.patch.yml",
-    "dsh-plugin.json",
     "README.md",
+    "README.zh.md",
     "LICENSE"
   ],
   "keywords": [
@@ -55,9 +58,10 @@
   "license": "MIT",
   "scripts": {
     "build": "node scripts/build-client.mjs",
+    "build:types": "tsc -p tsconfig.json",
     "demo": "node scripts/build-canvas-demo.mjs",
     "shots": "node scripts/shoot-canvas-matrix.mjs",
-    "test": "npm run build && node test/host-test.mjs && node test/aggregate-test.mjs && node test/view-test.mjs && node test/client-smoke-test.mjs && node test/tui-test.mjs && node test/golden-test.mjs && node test/style-test.mjs && node test/manifest-test.mjs"
+    "test": "npm run build && node test/host-test.mjs && node test/aggregate-test.mjs && node test/view-test.mjs && node test/quota-adapters-test.mjs && node test/client-smoke-test.mjs && node test/tui-test.mjs && node test/golden-test.mjs && node test/style-test.mjs && node test/manifest-test.mjs"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.4",
@@ -93,7 +97,9 @@
   },
   "devDependencies": {
     "@deepseek-ai/dsh-credentials": "0.2.1-alpha.5",
+    "@deepseek-ai/dsh-session-projection-cache": "^0.2.1-alpha.5",
     "@deepseek-ai/dsh-storage-domain": "0.2.1-alpha.5",
-    "esbuild": "^0.28.2"
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
   }
 }

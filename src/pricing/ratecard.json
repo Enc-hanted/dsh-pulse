@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "checkedAt": "2026-10-19",
+  "source": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
+  "usdToCny": 6.8,
+  "peakHours": [9, 10, 11, 14, 15, 16, 17],
+  "peakWeekdaysOnly": true,
+  "auxPriceAs": "deepseek-flash",
+  "auxCallFee": { "from": "2026-11-01", "cnyPerCall": 0.005 }
+}

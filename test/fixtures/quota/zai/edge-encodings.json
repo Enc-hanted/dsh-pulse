@@ -1,0 +1,35 @@
+{
+  "wire": {
+    "quota": {
+      "code": 200,
+      "data": {
+        "level": "lite",
+        "limits": [
+          { "type": "TOKENS_LIMIT", "unit": 6, "number": 7, "percentage": 17.2, "nextResetTime": 1792497600 },
+          { "type": "TOKENS_LIMIT", "unit": 5, "number": 1, "percentage": 3.1, "nextResetTime": "2026-11-01T08:30:15.987654321Z" },
+          { "type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 42.5, "nextResetTime": 1792411200000 },
+          { "type": "TOKENS_LIMIT", "unit": 6, "number": 1, "percentage": 99.9, "nextResetTime": 1792497600 },
+          { "type": "TOKENS_LIMIT", "unit": 9, "number": 2, "percentage": 137.6, "nextResetTime": "2026-10-19T12:00:00.000Z" },
+          { "type": "TIME_LIMIT", "unit": 5, "number": 1, "usage": 300, "currentValue": 120, "nextResetTime": 1792411200000 }
+        ]
+      }
+    },
+    "subscription": {
+      "code": 200,
+      "data": []
+    }
+  },
+  "normalized": {
+    "plan": null,
+    "fee": null,
+    "windows": [
+      { "id": "5h", "kind": "tokens", "usedPct": 42.5, "resetsAt": 1792411200000, "windowMs": 18000000, "used": null, "total": null },
+      { "id": "7d", "kind": "tokens", "usedPct": 17.2, "resetsAt": 1792497600000, "windowMs": 604800000, "used": null, "total": null },
+      { "id": "month", "kind": "tokens", "usedPct": 3.1, "resetsAt": 1793521815987, "windowMs": 2592000000, "used": null, "total": null },
+      { "id": "u9n2", "kind": "tokens", "usedPct": 100, "resetsAt": 1792411200000, "windowMs": null, "used": null, "total": null }
+    ],
+    "extras": [
+      { "id": "tools", "label": null, "used": 120, "total": 300, "usedPct": 40, "resetsAt": 1792411200000 }
+    ]
+  }
+}

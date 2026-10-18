@@ -243,9 +243,7 @@ function sessionTitleOf(ctx, header) {
 	const cache = ctx.get("sessionProjectionCache", false);
 	if (typeof cache?.cachedSnapshot !== "function") return null;
 	try {
-		const snap = cache.cachedSnapshot.length >= 3
-			? cache.cachedSnapshot(header, 0, ["title"])
-			: cache.cachedSnapshot(header, ["title"]);
+		const snap = cache.cachedSnapshot(header, ["title"]);
 		const title = snap?.values?.title;
 		return typeof title === "string" && title !== "" ? title : null;
 	} catch {

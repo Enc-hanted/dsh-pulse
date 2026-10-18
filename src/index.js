@@ -13,7 +13,9 @@ import {
   balanceSpendSeries, buildPayload, localDay, normalizePeakHours, projectOf,
   pulseProjectionDefinition, resolveWindow, sliceRecord, timelineEvents, PEAK_HOURS,
 } from "./aggregate.js";
+import { detectAnomalies } from "./view/anomaly.js";
 import { AUX_SHAPE, DEFAULT_USD_TO_CNY, modelKey, OFFICIAL_PRICE_SCHEDULES, splitModelKey } from "./view.js";
+import { RATECARD, RATECARD_VERSION } from "./pricing-facts.js";
 import { createBalanceService } from "./balance-service.js";
 import { createQuotaService } from "./quota-service.js";
 import { json } from "./http-helpers.js";
@@ -88,23 +90,20 @@ const inflight = new Map();
 const lastServed = new Map();
 
 /**
- * One session's `pulseUsage` projection values, across both harness cache
- * generations.
+ * One session's `pulseUsage` projection values.
  *
- * The 0.1.2-rc projection cache stopped reading the session log itself: its
- * `coldSnapshot(meta, inheritedEventCount, events)` became a synchronous fold
- * over a caller-supplied complete log, and a new zero-I/O
- * `cachedSnapshot(meta, 0, keys)` serves stored rows for unseeded sessions
- * (their checkpoint identity cut is known to be 0; a seeded header-only
- * listing cannot know its cut, so it goes straight to the authoritative body
- * read through `sessionQuery.readSession`, which carries the exact
- * `inheritedEventCount`). Older caches (pre-0.1.2-rc) keep the self-reading
- * async `coldSnapshot(id)`, and 0.1.7-alpha caches drop the explicit cut from
- * `cachedSnapshot(meta, keys)` — lifecycle identity rides the header alone.
- * Both seams are told apart by arity, so one build serves every host. Live
- * sessions read the registry snapshot; a
+ * The persisted-cache read ladder of the supported host generation (0.1.7+
+ * seam shapes): live sessions read the registry snapshot; unseeded persisted
+ * sessions try the zero-I/O `cachedSnapshot(meta, keys)` stored-row read
+ * (lifecycle identity rides the header alone — a seeded header-only listing
+ * cannot know its checkpoint cut, so it skips straight to the authoritative
+ * body read); everything else folds through `sessionQuery.readSession` +
+ * the synchronous `coldSnapshot(session, inheritedEventCount, events)`. A
  * listed-live id that already left the store falls through to the persisted
- * paths instead of folding to an empty record.
+ * paths instead of folding to an empty record. Older generations
+ * (pre-0.1.2-rc self-reading, 0.1.2-rc explicit-cut) were dropped with the
+ * 0.2.1 floor — this one build serves exactly the shape
+ * {@link assertSeamShape} asserts at startup.
  *
  * @param {object} ctx - plugin context carrying the injected services.
  * @param {{live: boolean, header: object}} entry - one `sessionQuery.listSessions` record.
@@ -119,28 +118,14 @@ async function projectionValuesOf(ctx, entry) {
   }
   const cache = ctx.sessionProjectionCache;
   if (cache === undefined || typeof cache.coldSnapshot !== "function") return undefined;
-  if (cache.coldSnapshot.length >= 3) {
-    // 0.1.2-rc cache: synchronous fold, caller supplies the log. The fast
-    // path only claims a hit when this unit's own key came back — a row
-    // stored under an older fold version is filtered out and must refold.
-    if (header.isSeeded === false && typeof cache.cachedSnapshot === "function") {
-      // The zero-I/O read lost its explicit cut in 0.1.7-alpha:
-      // `cachedSnapshot(meta, keys)` (arity 2) matches the stored record by
-      // header-borne lifecycle identity, while the 0.1.2-rc signature
-      // `cachedSnapshot(meta, cut, keys)` (arity 3) needs the cut spelled
-      // out. Feeding the new signature a numeric cut throws inside the
-      // registry (`new Set(0)`) and the per-session guard would silently
-      // drop every unseeded session from the dashboard — so the call shapes
-      // must be told apart here, by arity.
-      const cached = cache.cachedSnapshot.length >= 3
-        ? cache.cachedSnapshot(header, 0, ["pulseUsage"])
-        : cache.cachedSnapshot(header, ["pulseUsage"]);
-      if (cached !== undefined && cached.values?.pulseUsage !== undefined) return cached.values;
-    }
-    const loaded = await ctx.sessionQuery.readSession(header.id);
-    return cache.coldSnapshot(loaded.session, loaded.inheritedEventCount, loaded.events).values;
+  // The fast path only claims a hit when this unit's own key came back — a
+  // row stored under an older fold version is filtered out and must refold.
+  if (header.isSeeded === false && typeof cache.cachedSnapshot === "function") {
+    const cached = cache.cachedSnapshot(header, ["pulseUsage"]);
+    if (cached !== undefined && cached.values?.pulseUsage !== undefined) return cached.values;
   }
-  return (await cache.coldSnapshot(header.id))?.values;
+  const loaded = await ctx.sessionQuery.readSession(header.id);
+  return cache.coldSnapshot(loaded.session, loaded.inheritedEventCount, loaded.events).values;
 }
 /** Cache generation: bumped on every invalidation so a fold that started
  *  before a settings change can never land its (now stale) payload in the
@@ -235,6 +220,7 @@ async function aggregate(ctx, config, fromDay, toDay, snapshotsOf, corpusSession
         tiersByDay: pulse?.tiersByDay ?? {},
         turnsByDay: pulse?.turnsByDay ?? {},
         toolCallsByDay: pulse?.toolCallsByDay ?? {},
+        toolHistogramByDay: pulse?.toolHistogramByDay ?? {},
         auxByDay: pulse?.auxByDay ?? {},
       }, fromDay, toDay);
       if (record !== null) records.push(record);
@@ -253,6 +239,9 @@ async function aggregate(ctx, config, fromDay, toDay, snapshotsOf, corpusSession
     monthly: Array.isArray(config.monthlyProviders) ? config.monthlyProviders : [],
     corpusSessions: sessions.length,
   });
+  // Anomaly detection rides the same sliced records — observational numbers
+  // only, computed per request and never persisted (see view/anomaly.js).
+  payload.anomalies = detectAnomalies(records);
   // The reconciliation overlay rides along when the storage domain (and
   // therefore snapshot history) is available; otherwise the key stays absent
   // and the client hides the overlay.
@@ -331,6 +320,35 @@ function seamVersionOf(specifier) {
   }
 }
 
+/** Guardrail B: the one explicit seam-shape assertion, replacing the five
+ * implicit arity probes this plugin used to carry. A future host that
+ * reshapes `sessionProjectionCache` must fail LOUDLY here — one error log
+ * and a 503 on the stats route — instead of letting the per-session guard
+ * silently skip every session until the dashboard looks empty. Set once at
+ * apply() time; reset (re-checked) on every re-apply.
+ * @type {string|null}
+ */
+let seamShapeFailure = null;
+
+/**
+ * Assert the persisted-cache seam carries the supported (0.1.7+) call
+ * shapes: `coldSnapshot(session, cut, events)` (arity ≥ 3) and
+ * `cachedSnapshot(meta, keys)` (arity 2). Assemblies without the cache
+ * service are not a failure — the fiber simply has nothing to assert.
+ *
+ * @param {object} ctx - plugin context carrying the injected services.
+ */
+function assertSeamShape(ctx) {
+  const cache = ctx.sessionProjectionCache;
+  if (cache === undefined) return;
+  const coldArity = typeof cache.coldSnapshot === "function" ? cache.coldSnapshot.length : -1;
+  const fastArity = typeof cache.cachedSnapshot === "function" ? cache.cachedSnapshot.length : -1;
+  if (coldArity >= 3 && fastArity === 2) return;
+  seamShapeFailure = `sessionProjectionCache seam shape mismatch (coldSnapshot arity ${coldArity}, cachedSnapshot arity ${fastArity}); `
+    + "expected the 0.1.7+ shapes this build supports — see docs/ROADMAP.md #4";
+  ctx.logger?.error?.(`dsh-pulse: ${seamShapeFailure}`);
+}
+
 /**
  * Register the `pulseUsage` projection unit, the `pulse` settings namespace
  * (user-editable pricing and cost display), the `/pulse` command and the
@@ -349,6 +367,8 @@ function seamVersionOf(specifier) {
 export function apply(ctx, config) {
   ctx.logger?.info?.(
     `dsh-pulse ${seamVersionOf("dsh-pulse/package.json")} on seams dsh-credentials ${seamVersionOf("@deepseek-ai/dsh-credentials")} / dsh-storage-domain ${seamVersionOf("@deepseek-ai/dsh-storage-domain")}`);
+  seamShapeFailure = null;
+  assertSeamShape(ctx);
   /** Fold-semantics epoch: 0 at load, +1 per peak-hour change. The persisted
    *  rows of every older epoch are invalid by construction. */
   let epoch = 0;
@@ -359,7 +379,7 @@ export function apply(ctx, config) {
   const OFFICIAL_TIER = { hours: PEAK_HOURS, weekdaysOnly: true };
   const peakHoursFor = (model) => peakMap.get(model) ?? peakMap.get(splitModelKey(model).model) ?? OFFICIAL_TIER;
   let disposeProjection = ctx.sessionProjections.register(
-    pulseProjectionDefinition({ peakHoursFor, stateVersion: 10 + epoch }),
+    pulseProjectionDefinition({ peakHoursFor, stateVersion: 11 + epoch }),
   );
   ctx.effect(() => () => disposeProjection(), "dsh-pulse: projection fallback");
   /** After a re-register every session must re-fold (persisted rows no
@@ -390,7 +410,7 @@ export function apply(ctx, config) {
     epoch += 1;
     disposeProjection();
     disposeProjection = ctx.sessionProjections.register(
-      pulseProjectionDefinition({ peakHoursFor, stateVersion: 10 + epoch }),
+      pulseProjectionDefinition({ peakHoursFor, stateVersion: 11 + epoch }),
     );
     void warmUpRefolds();
   };
@@ -622,6 +642,12 @@ export function apply(ctx, config) {
           res.end("not found");
           return;
         }
+        // Guardrail B's gate: a seam-shape mismatch fails loudly here rather
+        // than degrading into a silently empty dashboard.
+        if (seamShapeFailure !== null) {
+          json.err(res, 503, seamShapeFailure);
+          return;
+        }
         const payload = await buildStats(ctx, resolveConfig, {
           from: url.searchParams.get("from"),
           to: url.searchParams.get("to"),
@@ -670,6 +696,10 @@ async function serveUpdateCheck(req, res) {
       latest,
       publishedAt: typeof meta?.time?.[latest] === "string" ? meta.time[latest] : null,
       checkedAt: Date.now(),
+      // The rate card rides the package, so "newer card" is implied by
+      // "newer plugin"; reporting its revision lets the settings page say
+      // WHICH numbers changed without another outbound call.
+      ratecard: { version: RATECARD_VERSION, checkedAt: RATECARD.checkedAt },
     });
   } catch (error) {
     json(res, 200, { ok: false, error: String(error?.message ?? error), checkedAt: Date.now() });

@@ -1,0 +1,117 @@
+/**
+ * dsh-pulse view model - pure, client-side aggregation of the windowed
+ * per-session records served by `/pulse/stats` into chartable buckets
+ * (day / week / month), filtered totals, per-model splits, cost estimates,
+ * and the GitHub-style heatmap cells used by the 90-day / 1-year views.
+ *
+ * The browser bundle (lib/client.js) is built from src/client/ by
+ * `scripts/build-client.mjs` (esbuild), which imports this file directly —
+ * there is no mirrored copy to keep in sync; edit here, then rebuild.
+ *
+ * @module dsh-pulse/view
+ * Layout: the self-contained subsystems live in ./view/ — keys.js (model
+ * keys + bucket ladder), routes.js (route families & provider identity),
+ * aux-calls.js (aux-call shapes), pricing-engine.js (rules → money),
+ * recon.js (official-bill overlay), build-view.js (window aggregation +
+ * hourly), quota-estimates.js (quota ms-window math), accents.js
+ * (per-model accent palette), official-pricing.js (official price
+ * schedules & strict rules). This module keeps the
+ * session/turn views and money formatting, and remains the ONLY import
+ * surface the plugin's other modules use (exports contract unchanged).
+ */
+export { MODEL_SEP, bucketLabel, bucketOf, clampSpan, daysBetween, dayStart, localDay, modelFilterSet, modelKey, monthKey, rangeKeys, shiftDay, splitModelKey, weekStart, ymd, } from "./view/keys.js";
+export { ROUTE_FAMILIES, familyRouteOf, isOfficialProvider, keyMatchesFilter, providerLabelOf, rollupKeyOf, } from "./view/routes.js";
+export { AUX_CALL_FEE, AUX_MODEL_KEY, AUX_PRICE_AS, AUX_SHAPE, auxDayUsage, } from "./view/aux-calls.js";
+export { DEFAULT_USD_TO_CNY, cacheHitRateOf, costOf, costSeries, fxRateOf, monthlySetOf, priceTier, resolveRates, ruleFor, ruleMaps, } from "./view/pricing-engine.js";
+export { RECON_ABS_FLOOR, auxCalibration, reconDrift, reconcileSeries, rollupModelFamilies, } from "./view/recon.js";
+export { buildView, heatmapCells, heatmapLevel, hourlyCostSeries, hourlySeries, statsFingerprint, tierAtMs, } from "./view/build-view.js";
+export { quotaBurn, quotaCalibrate, quotaCoverage, quotaDayStart, quotaEmpty, quotaFeeShare, quotaMonthlyFee, quotaProjectAttribution, quotaWindowTokens, } from "./view/quota-estimates.js";
+export { fullRulesWith, isOffPeakDay, OFFICIAL_PRICE_SCHEDULES, officialEstimateRulesFor, officialRulesFor, strictRulesWith, } from "./view/official-pricing.js";
+export { ACCENT_MIN_DISTANCE, accentEntryOf, accentFillOf, accentHash, accentHueGap, accentLabDistance, modelAccentMap, vendorAccentOf, } from "./view/accents.js";
+/** Axis maximum rounded to a 1/2/5×10^k ceiling so gridlines read clean. */
+export declare function niceMax(value: any): number;
+/**
+ * Cost formatting: whole amounts keep two decimals, sub-unit amounts keep
+ * three significant digits (so `0.000278` stays readable instead of raw).
+ */
+export declare function fmtCost(total: any): string;
+/** ONE money notation for every face — symbol for CNY, code otherwise,
+ *  never both. The hero renders `unit` as its own quiet span; quotaMoney
+ *  joins the parts back into one string for table cells. */
+export declare function moneyParts(total: any, currency: any): {
+    text: string;
+    unit: any;
+};
+/** The CNY face of moneyParts for call sites that print the symbol inline. */
+export declare function moneyCny(total: any): string;
+/** Money with an explicit unit tail: `¥12.34` for CNY, `12.34 USD` otherwise
+ *  — the single face for table cells and in-sentence amounts. */
+export declare function quotaMoney(total: any, currency: any): string;
+/** `HH:MM` for an epoch-ms stamp; null for a non-finite input — the ONE
+ *  clock face (the fold's null contract wins over printing a fake midnight). */
+export declare function clockOf(ms: any): string;
+/** Token-count formatting: 1.2k / 3.4M / 5.6B — the ONE abbreviation for
+ *  both faces (the two ladders had already split: 1.5B here printed as
+ *  1500.0M on the TUI). */
+export declare function fmtTokens(n: any): string;
+/** `MM-DD HH:MM:SS` short stamp for an epoch-ms value (break ruler labels). */
+export declare function fmtClockMs(timeMs: any): string;
+/** Fold one record's per-day per-model tokens into the model-row shape the
+ *  cost estimator expects (cross-day totals + peak/off-peak tier split). */
+export declare function sessionModelRows(record: any): any[];
+/** Windowed token totals of one record (its `byDay` is already window-sliced). */
+export declare function recordTokens(record: any): {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+};
+/**
+ * Session list grouped by project — the session panel's data source. Each
+ * session row carries its windowed token totals, tier-aware cost (through
+ * the same estimator the dashboard uses), identity fields (`subagent`,
+ * `parentSession`, `delegationDepth`) and its dominant model. Each group
+ * adds the subagent subtotal (count, tokens, cost) so "project × subagent"
+ * reads at a glance.
+ *
+ * @param {Array<object>} sessions - payload session records.
+ * @param {object} options - `{pricing, fx, monthly, model, catalog}` for cost
+ *   estimation and an optional model filter (composite key or bare id). With
+ *   `model` set, each session counts only that model's rows — sessions that
+ *   never used the model drop out entirely, so the project-detail panel never
+ *   surfaces other models' sessions. `catalog` (the model config) lets
+ *   provider-less rows resolve their provider for monthly/cost matching.
+ * @returns {Array<object>} groups sorted by total tokens descending.
+ */
+export declare function sessionGroups(sessions: Array<object>, { pricing, fx, monthly, model, models, catalog }?: object): Array<object>;
+/**
+ * Slice one session's event timeline at up to three break timestamps into
+ * segments, each with its token totals, tier-aware cost and per-model split.
+ * Break points clamp into the timeline's span; segments are `[fromT, toT]`
+ * inclusive. Each event prices at its own second-accurate tier (its rule's
+ * peak hours), so a segment straddling a peak boundary costs correctly.
+ *
+ * @param {Array<{t: number, i: number, o: number, cr: number, cw: number, key: string}>} events
+ *   - the session timeline (ascending `t`, from `timelineEvents`).
+ * @param {Array<number>} breaks - ascending break timestamps (max 3).
+ * @param {object} options - `{pricing, fx, monthly, model}` for cost
+ *   estimation; `model` (composite key or bare id) restricts every segment to
+ *   that model's events, so a model-filtered break analysis never shows
+ *   other models' consumption. `catalog` (the model config) lets provider-less
+ *   events resolve their provider for monthly/cost matching.
+ * @returns {Array<{from: number, to: number, tokens: object, cost: object, models: Array}>}
+ */
+export declare function breaksSegments(events: Array<{
+    t: number;
+    i: number;
+    o: number;
+    cr: number;
+    cw: number;
+    key: string;
+}>, breaks: Array<number>, { pricing, fx, monthly, model, models, catalog }?: object): Array<{
+    from: number;
+    to: number;
+    tokens: object;
+    cost: object;
+    models: any[];
+}>;

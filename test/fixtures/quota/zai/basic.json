@@ -1,0 +1,41 @@
+{
+  "wire": {
+    "quota": {
+      "code": 200,
+      "data": {
+        "level": "flagship",
+        "limits": [
+          { "type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 42.5, "nextResetTime": "2026-10-19T12:00:00.000Z" },
+          { "type": "TOKENS_LIMIT", "unit": 6, "number": 1, "percentage": 17.2, "nextResetTime": "2026-10-19T12:00:00.000Z" },
+          { "type": "TOKENS_LIMIT", "unit": 5, "number": 1, "percentage": 3.1, "nextResetTime": "2026-11-01T00:00:00.000Z" },
+          { "type": "TIME_LIMIT", "unit": 5, "number": 1, "percentage": 60, "usage": 300, "currentValue": 120, "nextResetTime": "2026-10-19T12:00:00.000Z" }
+        ]
+      }
+    },
+    "subscription": {
+      "code": 200,
+      "data": [
+        {
+          "status": "VALID",
+          "productName": "GLM Coding Max",
+          "billingCycle": "monthly",
+          "nextRenewTime": "2026-11-01",
+          "actualPrice": 199,
+          "initialPrice": 399
+        }
+      ]
+    }
+  },
+  "normalized": {
+    "plan": { "name": "GLM Coding Max", "level": "flagship", "cycle": "monthly", "renewsAt": "2026-11-01" },
+    "fee": { "amount": 199, "currency": "CNY", "cycle": "monthly" },
+    "windows": [
+      { "id": "5h", "kind": "tokens", "usedPct": 42.5, "resetsAt": 1792411200000, "windowMs": 18000000, "used": null, "total": null },
+      { "id": "7d", "kind": "tokens", "usedPct": 17.2, "resetsAt": 1792411200000, "windowMs": 604800000, "used": null, "total": null },
+      { "id": "month", "kind": "tokens", "usedPct": 3.1, "resetsAt": 1793491200000, "windowMs": 2592000000, "used": null, "total": null }
+    ],
+    "extras": [
+      { "id": "tools", "label": null, "used": 120, "total": 300, "usedPct": 60, "resetsAt": 1792411200000 }
+    ]
+  }
+}

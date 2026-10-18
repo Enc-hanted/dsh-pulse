@@ -1,0 +1,16 @@
+{
+  "wire": {
+    "model_remains": [
+      { "current_interval_total_count": 600, "current_interval_usage_count": 150, "remains_time": "2026-10-19T12:00:00.000Z" },
+      { "current_interval_total_count": 800, "current_interval_usage_count": 600, "end_time": 1792497600 }
+    ]
+  },
+  "normalized": {
+    "plan": { "name": "MiniMax Coding Plan", "level": null, "cycle": null, "renewsAt": null },
+    "fee": null,
+    "windows": [
+      { "id": "5h", "kind": "requests", "used": 450, "total": 600, "usedPct": 75, "resetsAt": 1792411200000, "windowMs": 18000000 }
+    ],
+    "extras": []
+  }
+}

@@ -99,6 +99,7 @@ const folded = foldEvents(events);
 const day = localDay(t1);
 assert.equal(folded.turnsByDay[day], 1, "one distinct turn with a closed step");
 assert.equal(folded.toolCallsByDay[day], 1);
+assert.deepEqual(folded.toolHistogramByDay[day], { bash: 1 }, "the tool-name histogram counts the call under its name");
 assert.deepEqual(folded.byDay[day], { input: 1000, output: 500, cacheRead: 3000, cacheWrite: 200 });
 assert.equal(folded.modelsByDay[day][modelKey("deepseek-official", "deepseek-v4-flash")].cacheRead, 3000);
 assert.equal(folded.firstDay, day);
@@ -153,9 +154,10 @@ const flatHoursFolded = foldEvents([
 ], { peakHoursFor: (model) => (model === "m-flat" ? [] : undefined) });
 assert.equal(flatHoursFolded.tiersByDay[localDay(bj(10))]["m-flat"].input.peak, 0, "empty hour set: 10:00 Beijing is off-peak");
 assert.equal(flatHoursFolded.tiersByDay[localDay(bj(10))]["m-flat"].input.offpeak, 5);
-// the definition carries its stateVersion (host bumps it on peak-hour changes)
-assert.equal(pulseProjectionDefinition().stateVersion, 10);
-assert.equal(pulseProjectionDefinition({ stateVersion: 11 }).stateVersion, 11);
+// the definition carries its stateVersion (host bumps it on peak-hour changes);
+// 11 is the tool-histogram fold — persisted pre-11 rows re-fold to gain it
+assert.equal(pulseProjectionDefinition().stateVersion, 11);
+assert.equal(pulseProjectionDefinition({ stateVersion: 12 }).stateVersion, 12);
 // The official peak windows run Monday–Friday: the same 10:00 Beijing hour is
 // off-peak on a weekend. 2026-08-15 is a Saturday, 2026-08-14 a Friday. A bare
 // hour set keeps the historical all-days reading; the projection and the host
@@ -235,7 +237,7 @@ const noTime = foldEvents([
 assert.deepEqual(noTime.byDay, {});
 
 // hopeless input folds to an empty state, never throws
-const emptyState = { byDay: {}, modelsByDay: {}, hoursByDay: {}, tiersByDay: {}, turnsByDay: {}, toolCallsByDay: {}, auxByDay: {}, firstDay: null, title: null };
+const emptyState = { byDay: {}, modelsByDay: {}, hoursByDay: {}, tiersByDay: {}, turnsByDay: {}, toolCallsByDay: {}, toolHistogramByDay: {}, auxByDay: {}, firstDay: null, title: null };
 assert.deepEqual(foldEvents(null), emptyState);
 assert.deepEqual(foldEvents([{}, null, 42]), emptyState);
 

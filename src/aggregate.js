@@ -174,6 +174,12 @@ export const pulseUsageSchema = z.object({
   tiersByDay: z.record(z.string(), z.record(z.string(), tierTokensSchema)),
   turnsByDay: z.record(z.string(), z.number().int().nonnegative()),
   toolCallsByDay: z.record(z.string(), z.number().int().nonnegative()),
+  /** Per-tool call histogram by day (runaway-loop fingerprinting): the
+   *  `tool/call` event's `name`, counted per day. Names are opaque ids —
+   *  MCP tools arrive as `mcp__<server>__<tool>` — and never carry argument
+   *  content. Optional so pre-histogram rows and view literals stay valid;
+   *  the stateVersion bump is what forces history to re-fold with it. */
+  toolHistogramByDay: z.record(z.string(), z.record(z.string(), z.number().int().nonnegative())).optional(),
   /** Auxiliary-call counters (official `web_search` / title LLM): per day.
    *  Locally only the request event exists — no usage event — so search
    *  stays a count (the view's shape turns counts into estimated tokens),
@@ -364,7 +370,7 @@ export function tierAt(timeMs, peakHours = PEAK_HOURS) {
  * (a unit without `wire` is treated as host-internal and never surfaces in
  * snapshot values — the failure mode this dual contract exists to prevent).
  */
-export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 10 } = {}) {
+export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 11 } = {}) {
   const dayOf = (event) => (num(event.time) > 0 ? localDay(event.time) : null);
   /** Per-model tier specs, materialized once (the map lives and dies with one
    *  registration, so a re-register on settings change starts it fresh). An
@@ -415,6 +421,7 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 10 } = 
     tiersByDay: state.tiersByDay,
     turnsByDay: state.turnsByDay,
     toolCallsByDay: state.toolCallsByDay,
+    ...(state.toolHistogramByDay !== undefined ? { toolHistogramByDay: state.toolHistogramByDay } : {}),
     auxByDay: state.auxByDay,
     firstDay: state.firstDay,
     title: state.title ?? null,
@@ -428,7 +435,7 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 10 } = 
     stateSchema: pulseUsageStateSchema,
     init() {
       return {
-        byDay: {}, modelsByDay: {}, hoursByDay: {}, tiersByDay: {}, turnsByDay: {}, toolCallsByDay: {}, auxByDay: {}, firstDay: null, lastTurn: null, title: null,
+        byDay: {}, modelsByDay: {}, hoursByDay: {}, tiersByDay: {}, turnsByDay: {}, toolCallsByDay: {}, toolHistogramByDay: {}, auxByDay: {}, firstDay: null, lastTurn: null, title: null,
       };
     },
     apply(state, event) {
@@ -493,8 +500,12 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 10 } = 
       if (type === "tool/call") {
         const day = dayOf(event);
         if (day === null) return state;
+        const name = typeof data?.name === "string" && data.name !== "" ? data.name : "(unnamed)";
         const next = { ...state, toolCallsByDay: { ...state.toolCallsByDay } };
         next.toolCallsByDay[day] = (state.toolCallsByDay[day] ?? 0) + 1;
+        const dayHist = { ...(state.toolHistogramByDay?.[day] ?? {}) };
+        dayHist[name] = (dayHist[name] ?? 0) + 1;
+        next.toolHistogramByDay = { ...state.toolHistogramByDay, [day]: dayHist };
         withFirstDay(next, day);
         return next;
       }
@@ -660,6 +671,11 @@ export function sliceRecord(record, fromDay, toDay) {
   const tiersByDay = slice(record.tiersByDay);
   const turnsByDay = slice(record.turnsByDay);
   const toolCallsByDay = slice(record.toolCallsByDay);
+  // The tool histogram rides only when non-empty (the aux pattern): records
+  // folded before it existed, and records with no tool calls at all, stay
+  // byte-identical to the pre-histogram shape.
+  const toolHistogramByDay = slice(record.toolHistogramByDay);
+  const hasHistogram = Object.keys(toolHistogramByDay).length > 0;
   // Aux counters ride only when non-empty: records without auxiliary calls
   // stay byte-identical to the pre-aux shape (older clients, goldens).
   const auxByDay = slice(record.auxByDay);
@@ -684,6 +700,7 @@ export function sliceRecord(record, fromDay, toDay) {
     tiersByDay,
     turnsByDay,
     toolCallsByDay,
+    ...(hasHistogram ? { toolHistogramByDay } : {}),
     ...(hasAux ? { auxByDay } : {}),
   };
 }

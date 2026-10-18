@@ -16,7 +16,7 @@ import {
 	monthLabelOfWeek, compactTokensTight, sparkTrend, weeklyBars,
 	modelLayout, peakHoursFor, ganttRows, miniCardModel, pricingLabelOf,
 	apply, cursorStep, resolveTheme, hexMix, fitDisplay, truncateDisplay,
-	yearTiles, layoutBudget, fmtTokens,
+	yearTiles, layoutBudget, fmtTokens, renderCalendar,
 	noteCurrentSession, pulseStripToggle, stripStore, _resetStripForTests,
 } from "../src/tui.js";
 import { collect, foldCache } from "../src/tui/data.js";
@@ -585,6 +585,33 @@ test("layoutBudget: the year grid takes what it needs, the inspector keeps the r
 	assert.equal(month.total, 31);
 	assert.ok(month.offset >= 0 && month.offset <= 6);
 	assert.equal(month.weekCount, Math.ceil((month.offset + 31) / 7));
+});
+
+test("renderCalendar: the wide two-column layout binds leftW (v0.6.0 ReferenceError regression)", () => {
+	// layoutBudget computed and returned leftW, but renderCalendar's
+	// destructuring missed it — the two-column Box referenced an unbound
+	// name and threw ONLY at contentW >= 92 (the pure-function suites never
+	// rendered wide). Stub kit is enough: h records calls, Box/Text markers.
+	const h = (type, props, ...children) => ({ type, props, children });
+	const cal = {
+		values: new Map([["2026-10-15", { tok: 100, cost: 0.01, estimated: false }]]),
+		maxTok: 100, maxCost: 0.01, tokens: 100,
+		unpriced: [], windowCost: { total: 0.01, estimated: false },
+		activeDays: 1, turns: 2, toolCalls: 3, peakDay: "2026-10-15",
+		peak: 60, offpeak: 40, hasTiers: true,
+		models: [{ key: "deepseek-flash", tok: 100 }],
+	};
+	const noop = () => {};
+	const base = {
+		cal, pricing: { costEnabled: false, modelColors: {} }, cursor: "2026-10-15", metric: "tok", level: "year",
+		ramp: ["#111", "#333", "#555", "#777", "#999"], today: "2026-10-19", theme: {},
+		days: ["2026-10-15"], yearOffset: 0, focusModel: null, setFocusModel: noop,
+		hoverDay: null, setHoverDay: noop, setCursor: noop, setLevel: noop, onStepWeek: noop,
+	};
+	const wide = renderCalendar({ h, Box: "Box", Text: "Text" }, { ...base, contentW: 200, termRows: 50 });
+	assert.notEqual(wide, undefined, "the wide two-column render completes (leftW is bound)");
+	const narrow = renderCalendar({ h, Box: "Box", Text: "Text" }, { ...base, contentW: 60, termRows: 30 });
+	assert.notEqual(narrow, undefined, "the narrow single-column render completes");
 });
 
 test("foldCache freshness: live seq growth refolds, closed sessions stay cached", async () => {

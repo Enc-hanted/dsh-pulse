@@ -76,7 +76,7 @@ export {
 	truncateDisplay, sparkTrend, weeklyBars, modelLayout, ganttRows, yearTiles,
 	fmtTokens,
 } from "./tui/draw.js";
-export { layoutBudget } from "./tui/scene.js";
+export { layoutBudget, renderCalendar } from "./tui/scene.js";
 export {
 	noteCurrentSession, pulseStripToggle, stripStore, _resetStripForTests,
 } from "./tui/strip.js";

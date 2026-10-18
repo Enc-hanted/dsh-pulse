@@ -575,7 +575,17 @@ export function layoutBudget({ contentW, termRows, cal, month, monthMode }) {
 	return { twoCol, leftW, rightW, gridBudget, fitWeeks, weekCount, offset, total, modelN, dropTrend, dropTier };
 }
 
-function renderCalendar(kit, {
+/**
+ * Render the day/year calendar view. Exported for the wide-terminal
+ * regression test (the two-column layout once referenced an undestructured
+ * `leftW` and threw only at contentW ≥ 92).
+ *
+ * @param {any} kit - the dsh-tui React surface (`h`, `Box`, `Text`).
+ * @param {any} props - the calendar state bundle. The caller passes `data`
+ *   along, but the calendar reads its precomputed `cal` instead — the prop
+ *   is accepted and ignored.
+ */
+export function renderCalendar(kit, {
 	cal, pricing, cursor, metric, level, contentW, termRows, ramp, today, theme, days,
 	yearOffset, focusModel, setFocusModel, hoverDay, setHoverDay,
 	setCursor, setLevel, onStepWeek,
@@ -602,7 +612,7 @@ function renderCalendar(kit, {
 	 * needs and the inspector keeps the rest. Narrower terminals slice the
 	 * window and keep [ ] paging as the fallback. */
 	const month = monthOf(cursor);
-	const { twoCol, rightW, fitWeeks, weekCount, offset, total, modelN, dropTrend, dropTier } =
+	const { twoCol, leftW, rightW, fitWeeks, weekCount, offset, total, modelN, dropTrend, dropTier } =
 		layoutBudget({ contentW, termRows, cal, month, monthMode });
 
 	/* ---- grid cells. Month cells always carry their two-digit day number;

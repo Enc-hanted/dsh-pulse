@@ -32,7 +32,14 @@
 
 ## 实施进度
 
-- **2026-10-19：D0 + #1 + #3 落地**（v0.6.1，全测绿于重装后的 0.2.1-alpha.5 树）：
+- **2026-10-19（第二批，`dc26b5f` + `10ed404`）：#2b、#10、#4-路A、#5、#8 完成；#9 进行中（subagent）**：
+  - #2b：README.md 英文化（结构与中文 1:1）+ README.zh.md 逐字副本；dsh-plugin.json 停止随包发布；tsconfig + types/ 声明产物接线（`build:types`、`types` 字段、files 含 types）。**类型绿门（`--noEmit` 0 错误）未达成**：现存 244 个弱 JSDoc 错误（`object` 取属性等），未接入 CI 门，留待专项清理。
+  - #10：适配器 SPI（types/shared/zai/kimi/minimax）+ 6 个录制回放夹具 + 脱敏录制骨架；quota-service 只留编排；测试入链。subagent 交付，行为面仅两处等价改写（diff 审计过）。
+  - #4-路A：投影读取收敛为单一 0.1.7+ 形态（含 tui/data.js 标题读取）；护栏 B（启动断言 + 503 闸门）+ 护栏 C（真实 dsh-session-projection-cache 原型 arity 钉死，devDep 0.2.1-alpha.5）。
+  - #5：`src/pricing/ratecard.json` 版本化费率卡（v1）驱动 pricing-facts；`./pricing` 服务面导出；update-check 报费率卡版本；出站零新增。
+  - #8：fold 增 `toolHistogramByDay`（stateVersion 11，additive-optional）；`view/anomaly.js` 纯检测器（燃速突增/循环指纹）挂 payload.anomalies；web 仪表盘「异常观测」节（可关、空则退场、文案纯数字）；style-test 禁词护栏已武装。**TUI 条带未做**（web 已覆盖数据面；TUI 面留下一轮）；goal 花费线未做（数据面无 goal 边界事件，待核实形状后补，避免编造关联）。
+  - #9：`buildStats` 已从宿主入口导出；独立包 packages/dsh-pulse-usage-query 由 subagent 实施中。
+- **2026-10-19（第一批，`60ac306` + `678186c` + `b328dfb`）：D0 + #1 + #3 落地**（v0.6.1，全测绿于重装后的 0.2.1-alpha.5 树）：
   - D0-甲拍板：地板 `>=0.2.1-alpha.5`；seam 两包迁 peer `>=0.2.1-alpha.5 <0.3` + devDep 钉实包；飞行前核对 0.1.7→0.2.1 差异为纯注释；启动 seam 版本日志进 host apply()。
   - #1：`locale/en.json`/`zh.json` + `./icon` 导出；manifest-test 断言契约（键集、体积、exports 完整性）。
   - #3：lockfile 入库 + CI `npm ci` + windows 矩阵；`files` 瘦身；护栏 A（seam 禁入 dependencies，schemastery 白名单）；本地 6 个 tgz 与 .tmp 清理。

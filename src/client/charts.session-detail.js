@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, jsx, jsxs } from "./react.js";
 import { resolveRates, priceTier, ruleMaps, ruleFor, tierAtMs } from "../view.js";
-import { fill, fmtTokens, httpError } from "./stores.js";
+import { fill, fmtTokens, httpError, loadPanels, loadSessionDetailSnapshot, loadViewSnapshot, saveSessionDetailSnapshot, saveViewSnapshot } from "./stores.js";
 import { quotaDur } from "./quota.js";
 import { Btn, HoverCardPrim, Tag, relativeTimePrim } from "./adapter.js";
-import { AUX_PRICE_AS, AUX_SHAPE, breaksSegments, fmtClockMs, fxRateOf, isOfficialProvider, keyMatchesFilter, modelFilterSet, modelKey, moneyCny, monthlySetOf, splitModelKey } from "./../view.js";
+import { AUX_CALL_FEE, AUX_PRICE_AS, AUX_SHAPE, breaksSegments, fmtClockMs, fxRateOf, isOfficialProvider, keyMatchesFilter, modelFilterSet, modelKey, moneyCny, monthlySetOf, splitModelKey } from "./../view.js";
 		//#region session detail — SessionDetail / SessionsPanel / focusProjectLabel
 
 		function costCell(cost, monthly, costEnabled, t) {
@@ -21,7 +21,9 @@ import { AUX_PRICE_AS, AUX_SHAPE, breaksSegments, fmtClockMs, fxRateOf, isOffici
 			// Hooks first — every render path (loading / error / ready) must
 			// call the same hook set in the same order, or React throws #310.
 			const [state, setState] = useState({ status: "loading", data: null, error: null });
-			const [breaks, setBreaks] = useState([]);
+			/** 断点随「退出保留」持久化（按会话隔离，换会话绝不串场）：挂载
+			 *  与会话切换时从快照播种，落点/删点即写回。 */
+			const [breaks, setBreaks] = useState(() => loadSessionDetailSnapshot(sessionId)?.breaks ?? []);
 			const svgRef = useRef(null);
 			const [drag, setDrag] = useState(null);
 			const [zoom, setZoom] = useState(null);
@@ -35,7 +37,7 @@ import { AUX_PRICE_AS, AUX_SHAPE, breaksSegments, fmtClockMs, fxRateOf, isOffici
 			useEffect(() => {
 				let alive = true;
 				setState({ status: "loading", data: null, error: null });
-				setBreaks([]);
+				setBreaks(loadSessionDetailSnapshot(sessionId)?.breaks ?? []);
 				setZoom(null);
 				fetch(`/pulse/session?id=${encodeURIComponent(sessionId)}`, {
 					credentials: "same-origin",
@@ -153,6 +155,9 @@ import { AUX_PRICE_AS, AUX_SHAPE, breaksSegments, fmtClockMs, fxRateOf, isOffici
 					if (e.kind === "search") {
 						auxSearchN += 1;
 						auxCost += priceTier({ input: billShape.miss, cacheRead: billShape.hit, output: billShape.out, cacheWrite: 0 }, rates, tier) * conv;
+						/** 2026-11-01 起的官方按次费：¥0.005/次成功搜索，与 token
+						 *  形状无关，按事件自身时刻（北京零点）门控。 */
+						if (e.t >= AUX_CALL_FEE.fromMs) auxCost += AUX_CALL_FEE.cnyPerCall;
 					} else {
 						auxTitleN += 1;
 						auxCost += priceTier({ input: e.in || 0, cacheRead: 0, output: e.out || 0, cacheWrite: 0 }, rates, tier) * conv;
@@ -176,8 +181,17 @@ import { AUX_PRICE_AS, AUX_SHAPE, breaksSegments, fmtClockMs, fxRateOf, isOffici
 				}
 				return best;
 			};
-			const commitBreak = (t) => setBreaks((prev) => (prev.length >= 3 || prev.includes(t) ? prev : [...prev, t].sort((a, b) => a - b)));
-			const removeBreak = (bt) => setBreaks((prev) => prev.filter((b) => b !== bt));
+			const commitBreak = (t) => setBreaks((prev) => {
+				if (prev.length >= 3 || prev.includes(t)) return prev;
+				const next = [...prev, t].sort((a, b) => a - b);
+				saveSessionDetailSnapshot(sessionId, next);
+				return next;
+			});
+			const removeBreak = (bt) => setBreaks((prev) => {
+				const next = prev.filter((b) => b !== bt);
+				saveSessionDetailSnapshot(sessionId, next);
+				return next;
+			});
 			/** Turn hover (F1): the turn line nearest the pointer within a
 			 *  slightly wider radius than placement snapping. The probe strip
 			 *  anchors the official HoverCard on it; content is the turn's
@@ -365,8 +379,37 @@ import { AUX_PRICE_AS, AUX_SHAPE, breaksSegments, fmtClockMs, fxRateOf, isOffici
 		}
 
 		export function SessionsPanel({ groups = [], costEnabled = true, pricing = [], fx = {}, monthly = [], models = [], auxShape = null, catalog = null, names, t, focusSessionId = null }) {
-			const [open, setOpen] = useState(() => new Set());
-			const [detail, setDetail] = useState(null);
+			/** 工作区分组展开态随「退出保留」恢复/落盘——重开观测台时分组
+			 *  必须还是展开的样子，否则恢复了的明细藏在折叠组里看不见。 */
+			const [open, setOpen] = useState(() => {
+				if (loadPanels().rememberView === false) return new Set();
+				const stored = loadViewSnapshot()?.openGroups;
+				return new Set(Array.isArray(stored) ? stored.filter((x) => typeof x === "string") : []);
+			});
+			useEffect(() => {
+				if (loadPanels().rememberView === false) return;
+				saveViewSnapshot({ openGroups: [...open] });
+			}, [open]);
+			/** 打开的会话明细随「退出保留」恢复/落盘（null = 全部收起）。 */
+			const [detail, setDetail] = useState(() => loadSessionDetailSnapshot()?.id ?? null);
+			const openDetail = (id) => {
+				setDetail(id);
+				saveSessionDetailSnapshot(typeof id === "string" && id !== "" ? id : null, []);
+			};
+			/** 恢复的明细若藏在折叠的分组里，自动展开那个分组——「回到原画
+			 *  面」的意思是断点分析直接可见，不是要用户手工把路重新点开。 */
+			const detailAutoOpened = useRef(false);
+			useEffect(() => {
+				if (detailAutoOpened.current || detail === null || groups.length === 0) return;
+				for (const g of groups) {
+					if ((g.sessions ?? []).some((s) => String(s?.id) === String(detail))) {
+						detailAutoOpened.current = true;
+						const name = g.project === null ? t("noWorkspace") : g.project;
+						setOpen((prev) => (prev.has(name) ? prev : new Set(prev).add(name)));
+						break;
+					}
+				}
+			});
 			const isCurrent = (s) => focusSessionId !== null && focusSessionId !== undefined
 				&& s?.id !== null && s?.id !== undefined && String(s.id) === String(focusSessionId);
 			const autoOpened = useRef(false);
@@ -443,7 +486,7 @@ import { AUX_PRICE_AS, AUX_SHAPE, breaksSegments, fmtClockMs, fxRateOf, isOffici
 								jsx("span", { className: "dp_sessModel", title: modelLabel, children: modelLabel }),
 								jsx("span", { className: "dp_sessNum", children: fmtTokens((s.tokens.input || 0) + (s.tokens.output || 0) + (s.tokens.cacheRead || 0) + (s.tokens.cacheWrite || 0)) }),
 								jsx("span", { className: "dp_sessNum", children: cost }),
-								jsx(Btn, { variant: "ghost", size: "sm", fallbackClass: "dp_miniBtn", onClick: () => setDetail(detailOpen ? null : s.id), children: t("sessionOpenDetail") }),
+								jsx(Btn, { variant: "ghost", size: "sm", fallbackClass: "dp_miniBtn", onClick: () => openDetail(detailOpen ? null : s.id), children: t("sessionOpenDetail") }),
 								jsx("div", { className: "dp_sessModels", children: (Array.isArray(s.modelRows) ? s.modelRows : []).map(modelRow) }),
 								detailOpen && jsx(SessionDetail, { key: s.id, sessionId: s.id, pricing, fx, monthly, costEnabled, models, auxShape, catalog, names, t }),
 							] }, s.id ?? i);

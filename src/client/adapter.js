@@ -116,7 +116,9 @@ export const Btn = forwardRef(function Btn({ variant = "ghost", size = "md", ico
 	return jsx("button", {
 		type: "button",
 		ref,
-		className: fallbackClass || className,
+		/** fallback 与宿主两种形态类名语义一致：fallbackClass 是形态基底，
+		 *  className 是附加修饰（如刷新钮的橘点态），两者合并而非互斥。 */
+		className: [fallbackClass, className].filter(Boolean).join(" "),
 		...rest,
 		children: nodes.length === 1 ? nodes[0] : nodes,
 	});

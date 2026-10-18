@@ -4,9 +4,9 @@
  * the fold shares.
  */
 
-import { AUX_PRICE_AS } from "../pricing-facts.js";
+import { AUX_CALL_FEE, AUX_PRICE_AS } from "../pricing-facts.js";
 
-export { AUX_PRICE_AS };
+export { AUX_CALL_FEE, AUX_PRICE_AS };
 
 /** The auxiliary-call pseudo model (official `web_search` / title LLM).
  *  Locally only the request count exists — no usage event — so its tokens
@@ -64,10 +64,14 @@ export function addDayModel(row, tokens, tier) {
  * Expand one day's aux counters into billable token buckets, the single
  * source every cost surface shares ({@link buildView}, {@link costSeries},
  * {@link reconcileSeries}): search counts × the (calibrated) call shape,
- * title through its fold-time text-derived token estimates. Returns `null`
- * when the day carried no auxiliary calls.
+ * title through its fold-time text-derived token estimates. `day` (a
+ * `YYYY-MM-DD` usage day) gates the official per-request search fee —
+ * `searchFee` carries the flat ¥0.005/call total for days from
+ * {@link AUX_CALL_FEE.from} and stays 0 otherwise (also without a day, the
+ * conservative default for day-less callers). Returns `null` when the day
+ * carried no auxiliary calls.
  */
-export function auxDayUsage(aux, shape) {
+export function auxDayUsage(aux, shape, day = null) {
   const sPeak = aux?.search?.peak || 0;
   const sOff = aux?.search?.offpeak || 0;
   const tPeak = aux?.title?.peak || 0;
@@ -75,7 +79,14 @@ export function auxDayUsage(aux, shape) {
   const searchCalls = sPeak + sOff;
   const titleCalls = tPeak + tOff;
   if (searchCalls <= 0 && titleCalls <= 0) return null;
-  const out = { searchCalls, titleCalls, searchTokens: null, searchTier: null, titleTokens: null, titleTier: null, titleKey: null };
+  const out = { searchCalls, titleCalls, searchTokens: null, searchTier: null, searchFee: 0, titleTokens: null, titleTier: null, titleKey: null };
+  /** The per-request fee is NOT token-shaped, so it cannot ride the buckets
+   *  above: every money surface adds `searchFee` alongside the shape-derived
+   *  token cost, which keeps the reconciliation gap a pure token-shape
+   *  signal (the calibration must not absorb a per-call fee). */
+  if (searchCalls > 0 && typeof day === "string" && day >= AUX_CALL_FEE.from) {
+    out.searchFee = searchCalls * AUX_CALL_FEE.cnyPerCall;
+  }
   if (searchCalls > 0) {
     out.searchTokens = { input: shape.miss * searchCalls, cacheRead: shape.hit * searchCalls, output: shape.out * searchCalls, cacheWrite: 0 };
     out.searchTier = {

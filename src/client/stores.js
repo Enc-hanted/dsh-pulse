@@ -81,7 +81,7 @@ import { createSnapshotStore } from "./adapter.js";
 		 * A request sequence number plus an AbortController make switching
 		 * windows race-free: only the newest request may land state.
 		 */
-		export let statsState = { key: null, from: null, to: null, status: "loading", data: null, error: null, busy: false };
+		export let statsState = { key: null, from: null, to: null, status: "loading", data: null, error: null, busy: false, emptyRetry: false };
 		export let statsSeq = 0;
 		export let statsAbort = null;
 		export const statsListeners = new Set();
@@ -119,11 +119,17 @@ import { createSnapshotStore } from "./adapter.js";
 		export function isCachable(data) {
 			return Array.isArray(data?.sessions) && data.sessions.length > 0;
 		}
+		/** Scheduling flips `emptyRetry` on so the empty face can say "the
+		 *  first message has not landed yet — retrying" instead of a bare
+		 *  empty state; every other setStatsState path writes the flag back
+		 *  to false, so it tracks exactly the pending-retry window and goes
+		 *  dark once the bounded attempts are spent. */
 		export function scheduleEmptyRetry(from, to) {
 			if (statsRetry !== null) return;
 			if (statsEmptyAttempts >= EMPTY_RETRY_MAX) return;
 			const delay = statsEmptyAttempts === 0 ? EMPTY_RETRY_FIRST_MS : EMPTY_RETRY_BACKOFF_MS;
 			statsEmptyAttempts += 1;
+			setStatsState({ ...statsState, emptyRetry: true });
 			statsRetry = setTimeout(() => {
 				statsRetry = null;
 				if (statsState.status === "error") return;
@@ -175,11 +181,11 @@ import { createSnapshotStore } from "./adapter.js";
 				} else {
 					payloadCache.delete(key);
 				}
-				setStatsState({ key, from, to, status: "ready", data, error: null, busy: false });
+				setStatsState({ key, from, to, status: "ready", data, error: null, busy: false, emptyRetry: false });
 				if (!isCachable(data)) scheduleEmptyRetry(from, to);
 			}).catch((error) => {
 				if (seq !== statsSeq) return;
-				setStatsState({ ...statsState, key, from, to, status: "error", error: String(error?.message ?? error), busy: false });
+				setStatsState({ ...statsState, key, from, to, status: "error", error: String(error?.message ?? error), busy: false, emptyRetry: false });
 			});
 		}
 		/** Read the shared store; triggers a load when this mount's window differs. */
@@ -210,6 +216,14 @@ import { createSnapshotStore } from "./adapter.js";
 		export function publishBalance(data) {
 			try { window.dispatchEvent(new CustomEvent(BALANCE_EVENT, { detail: data })); } catch { /* publishing is best-effort */ }
 		}
+		/** Why 60 s and not less: the host caches each endpoint's upstream
+		 *  answer for the same 60 s (one outbound call per minute per
+		 *  endpoint no matter how many surfaces are mounted), the timer is
+		 *  gated on document visibility (a background tab polls nothing),
+		 *  and the official APIs' own rate limits sit orders of magnitude
+		 *  above one call per minute. Tightening it would only multiply
+		 *  identical cache hits; loosening it only delays a number the user
+		 *  is actively looking at. */
 		export const BALANCE_POLL_MS = 60000;
 		/** ONE polling skeleton behind the balance and quota hooks: the
 		 *  60 s cadence gated on document visibility, peer fetches shared
@@ -270,6 +284,8 @@ import { createSnapshotStore } from "./adapter.js";
 		 *  short cache. Empty until the host answers; a deployment with no
 		 *  quota-capable provider simply never renders the bar. */
 		export const QUOTA_EVENT = "dsh-pulse:quota";
+		/** Same cadence rationale as BALANCE_POLL_MS: one visible-tab poll
+		 *  per minute against a server cache of the same length. */
 		export const QUOTA_POLL_MS = 60000;
 		export function publishQuota(data) {
 			try { window.dispatchEvent(new CustomEvent(QUOTA_EVENT, { detail: data })); } catch { /* publishing is best-effort */ }
@@ -314,7 +330,14 @@ import { createSnapshotStore } from "./adapter.js";
 				return {
 					get: () => engine.getSnapshot(),
 					set: (next) => engine.set(next),
-					subscribe: (listener) => engine.subscribe(listener),
+					/** 统一回调契约：宿主引擎的 subscribe 是 React 式失效回调
+					 *  （不携带值，见宿主 `subscribe(listener: () => void)` 类
+					 *  契约），手写路径则把新值传给监听者——同一份源码在两种
+					 *  路径下行为必须一致。这里包一层，总是把当前快照交给监
+					 *  听者；useSyncExternalStore 式的订阅者忽略入参，不受影
+					 *  响。（宽度偏好曾在引擎宿主上拖拽后变 undefined，卡宽
+					 *  弹回默认，即两条路径契约不一致所致。） */
+					subscribe: (listener) => engine.subscribe(() => listener(engine.getSnapshot())),
 				};
 			}
 			let state = init;
@@ -336,6 +359,9 @@ import { createSnapshotStore } from "./adapter.js";
 			chips: true, balance: true, trend: true, cache: true,
 			models: true, projects: true, cost: true, budget: true, footBalance: true,
 			sessions: true, costTrend: true, quota: true,
+			/** 行为偏好（不是面板显隐，但走同一条存取管线）：聚焦当前窗口
+			 *  工作区 / 退出后记住上次视图。默认都开。 */
+			focusWorkspace: true, rememberView: true,
 		};
 		export function loadPanels() {
 			try {
@@ -361,6 +387,161 @@ import { createSnapshotStore } from "./adapter.js";
 		 *  it without a remount. */
 		export function subscribePanels(listener) {
 			return panelsBus.subscribe(listener);
+		}
+		//#endregion
+
+		//#region view memory
+		/** 退出保留：观测台窗口状态的连续快照（区间/工作区/模型/页签/展开/
+		 *  钻取/滚动位置）。保存走防抖的连续落盘而非卸载时机——页面刷新没
+		 *  有卸载机会。语义按产品定义：点右上角 × 是显式关闭，整份清除；
+		 *  Esc、点背景、页面刷新都算收起，快照照常保留，重开还原。 */
+		export const VIEW_SNAPSHOT_STORAGE = "dsh-pulse:view";
+		export function loadViewSnapshot() {
+			try {
+				const raw = localStorage.getItem(VIEW_SNAPSHOT_STORAGE);
+				if (raw === null) return null;
+				const parsed = JSON.parse(raw);
+				if (parsed !== null && typeof parsed === "object" && parsed.v === 1) return parsed;
+			} catch (error) { /* private mode or quota — no memory */ }
+			return null;
+		}
+		export function saveViewSnapshot(snapshot) {
+			try {
+				/** 合并写：观测台主体与各子组件（会话明细/断点）各自持有自己
+				 *  的字段，谁变化谁落盘，互不清对方的节。 */
+				const prev = loadViewSnapshot();
+				localStorage.setItem(VIEW_SNAPSHOT_STORAGE, JSON.stringify({ ...prev, ...snapshot, v: 1 }));
+			} catch (error) { /* non-fatal */ }
+		}
+		export function clearViewSnapshot() {
+			try { localStorage.removeItem(VIEW_SNAPSHOT_STORAGE); } catch (error) { /* non-fatal */ }
+		}
+		/** 显式清除旗标：点 × / 关「记住上次视图」开关这类「整份清除」置位，
+		 *  观测台卸载时的补写看到它就直接放弃——刚清空的快照不许被补写复
+		 *  活。读即消费（一次性）。 */
+		let explicitClearAt = 0;
+		export function markExplicitClose() { explicitClearAt = Date.now(); }
+		export function consumeExplicitClose() {
+			const seen = explicitClearAt !== 0;
+			explicitClearAt = 0;
+			return seen;
+		}
+		/** 会话明细节：打开的会话 + 它的断点（epoch ms，按会话隔离）。读侧
+		 *  校验 id 匹配——换会话时旧断点绝不串场。受「记住上次视图」开关
+		 *  管辖；点 × 的整份清除天然覆盖本节（同一份存储）。 */
+		export function loadSessionDetailSnapshot(id) {
+			if (loadPanels().rememberView === false) return null;
+			const snapshot = loadViewSnapshot();
+			const section = snapshot !== null && typeof snapshot.sessionDetail === "object" && snapshot.sessionDetail !== null ? snapshot.sessionDetail : null;
+			if (section === null) return null;
+			if (typeof id === "string" && section.id !== id) return null;
+			return section;
+		}
+		export function saveSessionDetailSnapshot(id, breaks) {
+			if (loadPanels().rememberView === false) return;
+			saveViewSnapshot({ sessionDetail: { id, breaks: Array.isArray(breaks) ? breaks : [] } });
+		}
+		/** 数据指纹快照：关面板前看到的数据长什么样。独立于「记住上次视
+		 *  图」开关——它是变更通知不是视图状态。橘点 = 重开后的自然拉取指
+		 *  纹与之不同；点刷新即灭。 */
+		export const SEEN_STORAGE = "dsh-pulse:seen";
+		export function loadSeen() {
+			try { return localStorage.getItem(SEEN_STORAGE); } catch (error) { return null; }
+		}
+		export function saveSeen(fingerprint) {
+			try { localStorage.setItem(SEEN_STORAGE, String(fingerprint ?? "")); } catch (error) { /* non-fatal */ }
+		}
+		export function clearSeen() {
+			try { localStorage.removeItem(SEEN_STORAGE); } catch (error) { /* non-fatal */ }
+		}
+		/** 宿主会话域的取数钩子（plugin.js 用 ctx.sessions 注入）：「当前窗
+		 *  口正在看的会话」的权威信号在这里——主视图以 mainView 来源保留
+		 *  它正显示的会话。目录不可用（老宿主/未连接）返回 null。 */
+		let sessionsSourceGetter = null;
+		/** ctx.inject(["sessions"]) 是否已兑现：诊断行用它分辨「还在等服务
+		 *  到达」和「服务到了但没有 retainInfo」。 */
+		let sessionsInjectFired = false;
+		export function markSessionsInjectFired() { sessionsInjectFired = true; }
+		export function setSessionsSource(getter) {
+			sessionsSourceGetter = typeof getter === "function" ? getter : null;
+		}
+		/** 读一份 retain 信息的三形状兼容：本构建（对照官方适配器源码）的
+		 *  快照读法是 getSnapshot()，旧形态是 get()；list 快照的 byId 行也
+		 *  合并了 retainedBy。按 retainInfo→getSnapshot、retainInfo→get、
+		 *  list.byId 三种依次尝试。 */
+		function retainedByOf(source, id) {
+			try {
+				const info = typeof source.retainInfo === "function" ? source.retainInfo(id) : null;
+				const snapshot = info === null || info === undefined
+					? null
+					: typeof info.getSnapshot === "function" ? info.getSnapshot() : typeof info.get === "function" ? info.get() : null;
+				if (snapshot !== null && snapshot !== undefined && snapshot.retainedBy !== null && snapshot.retainedBy !== undefined) return snapshot.retainedBy;
+			} catch (error) { /* 目录半就绪，走 list 兜底 */ }
+			try {
+				const list = typeof source.list?.getSnapshot === "function" ? source.list.getSnapshot() : typeof source.list?.get === "function" ? source.list.get() : null;
+				return list?.byId?.[id]?.retainedBy ?? null;
+			} catch (error) { return null; }
+		}
+		/** 在候选里找正被主视图保留的会话 id；没有则 null。候选来自观测台
+		 *  自己的数据（payload 会话 id 列表），不需要任何枚举接口。 */
+		export function currentMainSessionId(candidateIds) {
+			const source = sessionsSourceGetter?.();
+			if (source === null || source === undefined || typeof source.retainInfo !== "function") return null;
+			for (const id of candidateIds) {
+				if (typeof id !== "string" || id === "") continue;
+				const retainedBy = retainedByOf(source, id);
+				if (retainedBy !== null && retainedBy !== undefined && retainedBy.mainView > 0) return id;
+			}
+			return null;
+		}
+		/** 聚焦诊断：单个候选 id 的 retain 信息原始样本（失败时落日志用）。 */
+		export function sessionsRetainSample(id) {
+			const source = sessionsSourceGetter?.();
+			if (source === null || source === undefined || typeof source.retainInfo !== "function" || typeof id !== "string" || id === "") return "";
+			try {
+				const info = source.retainInfo(id);
+				const probe = typeof info?.getSnapshot === "function" ? info.getSnapshot() : typeof info?.get === "function" ? info.get() : null;
+				let listRow = null;
+				try {
+					const list = typeof source.list?.getSnapshot === "function" ? source.list.getSnapshot() : typeof source.list?.get === "function" ? source.list.get() : null;
+					listRow = list?.byId?.[id] ?? null;
+				} catch (error) { /* list 不可用不阻塞样本 */ }
+				return JSON.stringify({ probe: probe ?? null, listRowRetainedBy: listRow?.retainedBy ?? null });
+			} catch (error) { return `throw:${String(error?.message ?? error)}`; }
+		}
+		/** 聚焦诊断：ctx.sessions 可达性的一行报告（console.debug 用），
+		 *  聚焦不生效时用它分辨「还在等服务注入 / 服务不可达 / 形状不对」。 */
+		export function sessionsSourceInfo() {
+			if (sessionsSourceGetter === null) return "no-source";
+			let source;
+			try { source = sessionsSourceGetter?.(); } catch (error) { return "getter-threw"; }
+			if (source === null || source === undefined) return sessionsInjectFired ? "arrived-empty" : "waiting";
+			if (typeof source.retainInfo !== "function") return "no-retainInfo";
+			return "ok";
+		}
+		/** 会话服务就绪推送（聚焦探测的事件源）：ctx.inject(["sessions"])
+		 *  兑现时由 plugin.js 调 markSessionsReady()，把还在等服务的聚焦
+		 *  探测恰好推送补试一次——事件替代定时器，不赌服务到达时刻。一
+		 *  次性广播：就绪之后新挂载的观测台在首份数据尝试时就能直读服
+		 *  务，不需要订阅。 */
+		const sessionsReadyListeners = new Set();
+		export function onSessionsReady(listener) {
+			sessionsReadyListeners.add(listener);
+			return () => { sessionsReadyListeners.delete(listener); };
+		}
+		export function markSessionsReady() {
+			const waiters = [...sessionsReadyListeners];
+			sessionsReadyListeners.clear();
+			for (const notify of waiters) {
+				try { notify(); } catch (error) { /* 单个等待方出错不拖垮其他 */ }
+			}
+		}
+		/** 头部刷新钮的「有新数据」橘点总线：比对逻辑在观测台内，按钮在
+		 *  两处渲染（面板自己的头部 + 浮层的悬浮动作层），走总线共享。 */
+		export const dataChangedBus = makeBus(false);
+		export const dataChangedSnapshot = () => dataChangedBus.get();
+		export function subscribeDataChanged(listener) {
+			return dataChangedBus.subscribe(listener);
 		}
 		//#endregion
 

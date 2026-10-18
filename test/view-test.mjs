@@ -3,7 +3,7 @@ import {
   accentEntryOf, accentFillOf, accentLabDistance, ACCENT_MIN_DISTANCE, auxCalibration, auxDayUsage, bucketOf, bucketLabel, breaksSegments, buildView, cacheHitRateOf, clampSpan, costOf, costSeries, daysBetween,
   familyRouteOf, fmtClockMs, fmtCost, heatmapCells, heatmapLevel, hourlyCostSeries, hourlySeries, isOfficialProvider, modelAccentMap, modelFilterSet, keyMatchesFilter, monthKey, niceMax,
   officialEstimateRulesFor, providerLabelOf, rangeKeys, reconDrift, reconcileSeries, rollupKeyOf, rollupModelFamilies,
-  sessionGroups, sessionModelRows, shiftDay, weekStart,
+  sessionGroups, sessionModelRows, shiftDay, statsFingerprint, weekStart,
   quotaBurn, quotaCalibrate, quotaCoverage, quotaFeeShare, quotaMonthlyFee, quotaProjectAttribution, quotaWindowTokens,
 } from "../src/view.js";
 
@@ -1028,6 +1028,45 @@ assert.equal(sameIdAmbiguous[0].sessions[0].cost.configured, true, "official wil
   assert.equal(auxDayUsage({ search: { peak: 2, offpeak: 3 } }, { miss: 10, hit: 1, out: 1 }).searchCalls, 5);
 }
 
+// --- v0.6.1 aux per-call fee (2026-11-01, AUX_CALL_FEE) ------------------------
+{
+  const FEE_SHAPE = { miss: 1, hit: 1, out: 1 }; // shape only drives tokens; the fee is shape-independent
+  // Boundary: dark before the era, exact per call within it, conservative
+  // without a day, and title-only days carry no search fee.
+  assert.equal(auxDayUsage({ search: { peak: 2 } }, FEE_SHAPE, "2026-10-31").searchFee, 0, "no per-call fee before 2026-11-01");
+  assert.ok(Math.abs(auxDayUsage({ search: { peak: 2, offpeak: 1 } }, FEE_SHAPE, "2026-11-01").searchFee - 0.015) < 1e-12, "3 calls × ¥0.005 from 2026-11-01");
+  assert.equal(auxDayUsage({ search: { peak: 2 } }, FEE_SHAPE).searchFee, 0, "no day → conservative no-fee default");
+  assert.equal(auxDayUsage({ title: { peak: 2 } }, FEE_SHAPE, "2026-11-02").searchFee, 0, "title-only day carries no search fee");
+
+  // Window money: the same aux day on both sides of the era differs by
+  // exactly the fee; the fee counts as configured (a known official term,
+  // never unpriced); the cost series' day row stays equal to the window
+  // total (cost-trend consistency, weekend days flatten to off-peak).
+  const feeRecord = (day) => ({
+    id: `fee-${day}`, project: "p", subagent: false, day,
+    byDay: { [day]: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
+    modelsByDay: {}, turnsByDay: {}, toolCallsByDay: {},
+    auxByDay: { [day]: { search: { peak: 2, offpeak: 0 } } },
+  });
+  const pre = buildView([feeRecord("2026-10-31")], { granularity: "day", from: "2026-10-31", to: "2026-10-31", pricing: [] });
+  const post = buildView([feeRecord("2026-11-01")], { granularity: "day", from: "2026-11-01", to: "2026-11-01", pricing: [] });
+  assert.ok(post.cost.total > 0, "a search-only fee-era day carries money");
+  assert.ok(Math.abs(post.cost.total - pre.cost.total - 0.01) < 1e-9,
+    `both sides of the era differ by exactly 2 × ¥0.005, got ${post.cost.total - pre.cost.total}`);
+  assert.equal(post.cost.configured, true, "the fee is a known official term, not unpriced");
+  const series = costSeries([feeRecord("2026-11-01")], { from: "2026-11-01", to: "2026-11-01", pricing: [] });
+  assert.ok(Math.abs(series[0].peak + series[0].offpeak - post.cost.total) < 1e-9, "cost-series day sum equals the window total");
+  assert.ok(Math.abs(series[0].offpeak - post.cost.total) < 1e-9, "flat-off weekend: tokens + fee all ride off-peak");
+  // Recon: the fee lands in the aux sink, so an exact-shape day reconciles
+  // to gap 0 — the calibration sees pure token signal, never the fee.
+  const recon = reconcileSeries([feeRecord("2026-11-01")], {
+    from: "2026-11-01", to: "2026-11-01", pricing: [],
+    official: [{ key: "2026-11-01", spend: post.cost.total, sparse: false }],
+  });
+  assert.ok(Math.abs(recon[0].aux - post.cost.total) < 1e-9, "the aux side includes the per-call fee");
+  assert.ok(Math.abs(recon[0].gap) < 1e-9, "an exact-shape day reconciles to gap 0 with the fee modeled");
+}
+
 // --- v0.6 session badge counts + hourly multi-select ---------------------------
 {
   const record = {
@@ -1119,6 +1158,19 @@ assert.equal(sameIdAmbiguous[0].sessions[0].cost.configured, true, "official wil
     from: "2026-09-27", to: "2026-09-27",
     official: [{ key: "2026-09-27", spend: 1 }],
   })[0].sparse, false, "absent flag means observed");
+
+  // --- statsFingerprint: the reopen "data moved" signal -----------------------
+  // Same aggregates → same fingerprint (generatedAt-style churn must never
+  // leak in); new usage or a pricing-rule change → different fingerprint.
+  const fpView = (overrides = {}, costTotal = 1.5) => ({
+    totals: { sessions: 2, turns: 5, toolCalls: 8, input: 100, output: 20, cacheRead: 900, cacheWrite: 4, ...overrides },
+    cost: { configured: true, total: costTotal },
+  });
+  assert.equal(statsFingerprint(fpView()), statsFingerprint(fpView()), "identical views fingerprint identically");
+  assert.notEqual(statsFingerprint(fpView({ input: 250 })), statsFingerprint(fpView()), "new tokens change the fingerprint");
+  assert.notEqual(statsFingerprint(fpView({}, 9.9)), statsFingerprint(fpView()), "a pricing-rule change changes the fingerprint");
+  assert.equal(statsFingerprint(null), null, "absent view has no fingerprint");
+  assert.equal(typeof statsFingerprint(fpView()), "string", "the fingerprint is a storable string");
 
   // calibration: s = (aux + gap) / aux, median over consistent samples
   const today = "2026-09-30";

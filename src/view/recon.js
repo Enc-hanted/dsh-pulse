@@ -78,10 +78,15 @@ export function reconcileSeries(sessions, { from, to, pricing = [], fx = {}, mon
     for (const [day, aux] of Object.entries(record.auxByDay ?? {})) {
       const idx = index.get(day);
       if (idx === undefined) continue;
-      const usage = auxDayUsage(aux, shape);
+      const usage = auxDayUsage(aux, shape, day);
       if (usage === null) continue;
       days[idx].auxCalls += usage.searchCalls + usage.titleCalls;
       if (usage.searchTokens !== null) priceInto(day, idx, usage.searchTokens, usage.searchTier, AUX_PRICE_AS, "aux");
+      // Official per-request search fee (2026-11-01, AUX_CALL_FEE): a flat
+      // non-token term straight into the aux sink, so the gap stays PURE
+      // token-shape signal and the self-calibration keeps learning only
+      // token drift instead of absorbing the per-call fee into the shape.
+      days[idx].aux += usage.searchFee;
       if (usage.titleTokens !== null) {
         const key = usage.titleKey ?? AUX_PRICE_AS;
         // A title route off the official account is not the balance's business.

@@ -1,12 +1,12 @@
 {
   "name": "dsh-pulse",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Cross-session usage & cost observatory for dsh — daily token charts, cache hit ring, 90d/1y heatmaps, model and project breakdowns, adaptive color themes and CSV export in the web UI",
   "type": "module",
   "main": "src/index.js",
   "engines": {
     "node": ">=22.19",
-    "dsh": ">=0.2.0-rc.2"
+    "dsh": ">=0.2.1-alpha.5"
   },
   "repository": {
     "type": "git",
@@ -22,13 +22,15 @@
     "./view": "./src/view.js",
     "./client": "./lib/client.js",
     "./tui": "./src/tui.js",
+    "./locale/en.json": "./locale/en.json",
+    "./locale/zh.json": "./locale/zh.json",
+    "./icon": "./assets/logo.svg",
     "./package.json": "./package.json"
   },
   "files": [
     "src",
     "lib/client.js",
-    "scripts/build-client.mjs",
-    "test",
+    "locale",
     "assets/logo.svg",
     "assets/logo-dark.svg",
     "cordis.patch.yml",
@@ -38,9 +40,14 @@
   ],
   "keywords": [
     "dsh",
+    "deepseek",
     "deepseek-harness",
     "plugin",
     "usage",
+    "usage-analytics",
+    "cost",
+    "billing",
+    "token",
     "analytics",
     "dashboard",
     "heatmap"
@@ -53,12 +60,12 @@
     "test": "npm run build && node test/host-test.mjs && node test/aggregate-test.mjs && node test/view-test.mjs && node test/client-smoke-test.mjs && node test/tui-test.mjs && node test/golden-test.mjs && node test/style-test.mjs && node test/manifest-test.mjs"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-credentials": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-storage-domain": "0.2.0-rc.2",
     "@deepseek-ai/schemastery": "^3.18.4",
     "zod": "^4.4.3"
   },
   "peerDependencies": {
+    "@deepseek-ai/dsh-credentials": ">=0.2.1-alpha.5 <0.3",
+    "@deepseek-ai/dsh-storage-domain": ">=0.2.1-alpha.5 <0.3",
     "@deepseek-harness-tui/dsh-tui": "0.13.0"
   },
   "peerDependenciesMeta": {
@@ -85,6 +92,8 @@
     }
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-credentials": "0.2.1-alpha.5",
+    "@deepseek-ai/dsh-storage-domain": "0.2.1-alpha.5",
     "esbuild": "^0.28.2"
   }
 }

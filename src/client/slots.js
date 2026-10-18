@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useSyncExternalStore, jsx, jsxs } from "./react.js";
 import { recordTokens } from "../view.js";
-import { WIDTH_MAX, WIDTH_MIN, fill, fmtTokens, loadPanels, loadStats, loadTheme, loadWidth, openOverlay, overlaySnapshot, setOverlayOpen, setTheme, setWidth, statsState, subscribeOverlay, subscribePanels, subscribeStats, subscribeTheme, subscribeWidth, useBalance, useEscape, usePulseStats } from "./stores.js";
+import { WIDTH_MAX, WIDTH_MIN, clearSeen, clearViewSnapshot, dataChangedBus, dataChangedSnapshot, fill, fmtTokens, loadPanels, loadStats, loadTheme, loadWidth, markExplicitClose, openOverlay, overlaySnapshot, setOverlayOpen, setTheme, setWidth, statsState, subscribeDataChanged, subscribeOverlay, subscribePanels, subscribeStats, subscribeTheme, subscribeWidth, useBalance, useEscape, usePulseStats } from "./stores.js";
 import { focusProjectLabel } from "./charts.js";
 import { PulseDashboard } from "./dashboard.js";
 import { PricingPage } from "./settings.js";
@@ -341,6 +341,9 @@ import { buildView, cacheHitRateOf, costOf, localDay, moneyCny, sessionModelRows
 			return jsx("button", {
 				type: "button",
 				className: `dp_footBtn${wide ? "" : " dp_footRail"}`,
+				/** 聚焦当前窗口工作区不在这里传会话——观测台挂载后自己向宿主
+				 *  问「主视图当前保留的会话」（retainBy mainView），对两个入
+				 *  口统一生效。 */
 				onClick: () => openOverlay("full", null),
 				"aria-label": t("openOverlay"),
 				title: t("openOverlay"),
@@ -392,6 +395,9 @@ import { buildView, cacheHitRateOf, costOf, localDay, moneyCny, sessionModelRows
 				setWidth(cur + (e.key === "ArrowLeft" ? -40 : 40));
 			};
 			useEscape(open, () => setOverlayOpen(false));
+			/** 橘点订阅必须在早退返回之前调用——hooks 数量在挂载期内必须
+			 *  恒定，条件返回后调用会触发 React #310。 */
+			const dataChanged = useSyncExternalStore(subscribeDataChanged, dataChangedSnapshot);
 			if (!open) return null;
 			/** The refresh/close actions live in a `dp_overlayActions` layer
 			 *  pinned to the card's top-right corner (absolute, never scrolled
@@ -399,21 +405,29 @@ import { buildView, cacheHitRateOf, costOf, localDay, moneyCny, sessionModelRows
 			 *  overlay form (`floatActions`). */
 			const refreshBtn = jsx(Btn, {
 				variant: "toolbar", size: "sm", fallbackClass: "dp_iconBtn",
-				onClick: () => loadStats(stats.from, stats.to),
-				"aria-label": t("refresh"), title: t("refresh"), disabled: stats.busy || stats.from === null,
+				className: dataChanged ? "dp_refreshHot" : undefined,
+				onClick: () => { dataChangedBus.set(false); loadStats(stats.from, stats.to); },
+				"aria-label": dataChanged ? t("refreshNew") : t("refresh"), title: dataChanged ? t("refreshNew") : t("refresh"), disabled: stats.busy || stats.from === null,
 				icon: jsx(primitives.IconRefreshOutline16, { size: 15 }),
 			});
+			/** 显式关闭（点 ×）：产品语义是「结束这次观测」——视图快照与数
+			 *  据指纹整份清除，下次打开从初始状态开始。旗标挡住观测台卸载
+			 *  时的补写（清空在前、卸载在后，补写不许让快照复活）。Esc /
+			 *  点背景 / 页面刷新都是收起，不动快照。 */
+			const closeExplicit = () => { clearViewSnapshot(); clearSeen(); markExplicitClose(); setOverlayOpen(false); };
 			const closeBtn = jsx(Btn, {
 				variant: "toolbar", size: "sm", fallbackClass: "dp_iconBtn",
-				onClick: () => setOverlayOpen(false), "aria-label": t("close"), title: t("close"),
+				onClick: closeExplicit, "aria-label": t("close"), title: t("close"),
 				icon: jsx(primitives.IconCloseOutline16, { size: 14 }),
 			});
 			/** Clicking the blank seat outside the card closes the overlay;
 			 *  clicks inside the card never bubble to it. */
 			const onBackdrop = (e) => { if (e.target === e.currentTarget) setOverlayOpen(false); };
+			/** focusSession 随行：/pulse 入口带来的会话必须送进完整观测台
+			 *  ——此前在这里被丢掉，观测台只能退回 retainInfo 探测。 */
 			const dashboard = typeof renderFactorySlot === "function"
-				? renderFactorySlot("pulse.dashboard", { floatActions: true }, { fallback: jsx(PulseDashboard, { t, floatActions: true }) })
-				: jsx(PulseDashboard, { t, floatActions: true });
+				? renderFactorySlot("pulse.dashboard", { floatActions: true, focusSession: overlay.focus }, { fallback: jsx(PulseDashboard, { t, floatActions: true, focusSession: overlay.focus }) })
+				: jsx(PulseDashboard, { t, floatActions: true, focusSession: overlay.focus });
 			/** The summary face speaks for the invoking session and offers the
 			 *  hand-off; the observatory face keeps the refresh action, which
 			 *  only its data view needs. */
@@ -429,7 +443,7 @@ import { buildView, cacheHitRateOf, costOf, localDay, moneyCny, sessionModelRows
 					className: `dp_overlayCard${summary ? " dp_overlayCardSummary" : ""}`,
 					role: "dialog", "aria-label": t("title"),
 					ref: cardRef,
-					style: !summary && width !== null ? { width: `${width}px` } : undefined,
+					style: !summary && typeof width === "number" ? { width: `${width}px` } : undefined,
 					children: [
 						!summary && jsx("div", {
 							className: "dp_ovlGrip", title: t("ovlGrip"),

@@ -7,7 +7,7 @@
 
 **简体中文**（默认） · [English](#dsh-pulse-english)
 
-**要求**：dsh ≥ 0.2.0-rc.2 · Node ≥ 22.19 · 可选的终端面需 [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI) ≥ 0.13.0（独立项目，需单独安装）
+**要求**：dsh ≥ 0.2.1-alpha.5 · Node ≥ 22.19 · 可选的终端面需 [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI) ≥ 0.13.0（独立项目，需单独安装）
 
 **隐私**：数据全部留在本机——用量折自 dsh 自己的会话日志。出站请求只有三类：官方余额查询、订阅额度查询、手动检查更新。
 
@@ -30,6 +30,10 @@
 费用估算块展开后的逐日对账（≈ 为快照稀疏的日，红色为偏差日）：
 
 ![官方账单对账：逐日官方扣费、本地估算与偏差](assets/shots/canvas-recon.png)
+
+订阅额度块展开后的逐家供应商面板（5 小时 / 本周窗口条与加权档位）：
+
+![订阅额度展开：GLM 与 Kimi 的 5 小时/本周窗口用量](assets/shots/quota-expanded.png)
 
 ## 快速上手
 
@@ -104,7 +108,7 @@ DeepSeek 按峰谷时段计费：北京时间 **09:00–12:00** 与 **14:00–18
 - 按**供应商**限定：`provider` 填供应商 route id 时只对该供应商的同名模型生效（精确匹配优先），留空则通配该模型 id 的所有供应商——给「代理商也卖 deepseek-v4-flash」这类情况单独定价，不影响官方渠道
 - 供应商可整体标记为**月付费**（`monthlyProviders`）：该供应商所有模型无需单价、费用按 0 边际计；可附**月付金额**（`monthlyFee`），不进按量估算，只在方案对比里作为订阅行同台比较
 
-官方 `web_search` 与会话标题生成的辅助 LLM 调用本地没有 usage 事件，观测台按会话日志精确计数，折算为「辅助调用（估算）」伪模型行进入模型堆叠与费用走势，按事件当日生效的官方价计费。**形状自校准（默认开启）**：官方余额序列是每日真值，面板据此自动校准辅助调用的估算形状——对已存数据的纯函数，无新存储、无定时器，换一个部署会自己收敛到那个部署的负载。近 7 个完整日出现 ≥15% 且 ≥¥0.10 的对账偏差时，仪表盘亮**对账漂移告警**（悬停看逐日对照）；快照稀疏的日子不参与学习与告警。想冻结自校准，在配置里手写 `searchShape`（键 `miss`/`hit`/`out`）即可。
+官方 `web_search` 与会话标题生成的辅助 LLM 调用本地没有 usage 事件，观测台按会话日志精确计数，折算为「辅助调用（估算）」伪模型行进入模型堆叠与费用走势，按事件当日生效的官方价计费。2026-11-01 起官方对服务端搜索**按次计费**（¥0.005/次成功请求，随 Search/Fetch API 开放公告生效），观测台把它计为已知固定项叠加在形状估算上——对账差额与形状自校准都不吸收它，保持纯 token 语义。本地按「1 请求 = 1 次计」估计，实际账单按服务端执行次数（单次请求最多 5 次），系数待计费上线后对照余额实证。**形状自校准（默认开启）**：官方余额序列是每日真值，面板据此自动校准辅助调用的估算形状——对已存数据的纯函数，无新存储、无定时器，换一个部署会自己收敛到那个部署的负载。近 7 个完整日出现 ≥15% 且 ≥¥0.10 的对账偏差时，仪表盘亮**对账漂移告警**（悬停看逐日对照）；快照稀疏的日子不参与学习与告警。想冻结自校准，在配置里手写 `searchShape`（键 `miss`/`hit`/`out`）即可。
 
 币种：每条规则以 **CNY**（默认）或 **USD** 计价，USD 模型通过 `usdToCny`（默认 6.8，定价页可改）折算，总额永远是单一 CNY 数字。折算按设计就是手动汇率：这是估算器，不是记账。`costEnabled: false` 隐藏费用数字，其余照常。
 
@@ -254,7 +258,7 @@ MIT — 见 [LICENSE](./LICENSE)。
 
 [简体中文](#dsh-pulse) · **English**
 
-**Requirements**: dsh ≥ 0.2.0-rc.2 · Node ≥ 22.19 · the optional terminal face needs [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI) ≥ 0.13.0 (a separate project, installed on its own)
+**Requirements**: dsh ≥ 0.2.1-alpha.5 · Node ≥ 22.19 · the optional terminal face needs [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI) ≥ 0.13.0 (a separate project, installed on its own)
 
 **Privacy**: everything stays on this machine — usage is folded from dsh's own session logs. Outbound requests come in exactly three kinds: official-balance queries, subscription-quota queries, and the manual update check.
 
@@ -277,6 +281,10 @@ A per-session usage and cost observatory for [dsh](https://github.com/deepseek-a
 The cost block expanded into its per-day reconciliation (≈ marks snapshot-sparse days, red marks drift):
 
 ![Reconciliation table: per-day official spend, local estimate and gap](assets/shots/canvas-recon.png)
+
+The subscription-quota block expanded — one panel per provider, with the 5-hour/weekly window bars and their weight tiers:
+
+![Subscription quota expansion: GLM and Kimi 5-hour/weekly window usage](assets/shots/quota-expanded.png)
 
 ## Quick start
 
@@ -350,7 +358,7 @@ Rules can go finer:
 - **Provider-scoped**: a `provider` holding a route id prices only that provider's same-named model (exact match wins); left empty the rule covers the model id from every provider — so a reseller serving `deepseek-v4-flash` can be priced separately without touching the official channel
 - A provider can be marked **monthly-paid** as a whole (`monthlyProviders`): its models need no rates and price at zero marginal cost, with an optional **monthly amount** (`monthlyFee`) that stays out of the pay-per-token estimate and surfaces only in plan comparison
 
-The official `web_search` and session-title LLM calls have no local usage events; the observatory counts them exactly from the session logs and folds them into an `Aux calls (est.)` pseudo-model row, priced at the day's official rates. **Self-calibrating shape (on by default)**: the official balance series provides daily ground truth, and the panel calibrates the aux estimate shape against it — a pure function of already-stored data, no new storage, no timers; each deployment converges to its own workload. When any of the last 7 complete days drifts ≥15% **and** ≥¥0.10 from the estimate, the dashboard raises a **reconciliation drift alert** (hover for the per-day breakdown); snapshot-sparse days join neither learning nor alerting. A manual `searchShape` (`miss`/`hit`/`out` keys) freezes the calibration.
+The official `web_search` and session-title LLM calls have no local usage events; the observatory counts them exactly from the session logs and folds them into an `Aux calls (est.)` pseudo-model row, priced at the day's official rates. From 2026-11-01 the official per-request search fee (¥0.005 per successful server-side search) is modeled as a known flat term on top of the shape-derived token estimate — the reconciliation gap and the shape self-calibration never absorb it, keeping them pure token-shape signals. Locally 1 request counts as 1 call; the real bill counts server-side executions (at most 5 per request), a factor to verify against the balance once billing starts. **Self-calibrating shape (on by default)**: the official balance series provides daily ground truth, and the panel calibrates the aux estimate shape against it — a pure function of already-stored data, no new storage, no timers; each deployment converges to its own workload. When any of the last 7 complete days drifts ≥15% **and** ≥¥0.10 from the estimate, the dashboard raises a **reconciliation drift alert** (hover for the per-day breakdown); snapshot-sparse days join neither learning nor alerting. A manual `searchShape` (`miss`/`hit`/`out` keys) freezes the calibration.
 
 Currency: rules price in **CNY** (default) or **USD**; USD-priced models convert through one configurable rate (`usdToCny`, default 6.8, editable in the pricing page), so the total is always a single CNY sum. The conversion is a manual rate by design: this is an estimator, not accounting. `costEnabled: false` hides the cost figures while keeping every other number.
 

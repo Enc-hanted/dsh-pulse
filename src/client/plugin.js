@@ -1,6 +1,6 @@
 import { useState, useEffect, jsx, jsxs } from "./react.js";
 import { NS, en, zh } from "./locale.js";
-import { loadPanels, loadTheme, openOverlay, savePanels, setTheme, subscribePanels, subscribeTheme } from "./stores.js";
+import { loadPanels, loadTheme, markSessionsInjectFired, markSessionsReady, openOverlay, savePanels, setSessionsSource, setTheme, subscribePanels, subscribeTheme } from "./stores.js";
 import { PulseDashboard } from "./dashboard.js";
 import { PricingPage } from "./settings.js";
 import { PulseCommandCard, PulseFooterAction, PulseOverlay, PulseSection } from "./slots.js";
@@ -66,6 +66,33 @@ import { defineStore, Switch, Tag, primitives } from "./adapter.js";
 		export function apply(ctx) {
 			ctx.effect(() => ctx.locale.register(NS, { zh, en }), "dsh-pulse: copy dictionaries");
 			const t = ctx.locale.bind(NS);
+			/** 会话域注入：「聚焦当前窗口工作区」靠它问宿主「主视图当前保留
+			 *  的会话」（retainBy mainView）。ctx.sessions 由 session-controller
+			 *  的 client 半区以 Cordis 服务提供，可能晚于本插件加载——apply
+			 *  时直读是空，必须走服务等待（同 commandUi 的挂起等待模式）；
+			 *  等待期间保留直读兜底，宿主已在上下文上提供时立即可用。老宿主
+			 *  没有这个服务就一直是 waiting，聚焦按「没有当前会话」处理。服
+			 *  务兑现时顺带 markSessionsReady()，把「还在等服务」的聚焦探测
+			 *  推送一次补试——事件替代定时器。 */
+			setSessionsSource(() => {
+				try { return ctx.sessions ?? null; } catch { return null; }
+			});
+			try {
+				if (typeof ctx.inject === "function") {
+					ctx.inject(["sessions"], (scope) => {
+						markSessionsInjectFired();
+						setSessionsSource(() => {
+							try {
+								const source = typeof scope.get === "function" ? scope.get("sessions") : scope.sessions;
+								return source ?? null;
+							} catch { return null; }
+						});
+						markSessionsReady();
+					});
+				}
+			} catch (error) {
+				ctx.logger?.warn?.("dsh-pulse: sessions service wait unavailable", error);
+			}
 			/** '/' 菜单行：dsh 只为它自己的六个内置命令画图标（那张表写死在宿主
 			 *  里，没有面插件接口），而官方客户端命令契约 `ctx.commandUi.register`
 			 *  允许插件自带 icon 和随语言求值的 label/description——所以这一行是
@@ -108,15 +135,17 @@ import { defineStore, Switch, Tag, primitives } from "./adapter.js";
 			 *  declared HANGS (the callback simply never runs), and a refused
 			 *  registration used to vanish into a bare catch — a host upgrade
 			 *  that dropped a seat name would only ever surface as a missing
-			 *  UI block. Each seat now reports once: a delayed probe warns when
-			 *  the callback has not run (hanging absence — seats whose surfaces
-			 *  open lazily may legitimately trip it), the catch warns on
-			 *  synchronous refusal. */
+			 *  UI block. Each seat now reports once: a delayed probe NOTES at
+			 *  debug level when the callback has not run (hanging absence —
+			 *  seats whose surfaces open lazily may legitimately trip it, so
+			 *  it must not shout on the warn channel), while the catch path
+			 *  still warns on a synchronous refusal (the host answered, and
+			 *  the answer was no). */
 			const SEAT_PROBE_MS = 15000;
 			const injectSeat = (name, declare) => {
 				let seen = false;
 				setTimeout(() => {
-					if (!seen) ctx.logger?.warn?.(`dsh-pulse: seat "${name}" not exercised by this host within ${SEAT_PROBE_MS / 1000}s (absent, or its surface was never opened)`);
+					if (!seen) ctx.logger?.debug?.(`dsh-pulse: seat "${name}" not exercised by this host within ${SEAT_PROBE_MS / 1000}s (absent, or its surface was never opened)`);
 				}, SEAT_PROBE_MS);
 				ctx.slots.inject(name, (...args) => {
 					seen = true;

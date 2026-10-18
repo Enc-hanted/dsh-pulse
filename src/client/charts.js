@@ -24,9 +24,9 @@ import { AUX_MODEL_KEY, accentEntryOf, bucketLabel, bucketOf, costOf, heatmapCel
 			return accentEntryOf(map, provider, model)?.fill ?? fallback;
 		}
 
-		export function BucketChart({ buckets, granularity, today, modelBuckets, accentMap, byModel, names, legendRows, legendSel = null, onLegendToggle, hourlyFrom = null, onDrillChange, onDrillHourly, children, t }) {
+		export function BucketChart({ buckets, granularity, today, modelBuckets, accentMap, byModel, names, legendRows, legendSel = null, onLegendToggle, hourlyFrom = null, drilled = null, onDrillChange, onDrillHourly, children, t }) {
 			const [hover, setHover] = useState(null);
-			const [drillIdx, setDrillIdx] = useState(null);
+			const [drillIdx, setDrillIdx] = useState(() => (typeof drilled === "number" ? drilled : null));
 			const [hoverSeg, setHoverSeg] = useState(null);
 			const [pinnedSeg, setPinnedSeg] = useState(null);
 			const [seed, setSeed] = useState(null);
@@ -34,14 +34,24 @@ import { AUX_MODEL_KEY, accentEntryOf, bucketLabel, bucketOf, costOf, heatmapCel
 			const drillOuterRef = useRef(null);
 			const rows = Array.isArray(buckets) ? buckets : [];
 			const matrices = Array.isArray(modelBuckets) ? modelBuckets : [];
-			const exitDrill = () => {
+			const exitDrill = (viaEscape = false) => {
 				setDrillIdx(null);
 				setHoverSeg(null);
 				setPinnedSeg(null);
-				onDrillChange?.(null);
+				onDrillChange?.(null, viaEscape);
 			};
-			// A new window or dimension invalidates the drilled day.
+			// A new window or dimension invalidates the drilled day. The FIRST
+			// arrival of data does not: a restored drill (退出保留) waits for
+			// exactly this data — reporting null on mount would wipe the seed
+			// one tick after the panel reopens.
+			const chartDataReadyRef = useRef(false);
 			useEffect(() => {
+				if (!chartDataReadyRef.current) {
+					if (rows.length === 0) return;
+					chartDataReadyRef.current = true;
+					if (drillIdx !== null && rows[drillIdx] === undefined) exitDrill();
+					return;
+				}
 				setDrillIdx(null);
 				setHoverSeg(null);
 				setPinnedSeg(null);
@@ -55,10 +65,12 @@ import { AUX_MODEL_KEY, accentEntryOf, bucketLabel, bucketOf, costOf, heatmapCel
 				return () => cancelAnimationFrame(frame);
 			}, [drillIdx, seed]);
 			// Escape unwinds level by level: the model split first, then the
-			// drill itself (the callback reads pinnedSeg fresh via the ref).
+			// drill itself (the callback reads pinnedSeg fresh via the ref;
+			// the escape path is flagged so the exit-cascade collapse never
+			// overwrites the view snapshot).
 			useEscape(drillIdx !== null, () => {
 				if (pinnedSeg !== null) setPinnedSeg(null);
-				else exitDrill();
+				else exitDrill(true);
 			}, { target: "window" });
 			const maxRaw = rows.reduce((m, b) => Math.max(m,
 				(b.input || 0) + (b.cacheRead || 0) + (b.cacheWrite || 0) + (b.output || 0)), 0);
@@ -383,22 +395,38 @@ import { AUX_MODEL_KEY, accentEntryOf, bucketLabel, bucketOf, costOf, heatmapCel
 		 *  weekday-only peak windows those days bill entirely off-peak. The
 		 *  billed-actual figure from the official balance series rides in the
 		 *  drill header when known. */
-		export function CostTrendPanel({ costs, today, actualByDay, accentMap, byModel, names, bucket = "day", legendSel = null, onLegendToggle, auxTip = null, onDrillChange, children, t }) {
+		export function CostTrendPanel({ costs, today, actualByDay, accentMap, byModel, names, bucket = "day", legendSel = null, onLegendToggle, auxTip = null, drilled = null, onDrillChange, children, t }) {
 			const [hover, setHover] = useState(null);
-			const [drillIdx, setDrillIdx] = useState(null);
+			const [drillIdx, setDrillIdx] = useState(() => (typeof drilled === "number" ? drilled : null));
 			const [seed, setSeed] = useState(null);
 			const outerRef = useRef(null);
 			const rows = costPeriodRows(Array.isArray(costs) ? costs : [], bucket);
-			useEffect(() => { setDrillIdx(null); onDrillChange?.(null); }, [costs, byModel]);
 			useEffect(() => {
 				if (drillIdx === null || seed === null) return undefined;
 				const frame = requestAnimationFrame(() => setSeed(null));
 				return () => cancelAnimationFrame(frame);
 			}, [drillIdx, seed]);
 			/** Escape unwinds the day drill (the panel no longer owns any
-			 *  focus-level exit — the swap tabs handle view selection). */
-			const exitDrill = () => { setDrillIdx(null); setHover(null); onDrillChange?.(null); };
-			useEscape(drillIdx !== null, exitDrill, { target: "window" });
+			 *  focus-level exit — the swap tabs handle view selection). The
+			 *  escape path is flagged so the exit-cascade collapse never
+			 *  overwrites the view snapshot. */
+			const exitDrill = (viaEscape = false) => { setDrillIdx(null); setHover(null); onDrillChange?.(null, viaEscape); };
+			useEscape(drillIdx !== null, () => exitDrill(true), { target: "window" });
+			// A new window or dimension invalidates the drilled day. The FIRST
+			// arrival of data does not: a restored drill (退出保留) waits for
+			// exactly this data — reporting null on mount would wipe the seed
+			// one tick after the panel reopens.
+			const costDataReadyRef = useRef(false);
+			useEffect(() => {
+				if (!costDataReadyRef.current) {
+					if (rows.length === 0) return;
+					costDataReadyRef.current = true;
+					if (drillIdx !== null && rows[drillIdx] === undefined) exitDrill();
+					return;
+				}
+				setDrillIdx(null);
+				onDrillChange?.(null);
+			}, [costs, byModel]);
 			const maxRaw = rows.reduce((m, b) => Math.max(m, (b.peak || 0) + (b.offpeak || 0)), 0);
 			const max = niceMax(maxRaw);
 			const total = rows.reduce((m, b) => m + (b.peak || 0) + (b.offpeak || 0), 0);
@@ -457,9 +485,9 @@ import { AUX_MODEL_KEY, accentEntryOf, bucketLabel, bucketOf, costOf, heatmapCel
 				// with an 18px head + a 152px stage = the chart grid's 10px
 				// margin + 168px), so switching views never shifts the layout.
 				return jsxs("div", { children: [
-					jsxs("div", { className: "dp_chartOuter", onClick: exitDrill, children: [
+					jsxs("div", { className: "dp_chartOuter", onClick: () => exitDrill(), children: [
 						jsxs("div", { className: "dp_drillHead", children: [
-							jsx("button", { type: "button", className: "dp_setLink", onClick: exitDrill, children: `← ${t("backToDays")}` }),
+							jsx("button", { type: "button", className: "dp_setLink", onClick: () => exitDrill(), children: `← ${t("backToDays")}` }),
 							jsxs("span", { className: "dp_drillTotal", children: [
 								jsx("b", { children: (() => {
 									const start = row.start ?? row.key;

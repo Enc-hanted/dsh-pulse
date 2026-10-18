@@ -1,12 +1,12 @@
-import { useState, useEffect, useMemo, jsx, jsxs } from "./react.js";
-import { COST_STACK_STORAGE, RANGE_PRESETS, TREND_STACK_STORAGE, UNPRICED_HINT_TOKENS, catalogNames, fill, fmtClock, fmtTokens, httpError, loadCostStack, loadPanels, loadTheme, loadTrendStack, setTheme, subscribeTheme, useBalance, useCatalog, useEscape, usePulseStats, useQuota } from "./stores.js";
+import { useState, useEffect, useMemo, useRef, useSyncExternalStore, jsx, jsxs } from "./react.js";
+import { COST_STACK_STORAGE, RANGE_PRESETS, TREND_STACK_STORAGE, UNPRICED_HINT_TOKENS, catalogNames, consumeExplicitClose, currentMainSessionId, dataChangedBus, dataChangedSnapshot, fill, fmtClock, fmtTokens, httpError, loadCostStack, loadPanels, loadSeen, loadTheme, loadTrendStack, loadViewSnapshot, onSessionsReady, saveSeen, saveViewSnapshot, sessionsRetainSample, sessionsSourceInfo, setTheme, subscribeDataChanged, subscribeTheme, useBalance, useCatalog, useEscape, usePulseStats, useQuota } from "./stores.js";
 import { BucketChart, BucketXLabels, CostTrendPanel, HeatmapChart, HourlyChart, HourlyCostChart, ModelBars, ProjectTable, ReconTable, SessionsPanel, accentOf, focusProjectLabel } from "./charts.js";
 import { HeroCard } from "./heroCard.js";
 import { Toolbar } from "./toolbar.js";
 import { QuotaPanel } from "./quota.js";
 import { exportDailyCsv } from "./csv.js";
 import { Btn, Input, Seg, primitives } from "./adapter.js";
-import { AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, costSeries, daysBetween, hourlyCostSeries, moneyCny, hourlySeries, isOfficialProvider, localDay, modelAccentMap, modelKey, moneyParts, reconcileSeries, rollupModelFamilies, sessionGroups, shiftDay, splitModelKey } from "./../view.js";
+import { AUX_CALL_FEE, AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, costSeries, daysBetween, hourlyCostSeries, moneyCny, hourlySeries, isOfficialProvider, localDay, modelAccentMap, modelKey, moneyParts, reconcileSeries, rollupModelFamilies, sessionGroups, shiftDay, splitModelKey, statsFingerprint } from "./../view.js";
 		//#region dashboard
 		/** Monthly budget panel: a CNY budget input with a progress bar, the
 		 *  month-to-date estimated spend (its own stats fetch over the month
@@ -201,8 +201,12 @@ import { AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, costSeries, daysBe
 					: (s !== null && Math.abs(s - 1) <= 0.03
 						? fill(t("auxCalAligned"), { s: s.toFixed(2), n: calib.samples })
 						: fill(t("auxCalCalibrated"), { s: s === null ? "1.00" : s.toFixed(2), n: calib.samples }));
-				return `${shapePart} · ${statusText}`;
-			}, [calib, t]);
+				/** 2026-11-01 起的官方按次费已计入估算：窗口到达该日才提，
+				 *  历史窗口不加这句噪音。 */
+				const feePart = data !== null && typeof data.toDay === "string" && data.toDay >= AUX_CALL_FEE.from
+					? ` · ${t("auxFeeNote")}` : "";
+				return `${shapePart} · ${statusText}${feePart}`;
+			}, [calib, data, t]);
 
 			/** The rendered window is the PAYLOAD's own (echoed by the host),
 			 *  never the toolbar's live selection: while a new window is still
@@ -309,27 +313,38 @@ import { AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, costSeries, daysBe
 
 		export function PulseDashboard({ t, headerExtra, onConfigure, floatActions = false, focusSession = null, renderSlot: renderPanelsSlot, actions }) {
 			const [panels] = useState(loadPanels);
+			/** 退出保留：挂载时读一次快照（记忆开关关闭则不读），各状态初值
+			 *  从中恢复；此后的变化走防抖连续落盘，卸载/刷新都留得住。 */
+			const memoryOn = panels.rememberView !== false;
+			const [snapshot] = useState(() => (memoryOn ? loadViewSnapshot() : null));
+			const rootRef = useRef(null);
+			const scrollYRef = useRef(Number.isFinite(snapshot?.scrollY) ? snapshot.scrollY : 0);
 			const [theme, setTheme] = useState(loadTheme);
 			/** Live theme sync: the settings-page picker updates every mounted
 			 *  surface (page / card / floating overlay) without a reload. */
 			useEffect(() => subscribeTheme(setTheme), []);
-			const [rangeKey, setRangeKey] = useState("7");
+			const [rangeKey, setRangeKey] = useState(() => (typeof snapshot?.rangeKey === "string" && RANGE_PRESETS[snapshot.rangeKey] !== undefined) || snapshot?.rangeKey === "custom" ? snapshot.rangeKey : "7");
 			/** Custom range defaults to the last seven days; the inputs are
 			 *  editable and empty bounds fall back to the same defaults. */
 			const [custom, setCustom] = useState(() => {
+				if (snapshot?.custom !== null && typeof snapshot?.custom === "object") {
+					const from = typeof snapshot.custom.from === "string" ? snapshot.custom.from : null;
+					const to = typeof snapshot.custom.to === "string" ? snapshot.custom.to : null;
+					if (from !== null || to !== null) return { from, to };
+				}
 				const today = localDay(Date.now());
 				return { from: shiftDay(today, -6), to: today };
 			});
-			const [project, setProject] = useState("");
+			const [project, setProject] = useState(() => (typeof snapshot?.project === "string" ? snapshot.project : ""));
 			/** Workspace focus (`focusSession`, from the `/pulse` menu row):
 			 *  the first payload that can name the invoking session's project
 			 *  auto-selects it in the 项目 filter — once, and only until the
 			 *  user picks a filter themselves. */
-			const [projectTouched, setProjectTouched] = useState(false);
+			const [projectTouched, setProjectTouched] = useState(snapshot?.projectTouched === true);
 			const setProjectUser = (value) => { setProjectTouched(true); setProject(value); };
 			/** Model multi-select (the legend-linked filter): an id array, empty
 			 *  = all. Legend clicks and picker clicks toggle the same set. */
-			const [models, setModels] = useState([]);
+			const [models, setModels] = useState(() => (Array.isArray(snapshot?.models) ? snapshot.models.filter((k) => typeof k === "string") : []));
 			const toggleModel = (key) => setModels((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
 			const clearModels = () => setModels([]);
 			const modelSelSet = models.length > 0 ? new Set(models) : null;
@@ -342,10 +357,10 @@ import { AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, costSeries, daysBe
 			};
 			/** Whether the usage trend is drilled into a single day (the chart
 			 *  reports back so the parent can hide the day axis). */
-			const [trendDrilled, setTrendDrilled] = useState(false);
+			const [trendDrilled, setTrendDrilled] = useState(() => (typeof snapshot?.trendDrilled === "number" ? snapshot.trendDrilled : false));
 			/** 切换容器的两个页签：缓存命中卡 = 用量走势，费用走势卡 = 费用
 			 *  走势。纯 tab 切换，无聚焦/压暗机制。 */
-			const [swapTab, setSwapTab] = useState("use");
+			const [swapTab, setSwapTab] = useState(snapshot?.swapTab === "cost" ? "cost" : "use");
 			/** The hero canvas's shared expansion slot: exactly ONE block
 			 *  expansion is open at a time — "est" opens the estimate/budget
 			 *  panel (plus the reconciliation table), "quota" opens the
@@ -353,17 +368,39 @@ import { AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, costSeries, daysBe
 			 *  Escape closes. The old single consOpen boolean collapsed into
 			 *  this named target when the two top cards merged into one
 			 *  canvas with per-block hot zones. */
-			const [expandX, setExpandX] = useState(null);
+			const [expandX, setExpandX] = useState(snapshot?.expandX === "est" || snapshot?.expandX === "quota" ? snapshot.expandX : null);
 			/** Capture + consume (via useEscape): Escape belongs to the expansion
 			 *  while one is open — letting it bubble would dismiss the HOST
 			 *  overlay (its dialog also listens for Escape) instead of just
 			 *  collapsing the expansion. With no expansion open this listener
 			 *  is not mounted, so Escape keeps reaching the overlay and closes
 			 *  it, as before. */
-			useEscape(expandX !== null, () => setExpandX(null), { capture: true, consume: true, target: "window" });
+			/** Escape 折叠 = 退出手势的一部分：用户按 Esc 想关的是面板，第一
+			 *  下却先折叠了展开/钻取。折叠后的（塌掉）状态不许覆盖快照里
+			 *  「用户正在看的现场」——语义判定，不赌两次 Esc 的间隔：Esc 折
+			 *  叠把字段挂起，落盘略过该字段（合并写保住旧值）；真实交互
+			 *  （重新点开卡片/钻取）解除挂起、照常落盘；面板真关闭时挂起
+			 *  中的字段随之丢弃。点击触发的折叠（返回键/点空白/热区）是真
+			 *  实操作，照常落盘。 */
+			const suspendRef = useRef(new Set());
+			useEscape(expandX !== null, () => { suspendRef.current.add("expandX"); setExpandX(null); }, { capture: true, consume: true, target: "window" });
+			/** 卡片热区的开与关都是真实操作：解除挂起。 */
+			const openExpandX = (x) => { suspendRef.current.delete("expandX"); setExpandX((cur) => (cur === x ? null : x)); };
+			/** 走势/费用钻取的回报：数字 = 钻入（解除挂起）；收起按来源区分
+			 *  ——Esc 触发的挂起该字段，点击触发的不挂起。 */
+			const onTrendDrill = (value, viaEscape = false) => {
+				if (typeof value === "number") suspendRef.current.delete("trendDrilled");
+				else if (viaEscape) suspendRef.current.add("trendDrilled");
+				setTrendDrilled(value);
+			};
+			const onCostDrill = (value, viaEscape = false) => {
+				if (typeof value === "number") suspendRef.current.delete("costDrilled");
+				else if (viaEscape) suspendRef.current.add("costDrilled");
+				setCostDrilled(value);
+			};
 			/** Same report-back for the cost trend's day drill (hides the day
 			 *  labels while a single day's cost breakdown is open). */
-			const [costDrilled, setCostDrilled] = useState(false);
+			const [costDrilled, setCostDrilled] = useState(() => (typeof snapshot?.costDrilled === "number" ? snapshot.costDrilled : false));
 			/** Cost-trend stack dimension: peak/off-peak billing tiers (default)
 			 *  or per-model costs. */
 			const [costStack, setCostStack] = useState(loadCostStack);
@@ -406,19 +443,198 @@ import { AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, costSeries, daysBe
 			 *  top of the stats payload above. */
 			const quota = useQuota(panels.quota !== false);
 
-			const { calib, reconByKey, auxTip, view, names, accentMap, hasModelSplit, byModel, modelLegendRows, sessionGroupsData, hourly, hourlyDay, hourlyCutoff, hours, hourlyCost, costDays, catalog } =
+			/** ── 退出保留 ────────────────────────────────────────────────
+			 *  视图快照：任何窗口状态变化后 300ms 防抖落盘——连续保存而非
+			 *  卸载时机（页面刷新没有卸载）。滚动位置由滚动监听独立防抖写
+			 *  入同一份快照（见下）；挂起中的字段（Esc 折叠）不写，合并写
+			 *  保住旧值；显式关闭（点 ×）由浮层负责整份清除。 */
+			const writeRef = useRef(null);
+			useEffect(() => {
+				if (memoryOn === false) return undefined;
+				const write = () => {
+					const patch = { rangeKey, custom, project, projectTouched, models, swapTab, scrollY: scrollYRef.current };
+					if (!suspendRef.current.has("expandX")) patch.expandX = expandX;
+					if (!suspendRef.current.has("trendDrilled")) patch.trendDrilled = trendDrilled;
+					if (!suspendRef.current.has("costDrilled")) patch.costDrilled = costDrilled;
+					saveViewSnapshot(patch);
+				};
+				writeRef.current = write;
+				const timer = setTimeout(write, 300);
+				return () => clearTimeout(timer);
+			}, [memoryOn, rangeKey, custom, project, projectTouched, models, swapTab, expandX, trendDrilled, costDrilled]);
+
+			/** 卸载补写：关面板前最后 300ms 内的改动（尤其「滚动到位马上关
+			 *  面板」）不再丢。补写尊重挂起与显式清除——× / 关开关刚清空
+			 *  的快照不许复活；挂载时顺手消费一次陈旧旗标（上个挂载周期
+			 *  的清除与本周期无关）。 */
+			useEffect(() => {
+				consumeExplicitClose();
+				return () => {
+					if (consumeExplicitClose()) return;
+					if (loadPanels().rememberView === false) return;
+					writeRef.current?.();
+				};
+			}, []);
+
+			/** 滚动位置：找到滚动容器（浮层的 dp_overlayScroll；工厂嵌入其
+			 *  他宿主时可能没有，监听就不挂），滚动即记录并独立防抖落盘
+			 *  ——纯滚动也是状态变化，不能只等其他字段变化时顺带保存。 */
+			useEffect(() => {
+				const scroller = rootRef.current?.closest(".dp_overlayScroll") ?? null;
+				if (scroller === null) return undefined;
+				let timer = 0;
+				const onScroll = () => {
+					scrollYRef.current = scroller.scrollTop;
+					clearTimeout(timer);
+					timer = setTimeout(() => {
+						if (loadPanels().rememberView === false) return;
+						saveViewSnapshot({ scrollY: scrollYRef.current });
+					}, 250);
+				};
+				scroller.addEventListener("scroll", onScroll, { passive: true });
+				return () => { scroller.removeEventListener("scroll", onScroll); clearTimeout(timer); };
+			}, []);
+
+			const { calib, recon, reconByKey, auxTip, view, names, accentMap, hasModelSplit, byModel, modelLegendRows, sessionGroupsData, hourly, hourlyDay, hourlyCutoff, hours, hourlyCost, costDays, catalog } =
 				useDashboardModel({ data, range, project, models, panels, theme, trendStack, t });
+
+			/** 橘点：重开后的第一次自然拉取与关面板时留的指纹比对，不同即
+			 *  点亮（不强拉——同 key 命中缓存没有拉取，就没有比对，也就没
+			 *  有橘点）。之后每次数据落定都刷新「看过」的指纹。 */
+			const fingerprint = useMemo(() => statsFingerprint(view), [view]);
+			const comparedRef = useRef(loadSeen() === null);
+			const seenRef = useRef(loadSeen());
+			useEffect(() => {
+				if (fingerprint === null) return;
+				if (comparedRef.current === false) {
+					comparedRef.current = true;
+					if (seenRef.current !== null && seenRef.current !== fingerprint) dataChangedBus.set(true);
+				}
+				seenRef.current = fingerprint;
+				saveSeen(fingerprint);
+			}, [fingerprint]);
+			/** 用户换筛选 = 离开断点现场，橘点提示作废。首次数据到位前
+			 *  （fingerprint 为空）跳过——那是挂载首过，不是用户动作。 */
+			useEffect(() => {
+				if (fingerprint === null) return;
+				dataChangedBus.set(false);
+			}, [rangeKey, custom, project, models]);
+
+			/** 滚动还原：内容高度分几步长好（数据→图表→明细卡），盯内容
+			 *  尺寸事件而不是赌钟点——ResizeObserver 每报一次变化就校一
+			 *  次位，紧跟的一帧高度不再变即视为布局落定、停止盯梢（8 次
+			 *  封顶防病态布局抖动）；滚轮/触摸随时把控制权交还用户。老宿
+			 *  主没有 ResizeObserver 就退化为首帧一次定位。 */
+			const scrollRestoredRef = useRef(false);
+			useEffect(() => {
+				if (scrollRestoredRef.current || fingerprint === null) return undefined;
+				scrollRestoredRef.current = true;
+				const target = scrollYRef.current;
+				const scroller = target > 0 ? rootRef.current?.closest(".dp_overlayScroll") ?? null : null;
+				if (scroller === null) return undefined;
+				const content = scroller.firstElementChild ?? scroller;
+				let ro = null;
+				let raf = 0;
+				let applied = 0;
+				let lastH = -1;
+				const heightNow = () => Math.round(content.getBoundingClientRect().height);
+				const settle = () => {
+					if (raf !== 0) { cancelAnimationFrame(raf); raf = 0; }
+					ro?.disconnect();
+					ro = null;
+					scroller.removeEventListener("wheel", settle);
+					scroller.removeEventListener("touchstart", settle);
+				};
+				const onFrame = () => {
+					raf = 0;
+					if (ro === null) return;
+					if (heightNow() === lastH || applied >= 8) settle();
+				};
+				if (typeof ResizeObserver === "function") {
+					ro = new ResizeObserver(() => {
+						if (ro === null) return;
+						scroller.scrollTop = target;
+						applied += 1;
+						lastH = heightNow();
+						if (raf === 0) raf = requestAnimationFrame(onFrame);
+					});
+					ro.observe(content);
+				} else {
+					requestAnimationFrame(() => { scroller.scrollTop = target; });
+				}
+				scroller.addEventListener("wheel", settle, { passive: true });
+				scroller.addEventListener("touchstart", settle, { passive: true });
+				return settle;
+			}, [fingerprint]);
 
 
 			/** Workspace focus: the first payload that can name the invoking
 			 *  session's workspace auto-selects it in the workspace filter —
 			 *  once, and only until the user picks a filter themselves (a
 			 *  manual switch to 全部工作区 stays). */
+			/** 聚焦当前窗口工作区：两条规则互不掺杂——/pulse 入口显式携带
+			 *  的会话是命令自身的老行为，无条件聚焦、失败即放弃（不重试、
+			 *  不回退到探测）；左下角按钮不带会话，靠问宿主「主视图当前保
+			 *  留的会话」（retainedBy 含 mainView 的那个），这条路受「聚焦
+			 *  当前窗口工作区」开关管。触发完全事件化、零定时器：首份数据
+			 *  到位尝试一次；宿主会话服务尚未注入（waiting）就订阅 onSess
+			 *  ionsReady，ctx.inject 兑现时推送恰好一次补试；服务已就绪的
+			 *  失败是定局，不轮询。尝试读 focusDataRef 的最新载荷——等待
+			 *  期间换了窗口也能用上新候选。两条路中了都覆盖恢复的筛选（聚
+			 *  焦优先于恢复）；成功完全静默，尘埃落定的失败只落一行 console
+			 *  .debug（[dsh-pulse:focus] miss / end），用它分辨「ctx.sessions
+			 *  不可达 / 没有候选 / 标签找不到」。project / projectTouched 在
+			 *  依赖里：用户手动切换会重跑本 effect，清掉还没兑现的订阅。 */
+			const focusAttemptedRef = useRef(false);
+			const focusDataRef = useRef(null);
+			focusDataRef.current = data;
 			useEffect(() => {
-				if (focusSession === null || projectTouched || project !== "" || data === null) return;
-				const label = focusProjectLabel(data, focusSession);
-				if (label !== null) setProject(label);
-			}, [focusSession, projectTouched, project, data]);
+				if (focusAttemptedRef.current || focusDataRef.current === null) return undefined;
+				const explicitId = focusSession !== null && focusSession !== undefined && focusSession.id !== null && focusSession.id !== undefined
+					? String(focusSession.id) : null;
+				/** 开关只管左下角按钮（探测）这条路；/pulse 显式会话不受它管。 */
+				if (explicitId === null && panels.focusWorkspace === false) return undefined;
+				focusAttemptedRef.current = true;
+				const attempt = () => {
+					const fresh = focusDataRef.current;
+					const candidateIds = (Array.isArray(fresh?.sessions) ? fresh.sessions : []).map((s) => s?.id);
+					const candidateId = explicitId ?? currentMainSessionId(candidateIds);
+					const label = candidateId === null ? null : focusProjectLabel(fresh, { id: candidateId });
+					if (label === null) return false;
+					setProject(label);
+					setProjectTouched(true);
+					return true;
+				};
+				const logMiss = () => {
+					const candidateIds = (Array.isArray(focusDataRef.current?.sessions) ? focusDataRef.current.sessions : []).map((s) => s?.id);
+					const sample = candidateIds.length > 0 ? ` sample=${sessionsRetainSample(candidateIds[0])}` : "";
+					console.debug(`[dsh-pulse:focus] miss: source=${sessionsSourceInfo()}, candidates=${candidateIds.length}${sample}`);
+				};
+				if (attempt()) return undefined;
+				/** 显式会话解析不出标签是数据问题，没有可等的事件，落一行诊
+				 *  断即止。 */
+				if (explicitId !== null) {
+					console.debug(`[dsh-pulse:focus] miss: explicit=${explicitId} (payload names no project for it)`);
+					return undefined;
+				}
+				if (sessionsSourceInfo() === "waiting") {
+					let live = true;
+					const off = onSessionsReady(() => {
+						if (!live) return;
+						live = false;
+						if (!attempt()) logMiss();
+					});
+					return () => {
+						if (live) {
+							live = false;
+							console.debug("[dsh-pulse:focus] end: source=waiting (closed before the sessions service arrived)");
+						}
+						off();
+					};
+				}
+				logMiss();
+				return undefined;
+			}, [focusSession, project, projectTouched, data === null, panels.focusWorkspace]);
 
 
 
@@ -432,10 +648,13 @@ import { AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, costSeries, daysBe
 				if (syncStore !== null) syncStore(data, view, stats.busy);
 			}, [syncStore, data, view, stats.busy]);
 
+			const dataChanged = useSyncExternalStore(subscribeDataChanged, dataChangedSnapshot);
+			const onManualRefresh = () => { dataChangedBus.set(false); stats.reload(); };
 			const refreshBtn = jsx(Btn, {
 				variant: "toolbar", size: "sm", fallbackClass: "dp_iconBtn",
-				onClick: () => stats.reload(),
-				"aria-label": t("refresh"), title: t("refresh"), disabled: stats.busy,
+				className: dataChanged ? "dp_refreshHot" : undefined,
+				onClick: onManualRefresh,
+				"aria-label": dataChanged ? t("refreshNew") : t("refresh"), title: dataChanged ? t("refreshNew") : t("refresh"), disabled: stats.busy,
 				icon: jsx(primitives.IconRefreshOutline16, { size: 15 }),
 			});
 			/** Download the current window as CSV (daily rows + totals). */
@@ -469,7 +688,7 @@ import { AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, costSeries, daysBe
 			const staleWindow = data !== null && data.schema === 3
 				&& (data.fromDay !== range.from || data.toDay !== range.to);
 			if (stats.status === "error" && data === null) {
-				return jsxs("div", { className: "dp_root", "data-dp-theme": theme, children: [
+				return jsxs("div", { ref: rootRef, className: "dp_root", "data-dp-theme": theme, children: [
 					header,
 					jsxs("div", { className: "dp_stateBox", children: [
 						jsx(primitives.IconWarningOutline16, { size: 22, className: "dp_stateIcon" }),
@@ -480,7 +699,7 @@ import { AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, costSeries, daysBe
 				] });
 			}
 			if (data === null || stats.status === "loading" || staleWindow) {
-				return jsxs("div", { className: "dp_root", "data-dp-theme": theme, children: [
+				return jsxs("div", { ref: rootRef, className: "dp_root", "data-dp-theme": theme, children: [
 					header,
 					// The toolbar stays interactive across switches (retargeting
 					// is cheap: the store aborts and re-sequences); only the
@@ -517,22 +736,23 @@ import { AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, costSeries, daysBe
 				? data.corpusSessions === 0
 				: (data.sessions ?? []).length === 0;
 			if (corpusEmpty) {
-				return jsxs("div", { className: "dp_root", "data-dp-theme": theme, children: [
+				return jsxs("div", { ref: rootRef, className: "dp_root", "data-dp-theme": theme, children: [
 					header,
 					jsxs("div", { className: "dp_stateBox", children: [
 						jsx(primitives.IconDataOutline16, { size: 22, className: "dp_stateIcon" }),
 						jsx("span", { className: "dp_stateTitle", children: t("emptyTitle") }),
-						jsx("span", { className: "dp_stateBody", children: t("emptyBody") }),
+						jsx("span", { className: "dp_stateBody", children: stats.emptyRetry === true ? t("emptyWaiting") : t("emptyBody") }),
 					] }),
 				] });
 			}
 			/** The corpus has sessions but none land in this window: a schema-4
 			 *  host states that with `corpusSessions`, so the copy points at the
 			 *  range instead of claiming nothing was ever recorded. The store
-			 *  retries once behind this message (the empty window is usually the
-			 *  freshly-booted race), so it is framed as "not yet". */
+			 *  retries behind this message on a bounded backoff (the empty
+			 *  window is usually the freshly-booted race), so it is framed as
+			 *  "not yet". */
 			if ((data.sessions ?? []).length === 0) {
-				return jsxs("div", { className: "dp_root", "data-dp-theme": theme, children: [
+				return jsxs("div", { ref: rootRef, className: "dp_root", "data-dp-theme": theme, children: [
 					header,
 					jsx(Toolbar, { rangeKey, setRangeKey, custom, setCustom, project, setProject: setProjectUser, knownProjects: view.knownProjects, models, onModelToggle: toggleModel, onModelClear: clearModels, knownModels: view.knownModels, names, t, filterSlot: renderPanelsSlot }),
 					jsxs("div", { className: "dp_stateBox", children: [
@@ -543,7 +763,7 @@ import { AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, costSeries, daysBe
 				] });
 			}
 			if (!view.hasData) {
-				return jsxs("div", { className: "dp_root", "data-dp-theme": theme, children: [
+				return jsxs("div", { ref: rootRef, className: "dp_root", "data-dp-theme": theme, children: [
 					header,
 					jsx(Toolbar, { rangeKey, setRangeKey, custom, setCustom, project, setProject: setProjectUser, knownProjects: view.knownProjects, models, onModelToggle: toggleModel, onModelClear: clearModels, knownModels: view.knownModels, names, t, filterSlot: renderPanelsSlot }),
 					jsxs("div", { className: "dp_stateBox", children: [
@@ -634,7 +854,7 @@ import { AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, costSeries, daysBe
 			const dimWrap = (node) => (expandX !== null && heroOpenable && node !== null && node !== undefined && node !== false
 				? jsx("div", { className: "dp_blurSec", children: node })
 				: node);
-			return jsxs("div", { className: "dp_root", "data-dp-theme": theme, children: [
+			return jsxs("div", { ref: rootRef, className: "dp_root", "data-dp-theme": theme, children: [
 				header,
 				jsx(Toolbar, { rangeKey, setRangeKey, custom, setCustom, project, setProject: setProjectUser, knownProjects: view.knownProjects, models, onModelToggle: toggleModel, onModelClear: clearModels, knownModels: view.knownModels, names, t, filterSlot: renderPanelsSlot }),
 				showChips && jsx("div", {
@@ -652,7 +872,7 @@ import { AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, costSeries, daysBe
 						cacheOn,
 						quotaOpenable,
 						openX: expandX,
-						onHot: (x) => setExpandX((cur) => (cur === x ? null : x)),
+						onHot: openExpandX,
 						onConfigure,
 						rangeLabel: rangeKey === "custom"
 							? `${range.from} ~ ${range.to}`
@@ -761,8 +981,9 @@ import { AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, costSeries, daysBe
 									actualByDay: thirdParty ? null : (Array.isArray(data?.balanceSeries) ? data.balanceSeries : null),
 									accentMap, byModel: costStack === "model", names,
 									bucket: costBucket,
+									drilled: costDrilled,
 									legendSel: modelSelSet, onLegendToggle: toggleModel, auxTip,
-									onDrillChange: setCostDrilled,
+									onDrillChange: onCostDrill,
 									children: !costDrillOn && jsx(BucketXLabels, { buckets: view.buckets, granularity: "day", today: data.today, t }),
 									t,
 								}),
@@ -778,11 +999,11 @@ import { AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, costSeries, daysBe
 									: jsx(BucketChart, {
 										buckets: view.buckets, granularity: "day", today: data.today, modelBuckets: view.modelBuckets, accentMap, byModel, names,
 										legendRows: modelLegendRows, legendSel: modelSelSet, onLegendToggle: toggleModel,
-										hourlyFrom: hourlyCutoff, onDrillHourly: (day) => {
+										hourlyFrom: hourlyCutoff, drilled: trendDrilled, onDrillHourly: (day) => {
 											if (day === data.today) setRangeKey("1");
 											else { setCustom({ from: day, to: day }); setRangeKey("custom"); }
 										},
-										onDrillChange: setTrendDrilled,
+										onDrillChange: onTrendDrill,
 										children: !trendFocused && jsx(BucketXLabels, { buckets: view.buckets, granularity: "day", today: data.today, t }), t,
 									}) }),
 					] }),

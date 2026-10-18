@@ -52,6 +52,7 @@ export {
 	rollupKeyOf,
 } from "./view/routes.js";
 export {
+	AUX_CALL_FEE,
 	AUX_MODEL_KEY,
 	AUX_PRICE_AS,
 	AUX_SHAPE,
@@ -82,6 +83,7 @@ export {
 	heatmapLevel,
 	hourlyCostSeries,
 	hourlySeries,
+	statsFingerprint,
 	tierAtMs,
 } from "./view/build-view.js";
 export {

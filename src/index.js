@@ -17,6 +17,9 @@ import { AUX_SHAPE, DEFAULT_USD_TO_CNY, modelKey, OFFICIAL_PRICE_SCHEDULES, spli
 import { createBalanceService } from "./balance-service.js";
 import { createQuotaService } from "./quota-service.js";
 import { json } from "./http-helpers.js";
+import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 
 /**
@@ -306,6 +309,28 @@ async function catalogOf(llm) {
   return out;
 }
 
+/** Version of a seam package as this process actually resolved it. The
+ * one-line startup log makes version skew visible in the host log: a stale
+ * local tree shadowing the host's own seam copy (what happens when a seam
+ * rides `dependencies` instead of `peerDependencies` — the host's
+ * linked-root interception only claims peer-listed names) shows up here as
+ * a version that is not the host's, instead of being discoverable only by
+ * dissecting node_modules.
+ *
+ * @param {string} specifier - package whose resolved version to report.
+ * @returns {string} the resolved package's version, or "unknown".
+ */
+function seamVersionOf(specifier) {
+  try {
+    const require = createRequire(import.meta.url);
+    const manifestPath = join(dirname(require.resolve(specifier)), "package.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    return typeof manifest.version === "string" ? manifest.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 /**
  * Register the `pulseUsage` projection unit, the `pulse` settings namespace
  * (user-editable pricing and cost display), the `/pulse` command and the
@@ -322,6 +347,8 @@ async function catalogOf(llm) {
  * @param {object} config - deployment configuration (the settings namespace's composition `base` layer).
  */
 export function apply(ctx, config) {
+  ctx.logger?.info?.(
+    `dsh-pulse ${seamVersionOf("dsh-pulse/package.json")} on seams dsh-credentials ${seamVersionOf("@deepseek-ai/dsh-credentials")} / dsh-storage-domain ${seamVersionOf("@deepseek-ai/dsh-storage-domain")}`);
   /** Fold-semantics epoch: 0 at load, +1 per peak-hour change. The persisted
    *  rows of every older epoch are invalid by construction. */
   let epoch = 0;

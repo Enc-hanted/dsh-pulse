@@ -1,6 +1,6 @@
 import { useState, useEffect, jsx, jsxs } from "./react.js";
 import { DP_BUILD } from "./css.js";
-import { THEMES, fetchSettings, fill, invalidateSettings, loadPanels, loadStats, payloadCache, payloadError, postSettings, savePanels, setTheme, statsState, useQuota } from "./stores.js";
+import { THEMES, clearViewSnapshot, fetchSettings, fill, invalidateSettings, loadPanels, loadStats, markExplicitClose, payloadCache, payloadError, postSettings, savePanels, setTheme, statsState, useQuota } from "./stores.js";
 import { quotaWindowLabel } from "./quota.js";
 import { Btn, Checkbox, Input, Seg } from "./adapter.js";
 import { DEFAULT_USD_TO_CNY } from "./../view.js";
@@ -173,6 +173,10 @@ import { DEFAULT_USD_TO_CNY } from "./../view.js";
 			const toggle = (key) => setPanels((prev) => {
 				const next = { ...prev, [key]: prev[key] === false };
 				savePanels(next);
+				/** 关掉「记住上次视图」即刻清空已存快照——开关的承诺是完整
+				 *  的：关了就是没有记忆，而不是"下次开始不记"。旗标挡住观测
+				 *  台卸载时的补写，刚清空的快照不许复活。 */
+				if (key === "rememberView" && next.rememberView === false) { clearViewSnapshot(); markExplicitClose(); }
 				return next;
 			});
 			const loadCurrency = () => {
@@ -263,6 +267,29 @@ import { DEFAULT_USD_TO_CNY } from "./../view.js";
 						}),
 						jsx("span", { className: "dp_panelItemDesc", children: desc }),
 					] }, key)) }),
+				] }),
+				jsxs("div", { className: "dp_setPanel", children: [
+					jsx("div", { className: "dp_setSub", children: t("behaviorSub") }),
+					jsxs("div", { className: "dp_panelsGrid", children: [
+						jsxs("div", { className: "dp_panelItem", children: [
+							jsx(Checkbox, {
+								className: "dp_setSwitch",
+								checked: panels.focusWorkspace !== false,
+								onChange: () => toggle("focusWorkspace"),
+								label: t("focusWorkspace"),
+							}),
+							jsx("span", { className: "dp_panelItemDesc", children: t("focusWorkspaceDesc") }),
+						] }, "focusWorkspace"),
+						jsxs("div", { className: "dp_panelItem", children: [
+							jsx(Checkbox, {
+								className: "dp_setSwitch",
+								checked: panels.rememberView !== false,
+								onChange: () => toggle("rememberView"),
+								label: t("rememberView"),
+							}),
+							jsx("span", { className: "dp_panelItemDesc", children: t("rememberViewDesc") }),
+						] }, "rememberView"),
+					] }),
 				] }),
 				jsx(QuotaSettingsPanel, { t }),
 				jsxs("div", { className: "dp_setPanel", children: [

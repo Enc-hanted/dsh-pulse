@@ -234,7 +234,7 @@ export function buildView(sessions, { granularity = "day", from, to, project = "
     if (modelSet === null || modelSet.has(AUX_MODEL_KEY)) {
       for (const [day, aux] of Object.entries(record.auxByDay ?? {})) {
         if (day < from || day > to) continue;
-        const usage = auxDayUsage(aux, auxShape);
+        const usage = auxDayUsage(aux, auxShape, day);
         if (usage === null) continue;
         seenModels.add(AUX_MODEL_KEY);
         const idx = index.get(bucketOf(granularity, day));
@@ -271,6 +271,22 @@ export function buildView(sessions, { granularity = "day", from, to, project = "
           // official flash rate.
           for (const part of parts) {
             addDayCost(idx, day, AUX_MODEL_KEY, part.tokens, part.tier, part.priceAs);
+          }
+          /** Official per-request search fee (2026-11-01, AUX_CALL_FEE): a
+           *  flat per-call amount addDayCost's token pricing cannot express.
+           *  It lands in the window total and the day bucket's off-peak side
+           *  (the fee has no peak/off-peak nature, but day totals and the
+           *  cost trend's web-search drill row must include it), keeping the
+           *  window cost equal to the cost trend's day sum. */
+          if (usage.searchFee > 0) {
+            costAcc.total += usage.searchFee;
+            costAcc.configured = true;
+            const dayBucket = bucketCosts[idx];
+            dayBucket.offpeak += usage.searchFee;
+            const owned = splitModelKey(AUX_MODEL_KEY);
+            const bm = dayBucket.byModel.get(AUX_MODEL_KEY) ?? { model: owned.model, provider: owned.provider, priceAs: AUX_PRICE_AS, cost: 0 };
+            bm.cost += usage.searchFee;
+            dayBucket.byModel.set(AUX_MODEL_KEY, bm);
           }
         }
       }
@@ -352,6 +368,21 @@ export function buildView(sessions, { granularity = "day", from, to, project = "
     knownProjects: [...seenProjects].filter((p) => p !== "").sort(),
     knownModels: [...seenModels].sort(),
   };
+}
+
+/** 变更指纹：只随真实用量或计费规则变化的聚合位串（token 四项 + 三个
+ *  计数 + 窗口费用）。重开观测台时与关面板时的指纹一比，不同即说明「你
+ *  离开之后数据动过」。刻意不含 generatedAt 等每次拉取都变的字段——指
+ *  纹相同就是没变，不许误报。入参是 {@link buildView} 的产物。 */
+export function statsFingerprint(view) {
+  if (view === null || typeof view !== "object") return null;
+  const t = view.totals ?? {};
+  const part = (value) => (Number.isFinite(value) ? Math.round(value * 100) / 100 : "—");
+  return [
+    part(t.input), part(t.output), part(t.cacheRead), part(t.cacheWrite),
+    part(t.sessions), part(t.turns), part(t.toolCalls),
+    part(view.cost?.total),
+  ].join(":");
 }
 
 /** `"peak"` | `"offpeak"` tier of an epoch-ms timestamp under a peak hour set

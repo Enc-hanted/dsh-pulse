@@ -22,3 +22,17 @@ export const DEFAULT_USD_TO_CNY = 6.8;
  *  classifies those events' peak tier under the same id, so a platform
  *  rename is a one-line change everywhere. */
 export const AUX_PRICE_AS = "deepseek-flash";
+
+/** Official per-request fee for the Search/Fetch tool family, published with
+ *  the 2026-10-17 opening of the in-house search API: ¥5 per 1,000 SUCCESSFUL
+ *  requests, billed per call — never per token or per result; failures, empty
+ *  results and timeouts are free (api-docs.deepseek.com: 模型 & 价格 /
+ *  网页搜索与抓取). Through harness/Claude Code/Codex server-side tool calls
+ *  these requests were explicitly free until Beijing midnight 2026-11-01,
+ *  when per-call billing starts. The harness's DeepSeek web search runs one
+ *  auxiliary Messages round trip per search whose server side executes the
+ *  native `web_search` tool, so the aux estimate adds `cnyPerCall` per search
+ *  call on usage days >= `from`. `fromMs` is the same instant as an epoch
+ *  value (Beijing midnight) for event-timestamp gates. Extend or amend this
+ *  constant when DeepSeek reprices the per-call fee. */
+export const AUX_CALL_FEE = { from: "2026-11-01", fromMs: Date.parse("2026-11-01T00:00:00+08:00"), cnyPerCall: 0.005 };

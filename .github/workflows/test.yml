@@ -6,15 +6,21 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # No npm lockfile is tracked (.gitignore keeps it out), so `npm ci` can
-      # never run here — it fails on a missing lockfile before the tests start.
-      - run: npm install --no-audit --no-fund
+          cache: npm
+      # The lockfile is tracked, so `npm ci` reproduces the audited tree
+      # exactly — a package.json edit without a lockfile refresh fails
+      # here instead of shipping a silently stale tree.
+      - run: npm ci
       # host-test stubs three harness cache generations (pre-0.1.2, 0.1.2-rc
       # and 0.1.7-alpha) plus both settings generations, so every push
       # re-proves the cross-generation contracts the plugin depends on.

@@ -16,7 +16,7 @@
  */
 
 import { strict as assert } from "node:assert";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -81,6 +81,10 @@ assert.deepEqual(missingExternal, [],
 // seats — its npm tree has no "plugins.*" literal anywhere, so on that
 // generation the three plugin-page seats ride the injectSeat warn-once
 // degradation by design.
+// 2026-10-16: the conversation.composer.dock focus probe was REPLACED by
+// the authoritative ctx.sessions retainInfo(mainView) query — the seat is
+// gone from this ledger on purpose (the prune check below enforces it
+// stays gone).
 const SEAT_LEDGER = {
 	"settings.section": ["0.2.0-rc.2", "0.1.7-alpha.2", "0.1.0-rc.7"],
 	"settings.general.item": ["0.2.0-rc.2", "0.1.7-alpha.2", "0.1.0-rc.7"],
@@ -99,5 +103,47 @@ assert.deepEqual(unknownSeats, [],
   `seats referenced but not in SEAT_LEDGER (verify against the target host, then add): ${unknownSeats.join(", ")}`);
 const staleSeats = Object.keys(SEAT_LEDGER).filter((name) => !seatRefs.includes(name));
 assert.deepEqual(staleSeats, [], `SEAT_LEDGER entries no longer referenced (prune): ${staleSeats.join(", ")}`);
+
+// --- dsh alignment: host display metadata (locale + icon) -------------------
+
+// The harness reads plugin display text WITHOUT importing or activating the
+// plugin: readPluginMeta resolves <package>/locale/en.json through exports,
+// sibling language files from the same directory, and the <package>/icon
+// resource (SVG/PNG/JPEG/WebP, raw bytes ≤ 256 KiB). These assertions keep
+// that surface exported, shippable and within the harness's own limits.
+for (const key of ["./locale/en.json", "./locale/zh.json"]) {
+  assert.ok(typeof manifest.exports?.[key] === "string", `exports must expose ${key}`);
+  const file = JSON.parse(readFileSync(join(root, manifest.exports[key]), "utf8"));
+  assert.deepEqual(Object.keys(file).sort(), ["description", "title"],
+    `${key} carries exactly title/description`);
+  for (const [field, value] of Object.entries(file)) {
+    assert.ok(typeof value === "string" && value.trim().length > 0,
+      `${key}.${field} is a non-empty string`);
+  }
+}
+const iconExport = manifest.exports?.["./icon"];
+assert.ok(typeof iconExport === "string" && /\.(svg|png|jpe?g|webp)$/i.test(iconExport),
+  "exports must expose ./icon as an image file");
+const iconStat = statSync(join(root, iconExport));
+assert.ok(iconStat.isFile() && iconStat.size <= 256 * 1024,
+  "the icon is a regular file of at most 256 KiB");
+assert.ok((manifest.files ?? []).includes("locale"), "the shipped file list carries locale/");
+assert.ok(!(manifest.files ?? []).includes("test"), "the published package must not ship tests");
+
+// Guardrail A: seam packages ride peerDependencies, never dependencies. The
+// host's linked-root resolution only intercepts peer-listed names, so a seam
+// in `dependencies` installs a private copy that silently shadows the host's
+// own (possibly newer) seam — exactly the 0.1.7-inside-a-0.2.1-host skew the
+// startup seam log now surfaces. Pure libraries with no host-shared state
+// may stay direct dependencies; re-justify additions to the allowlist here.
+const LIBRARY_ALLOWLIST = new Set(["@deepseek-ai/schemastery"]);
+const seamDeps = Object.keys(manifest.dependencies ?? {})
+  .filter((name) => name.startsWith("@deepseek-ai/") && !LIBRARY_ALLOWLIST.has(name));
+assert.deepEqual(seamDeps, [],
+  `@deepseek-ai/* host seams must be peers, found in dependencies: ${seamDeps.join(", ")}`);
+for (const seam of ["@deepseek-ai/dsh-credentials", "@deepseek-ai/dsh-storage-domain"]) {
+  assert.ok(typeof manifest.peerDependencies?.[seam] === "string",
+    `${seam} must be declared in peerDependencies`);
+}
 
 console.log("manifest-test: version stamp, single menu row and no-dsh-patch invariants hold");

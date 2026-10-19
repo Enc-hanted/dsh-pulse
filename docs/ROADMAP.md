@@ -32,6 +32,14 @@
 
 ## 实施进度
 
+- **2026-10-19（第三批，`c6b29e8` + `762c659`）：#2b 类型绿门完成，全部 8 项收官**：
+  - 类型烧灼 244 → 0（JSDoc-only，diff 审计确认零语句变更）；`tsconfig.check.json` + `typecheck` 脚本 + CI 步入链；`types-shims/node.d.ts` 极简 ambient 声明（不引 @types/node）；声明产物再生成一致。
+  - 烧灼挖出并修复一个真实潜伏 bug：`renderCalendar` 漏解构 `leftW`，v0.6.0 起宽终端（contentW ≥ 92）两栏日历会 ReferenceError（`c6b29e8`；renderCalendar 已导出并加宽/窄双渲染回归测试，32/32 TUI 套件绿）。
+  - 过程记录：类型烧灼 subagent 在完成主体后失败无遗言；工作树已含其 0 错误成果，由 Lead 终审（diff 注释层核对）、清理临时文件、补跑 typecheck + 全量测试后提交。
+  - 有意缓办（不在本版）：TUI 异常条带（web 已覆盖数据面，迷你卡需配套 collect 管线夹具）；goal 花费线（数据面无 goal 边界事件，硬造即伪需求）；`usage_query` 实机验收与 R2（market 安装路径）需宿主内手动验证。
+
+## 历史批次
+
 - **2026-10-19（第二批，`dc26b5f` + `10ed404`）：#2b、#10、#4-路A、#5、#8 完成；#9 进行中（subagent）**：
   - #2b：README.md 英文化（结构与中文 1:1）+ README.zh.md 逐字副本；dsh-plugin.json 停止随包发布；tsconfig + types/ 声明产物接线（`build:types`、`types` 字段、files 含 types）。**类型绿门（`--noEmit` 0 错误）未达成**：现存 244 个弱 JSDoc 错误（`object` 取属性等），未接入 CI 门，留待专项清理。
   - #10：适配器 SPI（types/shared/zai/kimi/minimax）+ 6 个录制回放夹具 + 脱敏录制骨架；quota-service 只留编排；测试入链。subagent 交付，行为面仅两处等价改写（diff 审计过）。

@@ -4,9 +4,9 @@
 
 ## v0.6.1
 
-- **宿主地板抬至 dsh ≥ 0.2.1-alpha.5**（Node ≥ 22.19 不变）。`dsh-credentials`/`dsh-storage-domain` 从 dependencies（钉 0.2.0-rc.2，且本地树实为 0.1.7-alpha.2 陈旧副本）迁至 peerDependencies（`>=0.2.1-alpha.5 <0.3`）：宿主对链接根的解析拦截只接管 peer 名单内的包，此前插件在 0.2.1 宿主里实际加载的是自带旧副本。迁移后运行时一律使用宿主副本；devDependencies 固定 `0.2.1-alpha.5` 供本地测试对真实包跑接缝。两包 0.1.7→0.2.1 之间的差异已逐行核对为纯注释，无行为变化。
+- **宿主地板定为 dsh ≥ 0.2.0-rc.2（整个 0.2.x 家族）**（Node ≥ 22.19 不变）。口径来自现场事实：web 宿主跑 0.2.1-alpha.5，而 dsh-tui 内核跑 0.2.0-rc.2——单点抬到 0.2.1 会让 TUI 宿主在兼容性检查时把整个 bundle 判为不兼容并跳过。宿主求值用 `includePrerelease` 语义，`>=0.2.0-rc.2 <0.3` 同时覆盖两代（新版宿主有 `engines.dsh` 时以 engines 一票决定、忽略 peer；TUI 那代内核只查 peer——两处口径一致）。`dsh-credentials`/`dsh-storage-domain` 从 dependencies（钉 0.2.0-rc.2，且本地树实为 0.1.7-alpha.2 陈旧副本）迁至 peerDependencies：宿主对链接根的解析拦截只接管 peer 名单内的包，此前插件在 0.2.1 宿主里实际加载的是自带旧副本。迁移后运行时一律使用宿主副本；devDependencies 固定 `0.2.1-alpha.5` 供本地测试对真实包跑接缝。两包 0.1.7→0.2.1 之间的差异已逐行核对为纯注释，无行为变化。
 - **启动 seam 版本日志**：host 半 apply() 时输出一行——dsh-pulse 版本 + 两个 seam 包的实载版本。版本偏斜从此在宿主日志直接可见，不再需要解剖 node_modules。
-- **展示元数据（locale + icon）**：新增包根 `locale/en.json`/`locale/zh.json`（title/description）与 `./icon` 资源导出（`./assets/logo.svg`，1.4KB）。插件管理器/市场不激活插件即可读取双语文本与图标（harness `readPluginMeta` 契约：语言文件须经 exports 解析、与 en.json 同目录；图标 SVG/PNG/JPEG/WebP ≤ 256KiB）。
+- **展示元数据（locale + icon）**：新增包根 `locale/en.json`/`locale/zh.json`（`meta.title`/`meta.description`，harness `readPluginMeta` 只读 `meta` 包裹的字段）与 `./icon` 资源导出（`./assets/icon.svg`，固定品牌蓝 `#4D6BFE`——data URL `<img>` 无 currentColor 继承，黑线在暗色主题不可见）。图标 SVG/PNG/JPEG/WebP ≤ 256KiB。
 - **发布与 CI 卫生**：`files` 摘除 `test/` 与构建脚本，新增 `locale/`；lockfile 解禁入库，CI 改 `npm ci` + npm 缓存并增加 windows-latest 矩阵；manifest-test 新增护栏——`@deepseek-ai/*` seam 包禁入 dependencies（纯库白名单除外）、locale/icon 导出与体积断言、发布清单不含测试。
 
 ## 宿主兼容性备注（0.1.x 世代）

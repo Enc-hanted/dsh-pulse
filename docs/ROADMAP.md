@@ -32,6 +32,12 @@
 
 ## 实施进度
 
+- **2026-10-19（第四批，`8128d20` 后续）：兼容地板修正为 0.2.x 家族**：
+  - 现场发现：web 宿主跑 0.2.1-alpha.5，而 **dsh-tui 内核跑 0.2.0-rc.2**——D0-甲 的单点地板（>=0.2.1-alpha.5）令 TUI 宿主把整个 bundle 判为不兼容并跳过（`skipping profile bundle "dsh-pulse"`）。
+  - 修正：`engines.dsh` 与两个 seam peer 范围统一为 `>=0.2.0-rc.2 <0.3`。依据 `unmetRequirements`（dsh-app-boot）：有 `engines.dsh` 时以 engines 一票决定、忽略 peer；TUI 那一代内核只查 peer；且求值用 `includePrerelease: true`，家族范围同时覆盖 0.2.0-rc.2 与 0.2.1-alpha.5。
+  - 另修 TUI 侧：`pulse-tui` 行 inject 补 `commands`（`8128d20`）——dsh-tui 0.13+ 的准入制失败后 C-070 回退靠 `ctx.get("commands")`，cordis 4 隐藏未注入服务，此前六条命令全部注册不上。新增读 patch 的回归断言。
+  - 教训记录：harness 的兼容性检查有「engines 优先、peer 兜底」的分代语义；TUI 与 web 是两个宿主（不同内核），兼容地板必须按家族而非单点取值。
+
 - **2026-10-19（第三批，`c6b29e8` + `762c659`）：#2b 类型绿门完成，全部 8 项收官**：
   - 类型烧灼 244 → 0（JSDoc-only，diff 审计确认零语句变更）；`tsconfig.check.json` + `typecheck` 脚本 + CI 步入链；`types-shims/node.d.ts` 极简 ambient 声明（不引 @types/node）；声明产物再生成一致。
   - 烧灼挖出并修复一个真实潜伏 bug：`renderCalendar` 漏解构 `leftW`，v0.6.0 起宽终端（contentW ≥ 92）两栏日历会 ReferenceError（`c6b29e8`；renderCalendar 已导出并加宽/窄双渲染回归测试，32/32 TUI 套件绿）。

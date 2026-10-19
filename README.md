@@ -7,7 +7,7 @@
 
 **English** (default) · [简体中文](./README.zh.md)
 
-**Requirements**: dsh ≥ 0.2.1-alpha.5 · Node ≥ 22.19 · the optional terminal face needs [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI) ≥ 0.13.0 (a separate project, installed on its own)
+**Requirements**: dsh ≥ 0.2.0-rc.2 · Node ≥ 22.19 · the optional terminal face needs [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI) ≥ 0.13.0 (a separate project, installed on its own)
 
 **Privacy**: everything stays on this machine — usage is folded from dsh's own session logs. Outbound requests come in exactly three kinds: official-balance queries, subscription-quota queries, and the manual update check.
 

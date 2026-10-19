@@ -7,7 +7,7 @@
 
 **简体中文**（默认） · [English](#dsh-pulse-english)
 
-**要求**：dsh ≥ 0.2.1-alpha.5 · Node ≥ 22.19 · 可选的终端面需 [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI) ≥ 0.13.0（独立项目，需单独安装）
+**要求**：dsh ≥ 0.2.0-rc.2 · Node ≥ 22.19 · 可选的终端面需 [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI) ≥ 0.13.0（独立项目，需单独安装）
 
 **隐私**：数据全部留在本机——用量折自 dsh 自己的会话日志。出站请求只有三类：官方余额查询、订阅额度查询、手动检查更新。
 
@@ -258,7 +258,7 @@ MIT — 见 [LICENSE](./LICENSE)。
 
 [简体中文](#dsh-pulse) · **English**
 
-**Requirements**: dsh ≥ 0.2.1-alpha.5 · Node ≥ 22.19 · the optional terminal face needs [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI) ≥ 0.13.0 (a separate project, installed on its own)
+**Requirements**: dsh ≥ 0.2.0-rc.2 · Node ≥ 22.19 · the optional terminal face needs [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI) ≥ 0.13.0 (a separate project, installed on its own)
 
 **Privacy**: everything stays on this machine — usage is folded from dsh's own session logs. Outbound requests come in exactly three kinds: official-balance queries, subscription-quota queries, and the manual update check.
 

@@ -42,14 +42,17 @@ const quotaDomainSpec = defineDomain({
   version: 0,
   tables: {},
   global: {
-    schema: zv.object({
+    // zod v4 (this package) vs the storage-domain seam's zod v3 types: the
+    // schema is plain data to the seam (it validates at the durable
+    // boundary), so the cross-version assignment is asserted away.
+    schema: /** @type {any} */ (zv.object({
       snapshots: zv.array(zv.object({
         t: zv.number().int().min(0),
         provider: zv.string().min(1).max(120),
         window: zv.string().min(1).max(40),
         pct: zv.number().min(0).max(100),
       })).max(QUOTA_SNAPSHOT_MAX),
-    }),
+    })),
     initial: { snapshots: [] },
   },
 });
@@ -66,9 +69,11 @@ const QUOTA_ADAPTERS = [zaiAdapter, kimiAdapter, minimaxAdapter];
  * Create the quota service.
  *
  * @param {object} deps
- * @param {() => object} deps.resolveConfig - live plugin config (quotaOff).
- * @param {() => object|null} deps.llmService - the llm bundle's provider list.
- * @param {() => object|null} deps.llmDescribe - the settings forms' describe
+ * @param {any} [deps.ctx] - plugin context (storage domain through `get`,
+ *   fiber `effect` for the close hook).
+ * @param {() => any} deps.resolveConfig - live plugin config (`quotaOff`).
+ * @param {() => any} deps.llmServiceOf - the llm bundle's provider list.
+ * @param {() => any} deps.llmDescribeOf - the settings forms' describe
  *   rows, the per-route `apiKeyEnv` override source (null on classic hosts).
  */
 export function createQuotaService({ ctx, resolveConfig, llmServiceOf, llmDescribeOf }) {

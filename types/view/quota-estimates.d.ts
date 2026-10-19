@@ -4,6 +4,28 @@
  * attribution math the quota card renders. Pure ms/record math —
  * the bundle cannot import node-side modules.
  */
+export type WindowedRecord = {
+    project?: string | null;
+    /**
+     * - day → model → tokens.
+     */
+    modelsByDay?: Record<string, Record<string, any>>;
+    /**
+     * - day → `HH` → model → tokens.
+     */
+    hoursByDay?: Record<string, Record<string, Record<string, any>>>;
+};
+/**
+ * One windowed session record as served by `/pulse/stats` (a `sliceRecord`
+ * output of the host fold): per-day maps keyed `YYYY-MM-DD`, model maps
+ * keyed by the composite `provider\u0000model`. Map values stay loose —
+ * every reader guards shapes at runtime.
+ *
+ * @typedef {object} WindowedRecord
+ * @property {string|null} [project]
+ * @property {Object.<string, Object.<string, any>>} [modelsByDay] - day → model → tokens.
+ * @property {Object.<string, Object.<string, Object.<string, any>>>} [hoursByDay] - day → `HH` → model → tokens.
+ */
 /** Local midnight (epoch ms) of a `YYYY-MM-DD` day key (view-model copy of
  *  the host aggregate helper; the bundle cannot import node-side modules). */
 export declare function quotaDayStart(day: any): number;
@@ -21,14 +43,15 @@ export declare const quotaEmpty: () => {
  * @param {number} fromMs - window start (inclusive, epoch ms).
  * @param {number} toMs - window end (exclusive, epoch ms).
  * @param {string} provider - provider route id.
- * @returns {{input: number, output: number, cacheRead: number, cacheWrite: number, total: number}}
+ * @returns {{input: number, output: number, cacheRead: number, cacheWrite: number, total?: number}}
+ *   `total` is derived from the four fields right before returning.
  */
 export declare function quotaWindowTokens(sessions: Array<object>, fromMs: number, toMs: number, provider: string): {
     input: number;
     output: number;
     cacheRead: number;
     cacheWrite: number;
-    total: number;
+    total?: number;
 };
 /**
  * Coverage audit for one provider's token calibration: reconcile consecutive
@@ -48,7 +71,7 @@ export declare function quotaWindowTokens(sessions: Array<object>, fromMs: numbe
  * @param {Array<{t: number, provider: string, window: string, pct: number}>} series
  *   - the host's utilization snapshot points (any window mix; this audit is
  *   per provider, window-agnostic — intervals are chronological).
- * @param {Array<object>} sessions - payload session records.
+ * @param {Array<WindowedRecord>} sessions - payload session records.
  * @param {string} provider - provider route id.
  * @param {{fromMs?: number, toMs?: number}} [bounds] - the span the session
  *   records actually cover (the payload window). Intervals reaching outside
@@ -61,7 +84,7 @@ export declare function quotaCoverage(series: Array<{
     provider: string;
     window: string;
     pct: number;
-}>, sessions: Array<object>, provider: string, bounds?: {
+}>, sessions: Array<WindowedRecord>, provider: string, bounds?: {
     fromMs?: number;
     toMs?: number;
 }): {
@@ -73,13 +96,13 @@ export declare function quotaCoverage(series: Array<{
  * label, descending, with the share of the whole. The baseline for the
  * monthly-fee apportionment (成本分摊) and for "which project eats the plan".
  *
- * @param {Array<object>} sessions - payload session records.
+ * @param {Array<WindowedRecord>} sessions - payload session records.
  * @param {number} fromMs - window start (inclusive, epoch ms).
  * @param {number} toMs - window end (exclusive, epoch ms).
  * @param {string} provider - provider route id.
  * @returns {Array<{project: string, input: number, output: number, cacheRead: number, cacheWrite: number, total: number, share: number}>}
  */
-export declare function quotaProjectAttribution(sessions: Array<object>, fromMs: number, toMs: number, provider: string): Array<{
+export declare function quotaProjectAttribution(sessions: Array<WindowedRecord>, fromMs: number, toMs: number, provider: string): Array<{
     project: string;
     input: number;
     output: number;

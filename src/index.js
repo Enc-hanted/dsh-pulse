@@ -59,6 +59,25 @@ import { dirname, join } from "node:path";
 export const name = "pulse";
 
 /**
+ * The plugin context the host hands `apply` and the services: the injected
+ * members (the `inject` list below) plus the fiber runtime. Members are
+ * optional and loosely typed — assemblies differ (a profile without the
+ * web bundle leaves the fiber pending) and every access is guarded at
+ * runtime.
+ *
+ * @typedef {object} HostCtx
+ * @property {any} [sessions] - live session store.
+ * @property {any} [sessionProjections] - projection registry (the fold driver).
+ * @property {any} [sessionProjectionCache] - persisted projection cache.
+ * @property {any} [sessionQuery] - query corpus (listing + log reads).
+ * @property {any} [webServer] - prefix-route registrar.
+ * @property {any} [logger] - fiber logger.
+ * @property {any} [effect] - fiber-scoped effect ledger.
+ * @property {any} [inject] - late service injector.
+ * @property {(name: string, optional?: boolean) => any} [get] - service getter.
+ */
+
+/**
  * Host services: the projection registry + persisted cache (the fold), the
  * session store (live snapshots), the query corpus (listing), and the web
  * server. In assemblies without the projection registry (a profile without the
@@ -86,14 +105,14 @@ export const inject = [
  * cache serves recently folded windows again so tab switches and duplicate
  * dashboard mounts stay cheap.
  *
- * @param {object} ctx - plugin context carrying the injected services.
+ * @param {HostCtx} ctx - plugin context carrying the injected services.
  * @param {() => object} resolveConfig - thunk returning the authoritative
  *   plugin configuration (composition entry, or the `pulse` settings
  *   namespace resolution once the settings service is present).
  * @param {{from?: string, to?: string, days?: number|string}} input - request window.
- * @param {() => Promise<Array<{t,total}|null>} [snapshotsOf] - balance
+ * @param {() => Promise<Array<{t: number, total: number}|null>>} [snapshotsOf] - balance
  *   snapshot accessor; when present the payload carries `balanceSeries`.
- * @returns {Promise<object>} the `/pulse/stats` payload.
+ * @returns {Promise<any>} the `/pulse/stats` payload.
  */
 const PAYLOAD_TTL_MS = 15000;
 const inflight = new Map();
@@ -115,9 +134,9 @@ const lastServed = new Map();
  * 0.2.1 floor — this one build serves exactly the shape
  * {@link assertSeamShape} asserts at startup.
  *
- * @param {object} ctx - plugin context carrying the injected services.
- * @param {{live: boolean, header: object}} entry - one `sessionQuery.listSessions` record.
- * @returns {Promise<object|undefined>} the projection values map, or
+ * @param {HostCtx} ctx - plugin context carrying the injected services.
+ * @param {{live: boolean, header: {id?: string, createdAt?: number, cwd?: string, isSeeded?: boolean, origin?: string, parentSession?: string|null, delegationDepth?: number}}} entry - one `sessionQuery.listSessions` record.
+ * @returns {Promise<{pulseUsage?: any}|undefined>} the projection values map, or
  *   `undefined` when the session has no readable projection state.
  */
 async function projectionValuesOf(ctx, entry) {
@@ -346,7 +365,7 @@ let seamShapeFailure = null;
  * `cachedSnapshot(meta, keys)` (arity 2). Assemblies without the cache
  * service are not a failure — the fiber simply has nothing to assert.
  *
- * @param {object} ctx - plugin context carrying the injected services.
+ * @param {HostCtx} ctx - plugin context carrying the injected services.
  */
 function assertSeamShape(ctx) {
   const cache = ctx.sessionProjectionCache;
@@ -371,7 +390,7 @@ function assertSeamShape(ctx) {
  * rows stop matching, so every session re-folds from its log on the next
  * read and history reprices correctly. Price-only edits (rates, currency,
  * fx, costEnabled) never touch the fold and never trigger a replay.
- * @param {object} ctx - plugin context carrying the injected services.
+ * @param {HostCtx} ctx - plugin context carrying the injected services.
  * @param {object} config - deployment configuration (the settings namespace's composition `base` layer).
  */
 export function apply(ctx, config) {
@@ -683,8 +702,8 @@ export function apply(ctx, config) {
  * of its outcome states. The published version is compared client-side
  * against the bundle's own `DP_BUILD`.
  *
- * @param {object} req - node request.
- * @param {object} res - node response.
+ * @param {any} req - node request.
+ * @param {any} res - node response.
  */
 async function serveUpdateCheck(req, res) {
   if (req.method !== "GET" && req.method !== "HEAD") {

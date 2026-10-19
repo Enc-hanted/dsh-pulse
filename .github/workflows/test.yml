@@ -21,6 +21,9 @@ jobs:
       # exactly — a package.json edit without a lockfile refresh fails
       # here instead of shipping a silently stale tree.
       - run: npm ci
+      # #2b type green gate: the same checkJs pass the declaration build
+      # runs, as a hard noEmit gate before any behavior test.
+      - run: npm run typecheck
       # host-test stubs three harness cache generations (pre-0.1.2, 0.1.2-rc
       # and 0.1.7-alpha) plus both settings generations, so every push
       # re-proves the cross-generation contracts the plugin depends on.

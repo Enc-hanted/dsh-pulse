@@ -66,6 +66,71 @@ export declare function recordTokens(record: any): {
     cacheRead: number;
     cacheWrite: number;
 };
+export type WindowedRecord = {
+    id?: string | null;
+    createdAt?: number | null;
+    project?: string | null;
+    subagent?: boolean;
+    parentSession?: string | null;
+    title?: string | null;
+    delegationDepth?: number;
+    firstDay?: string | null;
+    /**
+     * - the windowed record's anchor day.
+     */
+    day?: string | null;
+    /**
+     * - day → token totals.
+     */
+    byDay?: Record<string, any>;
+    /**
+     * - day → model → tokens.
+     */
+    modelsByDay?: Record<string, Record<string, any>>;
+    /**
+     * - day → `HH` → model → tokens.
+     */
+    hoursByDay?: Record<string, Record<string, Record<string, any>>>;
+    /**
+     * - day → model → peak/off-peak split.
+     */
+    tiersByDay?: Record<string, Record<string, any>>;
+    turnsByDay?: Record<string, number>;
+    toolCallsByDay?: Record<string, number>;
+    /**
+     * - day → tool → count.
+     */
+    toolHistogramByDay?: Record<string, Record<string, number>>;
+    /**
+     * - day → aux counters.
+     */
+    auxByDay?: Record<string, any>;
+};
+/**
+ * One windowed session record as served by `/pulse/stats` (a `sliceRecord`
+ * output of the host fold): per-day maps keyed `YYYY-MM-DD`, model maps
+ * keyed by the composite `provider\u0000model`. Map values stay loose —
+ * every reader guards shapes at runtime.
+ *
+ * @typedef {object} WindowedRecord
+ * @property {string|null} [id]
+ * @property {number|null} [createdAt]
+ * @property {string|null} [project]
+ * @property {boolean} [subagent]
+ * @property {string|null} [parentSession]
+ * @property {string|null} [title]
+ * @property {number} [delegationDepth]
+ * @property {string|null} [firstDay]
+ * @property {string|null} [day] - the windowed record's anchor day.
+ * @property {Object.<string, any>} [byDay] - day → token totals.
+ * @property {Object.<string, Object.<string, any>>} [modelsByDay] - day → model → tokens.
+ * @property {Object.<string, Object.<string, Object.<string, any>>>} [hoursByDay] - day → `HH` → model → tokens.
+ * @property {Object.<string, Object.<string, any>>} [tiersByDay] - day → model → peak/off-peak split.
+ * @property {Object.<string, number>} [turnsByDay]
+ * @property {Object.<string, number>} [toolCallsByDay]
+ * @property {Object.<string, Object.<string, number>>} [toolHistogramByDay] - day → tool → count.
+ * @property {Object.<string, any>} [auxByDay] - day → aux counters.
+ */
 /**
  * Session list grouped by project — the session panel's data source. Each
  * session row carries its windowed token totals, tier-aware cost (through
@@ -74,16 +139,26 @@ export declare function recordTokens(record: any): {
  * adds the subagent subtotal (count, tokens, cost) so "project × subagent"
  * reads at a glance.
  *
- * @param {Array<object>} sessions - payload session records.
- * @param {object} options - `{pricing, fx, monthly, model, catalog}` for cost
- *   estimation and an optional model filter (composite key or bare id). With
- *   `model` set, each session counts only that model's rows — sessions that
- *   never used the model drop out entirely, so the project-detail panel never
+ * @param {Array<WindowedRecord>} sessions - payload session records.
+ * @param {{pricing?: Array<any>, fx?: {usdToCny?: number}, monthly?: string[], model?: string, models?: Array<any>, catalog?: any}} [options]
+ *   - `{pricing, fx, monthly, model, catalog}` for cost estimation and an
+ *   optional model filter (composite key or bare id). With `model` set,
+ *   each session counts only that model's rows — sessions that never used
+ *   the model drop out entirely, so the project-detail panel never
  *   surfaces other models' sessions. `catalog` (the model config) lets
  *   provider-less rows resolve their provider for monthly/cost matching.
  * @returns {Array<object>} groups sorted by total tokens descending.
  */
-export declare function sessionGroups(sessions: Array<object>, { pricing, fx, monthly, model, models, catalog }?: object): Array<object>;
+export declare function sessionGroups(sessions: Array<WindowedRecord>, { pricing, fx, monthly, model, models, catalog }?: {
+    pricing?: Array<any>;
+    fx?: {
+        usdToCny?: number;
+    };
+    monthly?: string[];
+    model?: string;
+    models?: Array<any>;
+    catalog?: any;
+}): Array<object>;
 /**
  * Slice one session's event timeline at up to three break timestamps into
  * segments, each with its token totals, tier-aware cost and per-model split.
@@ -94,11 +169,12 @@ export declare function sessionGroups(sessions: Array<object>, { pricing, fx, mo
  * @param {Array<{t: number, i: number, o: number, cr: number, cw: number, key: string}>} events
  *   - the session timeline (ascending `t`, from `timelineEvents`).
  * @param {Array<number>} breaks - ascending break timestamps (max 3).
- * @param {object} options - `{pricing, fx, monthly, model}` for cost
- *   estimation; `model` (composite key or bare id) restricts every segment to
- *   that model's events, so a model-filtered break analysis never shows
- *   other models' consumption. `catalog` (the model config) lets provider-less
- *   events resolve their provider for monthly/cost matching.
+ * @param {{pricing?: Array<any>, fx?: {usdToCny?: number}, monthly?: string[], model?: string, models?: Array<any>, catalog?: any}} [options]
+ *   - `{pricing, fx, monthly, model}` for cost estimation; `model`
+ *   (composite key or bare id) restricts every segment to that model's
+ *   events, so a model-filtered break analysis never shows other models'
+ *   consumption. `catalog` (the model config) lets provider-less events
+ *   resolve their provider for monthly/cost matching.
  * @returns {Array<{from: number, to: number, tokens: object, cost: object, models: Array}>}
  */
 export declare function breaksSegments(events: Array<{
@@ -108,7 +184,16 @@ export declare function breaksSegments(events: Array<{
     cr: number;
     cw: number;
     key: string;
-}>, breaks: Array<number>, { pricing, fx, monthly, model, models, catalog }?: object): Array<{
+}>, breaks: Array<number>, { pricing, fx, monthly, model, models, catalog }?: {
+    pricing?: Array<any>;
+    fx?: {
+        usdToCny?: number;
+    };
+    monthly?: string[];
+    model?: string;
+    models?: Array<any>;
+    catalog?: any;
+}): Array<{
     from: number;
     to: number;
     tokens: object;

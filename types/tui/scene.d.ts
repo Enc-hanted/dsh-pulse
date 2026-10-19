@@ -36,4 +36,15 @@ export declare function layoutBudget({ contentW, termRows, cal, month, monthMode
     dropTrend: boolean;
     dropTier: boolean;
 };
+/**
+ * Render the day/year calendar view. Exported for the wide-terminal
+ * regression test (the two-column layout once referenced an undestructured
+ * `leftW` and threw only at contentW ≥ 92).
+ *
+ * @param {any} kit - the dsh-tui React surface (`h`, `Box`, `Text`).
+ * @param {any} props - the calendar state bundle. The caller passes `data`
+ *   along, but the calendar reads its precomputed `cal` instead — the prop
+ *   is accepted and ignored.
+ */
+export declare function renderCalendar(kit: any, { cal, pricing, cursor, metric, level, contentW, termRows, ramp, today, theme, days, yearOffset, focusModel, setFocusModel, hoverDay, setHoverDay, setCursor, setLevel, onStepWeek, }: any): any;
 export declare function apply(ctx: any, config?: {}): Promise<void>;

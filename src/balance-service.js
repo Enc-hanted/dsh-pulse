@@ -40,7 +40,10 @@ name: "pulse_balance",
 version: 0,
 tables: {},
 global: {
-  schema: zv.object({ snapshots: zv.array(zv.object({ t: zv.number().int().min(0), total: zv.number() })).max(SNAPSHOT_MAX) }),
+  // zod v4 (this package) vs the storage-domain seam's zod v3 types: the
+  // schema is plain data to the seam (it validates at the durable boundary),
+  // so the cross-version assignment is asserted away rather than modeled.
+  schema: /** @type {any} */ (zv.object({ snapshots: zv.array(zv.object({ t: zv.number().int().min(0), total: zv.number() })).max(SNAPSHOT_MAX) })),
   initial: { snapshots: [] },
 },
 });

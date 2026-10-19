@@ -24,11 +24,25 @@ const dayTokens = (bucket) =>
 const asc = (a, b) => a - b;
 
 /**
+ * One windowed session record as served by `/pulse/stats` (a `sliceRecord`
+ * output of the host fold): per-day maps keyed `YYYY-MM-DD`, model maps
+ * keyed by the composite `provider\u0000model`. Map values stay loose —
+ * every reader guards shapes at runtime.
+ *
+ * @typedef {object} WindowedRecord
+ * @property {string|null} [id]
+ * @property {string|null} [title]
+ * @property {Object.<string, any>} [byDay] - day → token totals.
+ * @property {Object.<string, Object.<string, Object.<string, any>>>} [hoursByDay]
+ * @property {Object.<string, Object.<string, number>>} [toolHistogramByDay] - day → tool → count.
+ */
+
+/**
  * Burn-rate spikes: days whose total token burn exceeds the P95 of the
  * preceding `lookback` days by at least `factor`, with a floor so quiet
  * histories never manufacture spikes out of noise.
  *
- * @param {Array<object>} records - sliced session records (`byDay` buckets).
+ * @param {Array<WindowedRecord>} records - sliced session records (`byDay` buckets).
  * @param {object} [options]
  * @param {number} [options.lookback=7] - days of history each day is compared against.
  * @param {number} [options.factor=3] - spike threshold as a multiple of baseline.
@@ -64,7 +78,7 @@ export function burnRateSpikes(records, { lookback = 7, factor = 3, minTokens = 
  * the session's median active day — the signature of a stuck repetition
  * rather than deliberate batch work (which spreads across tools and days).
  *
- * @param {Array<object>} records - sliced session records (`byDay`, `toolHistogramByDay`).
+ * @param {Array<WindowedRecord>} records - sliced session records (`byDay`, `toolHistogramByDay`).
  * @param {object} [options]
  * @param {number} [options.minCalls=25] - per-tool per-day call floor.
  * @param {number} [options.factor=4] - day-burn multiple over the session's median day.

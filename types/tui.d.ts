@@ -64,5 +64,5 @@ export declare const name = "pulse-tui";
 export declare const inject: any[];
 export { eqId, mergeRecord, pricingLabelOf, monthLabelOfWeek, viewSlice, peakHoursFor, miniCardModel, } from "./tui/data.js";
 export { compactTokensTight, displayWidth, wrapDisplay, money, hexMix, fitDisplay, truncateDisplay, sparkTrend, weeklyBars, modelLayout, ganttRows, yearTiles, fmtTokens, } from "./tui/draw.js";
-export { layoutBudget } from "./tui/scene.js";
+export { layoutBudget, renderCalendar } from "./tui/scene.js";
 export { noteCurrentSession, pulseStripToggle, stripStore, _resetStripForTests, } from "./tui/strip.js";

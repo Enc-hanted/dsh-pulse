@@ -28,6 +28,64 @@ export declare const EMPTY_MODEL_ROW: () => {
         cacheWrite: number;
     };
 };
+export type WindowedRecord = {
+    project?: string | null;
+    subagent?: boolean;
+    /**
+     * - the windowed record's anchor day.
+     */
+    day?: string | null;
+    /**
+     * - day → token totals.
+     */
+    byDay?: Record<string, any>;
+    /**
+     * - day → model → tokens.
+     */
+    modelsByDay?: Record<string, Record<string, any>>;
+    /**
+     * - day → `HH` → model → tokens.
+     */
+    hoursByDay?: Record<string, Record<string, Record<string, any>>>;
+    /**
+     * - day → model → peak/off-peak split.
+     */
+    tiersByDay?: Record<string, Record<string, any>>;
+    turnsByDay?: Record<string, number>;
+    toolCallsByDay?: Record<string, number>;
+    /**
+     * - day → aux counters.
+     */
+    auxByDay?: Record<string, any>;
+    /**
+     * - schema-2 fallback scalar.
+     */
+    turns?: number;
+    /**
+     * - schema-2 fallback scalar.
+     */
+    toolCalls?: number;
+};
+/**
+ * One windowed session record as served by `/pulse/stats` (a `sliceRecord`
+ * output of the host fold): per-day maps keyed `YYYY-MM-DD`, model maps
+ * keyed by the composite `provider\u0000model`. Map values stay loose —
+ * every reader guards shapes at runtime.
+ *
+ * @typedef {object} WindowedRecord
+ * @property {string|null} [project]
+ * @property {boolean} [subagent]
+ * @property {string|null} [day] - the windowed record's anchor day.
+ * @property {Object.<string, any>} [byDay] - day → token totals.
+ * @property {Object.<string, Object.<string, any>>} [modelsByDay] - day → model → tokens.
+ * @property {Object.<string, Object.<string, Object.<string, any>>>} [hoursByDay] - day → `HH` → model → tokens.
+ * @property {Object.<string, Object.<string, any>>} [tiersByDay] - day → model → peak/off-peak split.
+ * @property {Object.<string, number>} [turnsByDay]
+ * @property {Object.<string, number>} [toolCallsByDay]
+ * @property {Object.<string, any>} [auxByDay] - day → aux counters.
+ * @property {number} [turns] - schema-2 fallback scalar.
+ * @property {number} [toolCalls] - schema-2 fallback scalar.
+ */
 /**
  * Fold windowed session records into one dashboard view.
  *
@@ -39,11 +97,11 @@ export declare const EMPTY_MODEL_ROW: () => {
  * view. Schema-2 records (hosts without the projection unit) carry scalar
  * window-scoped turns/tool-calls instead, which the view accepts as-is.
  *
- * @param {Array<object>} sessions - payload session records.
+ * @param {Array<WindowedRecord>} sessions - payload session records.
  * @param {object} options
  * @param {('day'|'week'|'month')} [options.granularity='day'] - chart bucket size.
- * @param {string} options.from - inclusive `YYYY-MM-DD`.
- * @param {string} options.to - inclusive `YYYY-MM-DD`.
+ * @param {string} [options.from] - inclusive `YYYY-MM-DD`.
+ * @param {string} [options.to] - inclusive `YYYY-MM-DD`.
  * @param {string} [options.project] - restrict to one project label ("" = all).
  * @param {string} [options.model] - restrict to one model id ("" = all).
  * @param {string[]} [options.models] - multi-select model filter (wins over
@@ -52,16 +110,17 @@ export declare const EMPTY_MODEL_ROW: () => {
  * @param {{miss: number, hit: number, out: number}} [options.auxShape] - the
  *   aux call shape (learned / manually configured); defaults to the built-in
  *   seed when omitted.
- * @param {Array<{model: string, input: number, cacheRead?: number, output: number, currency?: string, peak?: {input?: number, cacheRead?: number, output?: number}}>} [options.pricing]
+ * @param {Array<any>} [options.pricing]
  * @param {{usdToCny?: number}} [options.fx] - USD→CNY rate for the unified cost display.
  * @param {string[]} [options.monthly] - provider ids billed as a flat monthly
  *   subscription; their models cost 0 (configured, never "unpriced").
- * @returns {{buckets: Array, totals: object, models: Array, projects: Array, cost: object, hasData: boolean, knownProjects: string[], knownModels: string[]}}
+ * @returns {{buckets: Array, modelBuckets: Array, bucketCosts: Array, totals: object,
+ *   models: Array, projects: Array, cost: object, hasData: boolean, knownProjects: string[], knownModels: string[]}}
  */
-export declare function buildView(sessions: Array<object>, { granularity, from, to, project, model, models: modelsOpt, pricing, fx, monthly, auxShape: auxShapeOpt }: {
+export declare function buildView(sessions: Array<WindowedRecord>, { granularity, from, to, project, model, models: modelsOpt, pricing, fx, monthly, auxShape: auxShapeOpt }: {
     granularity?: ('day' | 'week' | 'month');
-    from: string;
-    to: string;
+    from?: string;
+    to?: string;
     project?: string;
     model?: string;
     models?: string[];
@@ -70,24 +129,15 @@ export declare function buildView(sessions: Array<object>, { granularity, from, 
         hit: number;
         out: number;
     };
-    pricing?: Array<{
-        model: string;
-        input: number;
-        cacheRead?: number;
-        output: number;
-        currency?: string;
-        peak?: {
-            input?: number;
-            cacheRead?: number;
-            output?: number;
-        };
-    }>;
+    pricing?: Array<any>;
     fx?: {
         usdToCny?: number;
     };
     monthly?: string[];
 }): {
     buckets: any[];
+    modelBuckets: any[];
+    bucketCosts: any[];
     totals: object;
     models: any[];
     projects: any[];
@@ -130,14 +180,15 @@ export declare function heatmapLevel(value: any, max: any): 0 | 1 | 2 | 3 | 4;
  * over every in-scope record's `hoursByDay`, honoring the project and model
  * filters. Schema-2 records carry no hour maps and simply contribute zeros.
  *
- * @param {Array<object>} sessions - payload session records.
+ * @param {Array<WindowedRecord>} sessions - payload session records.
  * @param {string} day - `YYYY-MM-DD` to bucket.
- * @param {{project?: string, model?: string}} [filters]
+ * @param {{project?: string, model?: string, models?: Array<any>}} [filters]
  * @returns {Array<{key: string, input: number, output: number, cacheRead: number, cacheWrite: number}>} 24 buckets, "00".."23".
  */
-export declare function hourlySeries(sessions: Array<object>, day: string, { project, model, models }?: {
+export declare function hourlySeries(sessions: Array<WindowedRecord>, day: string, { project, model, models }?: {
     project?: string;
     model?: string;
+    models?: Array<any>;
 }): Array<{
     key: string;
     input: number;
@@ -156,14 +207,16 @@ export declare function hourlySeries(sessions: Array<object>, day: string, { pro
  * monthly providers price at zero marginal, and unpriced models are counted
  * for the footnote instead of guessed at a rate.
  *
- * @param {Array<object>} sessions - payload session records.
+ * @param {Array<WindowedRecord>} sessions - payload session records.
  * @param {string} day - `YYYY-MM-DD` to price.
- * @param {{pricing?: Array<object>, fx?: object, monthly?: string[], models?: Array<string|{provider?: string, model?: string}>, project?: string}} [options]
+ * @param {{pricing?: Array<any>, fx?: {usdToCny?: number}, monthly?: string[], models?: Array<string|{provider?: string, model?: string}>, project?: string}} [options]
  * @returns {{hours: Array<{key: string, cost: number, peak: number, offpeak: number}>, unpricedTokens: number}}
  */
-export declare function hourlyCostSeries(sessions: Array<object>, day: string, { pricing, fx, monthly, models, project }?: {
-    pricing?: Array<object>;
-    fx?: object;
+export declare function hourlyCostSeries(sessions: Array<WindowedRecord>, day: string, { pricing, fx, monthly, models, project }?: {
+    pricing?: Array<any>;
+    fx?: {
+        usdToCny?: number;
+    };
     monthly?: string[];
     models?: Array<string | {
         provider?: string;

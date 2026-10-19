@@ -8,9 +8,19 @@
 /**
  * Build the opener for one domain spec.
  *
- * @param {object} ctx - plugin context carrying `storageDomain` + `effect`.
+ * @param {{get?: (key: string) => any, effect?: (dispose: any, label?: string) => any}} ctx
+ *   - plugin context carrying `storageDomain` (through `get`) + `effect`.
  * @param {object} spec - a `defineDomain` spec with a rolling `global`.
  * @param {string} label - the fiber-effect ledger label for the close hook.
- * @returns {() => Promise<object|null>} resolves the open domain, or null.
+ * @returns {() => Promise<{global: {get: () => any, set: (value: any) => Promise<unknown>}}|null>}
+ *   resolves the open domain, or null when the facility is absent.
  */
-export declare function openRollingGlobalDomain(ctx: object, spec: object, label: string): () => Promise<object | null>;
+export declare function openRollingGlobalDomain(ctx: {
+    get?: (key: string) => any;
+    effect?: (dispose: any, label?: string) => any;
+}, spec: object, label: string): () => Promise<{
+    global: {
+        get: () => any;
+        set: (value: any) => Promise<unknown>;
+    };
+} | null>;

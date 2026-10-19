@@ -99,7 +99,7 @@ export function ruleFor(maps, key) {
  * without a tier split prices wholly at the off-peak rates. Rates are
  * per-million-token amounts in the rule's currency.
  *
- * @param {Array<{model: string, input?: number, cacheRead?: number, cacheWrite?: number, output?: number, peak?: object, offpeak?: object}>} models
+ * @param {Array<{model: string, key?: string, provider?: string, input?: number, cacheRead?: number, cacheWrite?: number, output?: number, peak?: object, offpeak?: object}>} models
  * @param {Array<{model: string, input: number, cacheRead?: number, output: number, currency?: string, peak?: {input?: number, cacheRead?: number, output?: number}}>} pricing
  * @param {{usdToCny?: number}} [fx] - USD→CNY conversion rate.
  * @param {string[]} [monthly] - provider ids billed as a flat monthly
@@ -155,6 +155,19 @@ export function costOf(models, pricing, fx = {}, monthly = []) {
 }
 
 /**
+ * One windowed session record as served by `/pulse/stats` (a `sliceRecord`
+ * output of the host fold): per-day maps keyed `YYYY-MM-DD`, model maps
+ * keyed by the composite `provider\u0000model`. Map values stay loose —
+ * every reader guards shapes at runtime.
+ *
+ * @typedef {object} WindowedRecord
+ * @property {string|null} [project]
+ * @property {Object.<string, Object.<string, any>>} [modelsByDay] - day → model → tokens.
+ * @property {Object.<string, Object.<string, any>>} [tiersByDay] - day → model → peak/off-peak split.
+ * @property {Object.<string, any>} [auxByDay] - day → aux counters.
+ */
+
+/**
  * Per-day cost series (CNY) over the windowed session records, split into
  * peak / off-peak contributions — the cost trend chart's data source. Folds
  * each record's `modelsByDay` against `tiersByDay` and the pricing rules
@@ -163,16 +176,14 @@ export function costOf(models, pricing, fx = {}, monthly = []) {
  * priced activity carry zeros; unpriced models contribute nothing (they are
  * already reported through the cost chip's unpriced note).
  *
- * @param {Array<object>} sessions - payload session records.
- * @param {object} options
- * @param {string} options.from - inclusive `YYYY-MM-DD`.
- * @param {string} options.to - inclusive `YYYY-MM-DD`.
- * @param {string} [options.project] - restrict to one project label ("" = all).
- * @param {string} [options.model] - restrict to one model id ("" = all).
- * @param {Array<object>} [options.pricing] - pricing rules.
- * @param {{usdToCny?: number}} [options.fx] - USD→CNY conversion rate.
- * @param {string[]} [options.monthly] - provider ids billed as a flat monthly
- *   subscription; their models contribute zero to the series.
+ * @param {Array<WindowedRecord>} sessions - payload session records.
+ * @param {{from?: string, to?: string, project?: string, model?: string, models?: Array<any>,
+ *   pricing?: Array<any>, fx?: {usdToCny?: number}, monthly?: string[], auxShape?: any}} [options]
+ *   - `from`/`to` bound the day range (`YYYY-MM-DD`, inclusive); `project`
+ *   restricts to one project label ("" = all); `model`/`models` restrict to
+ *   model ids; `pricing` holds the (editable) rules; `fx.usdToCny` converts
+ *   USD-priced rules; `monthly` lists flat-subscription provider ids whose
+ *   models contribute zero to the series.
  * @returns {Array<{key: string, peak: number, offpeak: number}>} one entry per day, `total = peak + offpeak`.
  */
 export function costSeries(sessions, { from, to, project = "", model = "", models: modelsOpt = [], pricing = [], fx = {}, monthly = [], auxShape = null } = {}) {

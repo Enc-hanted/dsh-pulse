@@ -11,6 +11,18 @@ const QUOTA_DAY_MS = 86400000;
 
 const QUOTA_HOUR_MS = 3600000;
 
+/**
+ * One windowed session record as served by `/pulse/stats` (a `sliceRecord`
+ * output of the host fold): per-day maps keyed `YYYY-MM-DD`, model maps
+ * keyed by the composite `provider\u0000model`. Map values stay loose —
+ * every reader guards shapes at runtime.
+ *
+ * @typedef {object} WindowedRecord
+ * @property {string|null} [project]
+ * @property {Object.<string, Object.<string, any>>} [modelsByDay] - day → model → tokens.
+ * @property {Object.<string, Object.<string, Object.<string, any>>>} [hoursByDay] - day → `HH` → model → tokens.
+ */
+
 /** Local midnight (epoch ms) of a `YYYY-MM-DD` day key (view-model copy of
  *  the host aggregate helper; the bundle cannot import node-side modules). */
 export function quotaDayStart(day) {
@@ -64,11 +76,11 @@ function quotaNum(value) {
  * proportional share of the day's totals (clearly an estimate; the caller
  * labels it as one).
  *
- * @param {Array<object>} sessions - payload session records.
+ * @param {Array<WindowedRecord>} sessions - payload session records.
  * @param {number} fromMs - window start (inclusive, epoch ms).
  * @param {number} toMs - window end (exclusive, epoch ms).
  * @param {string} provider - provider route id to attribute to.
- * @param {(project: string, tokens: object, weight: number) => void} visit - sink.
+ * @param {(project: string, tokens: {input: number, output: number, cacheRead: number, cacheWrite: number}, weight: number) => void} visit - sink.
  */
 function quotaEachSlice(sessions, fromMs, toMs, provider, visit) {
   const from = Math.floor(Number(fromMs));
@@ -126,9 +138,11 @@ function quotaEachSlice(sessions, fromMs, toMs, provider, visit) {
  * @param {number} fromMs - window start (inclusive, epoch ms).
  * @param {number} toMs - window end (exclusive, epoch ms).
  * @param {string} provider - provider route id.
- * @returns {{input: number, output: number, cacheRead: number, cacheWrite: number, total: number}}
+ * @returns {{input: number, output: number, cacheRead: number, cacheWrite: number, total?: number}}
+ *   `total` is derived from the four fields right before returning.
  */
 export function quotaWindowTokens(sessions, fromMs, toMs, provider) {
+  /** @type {{input: number, output: number, cacheRead: number, cacheWrite: number, total?: number}} */
   const acc = quotaEmpty();
   quotaEachSlice(sessions, fromMs, toMs, provider, (_project, tokens, weight) => {
     acc.input += tokens.input * weight;
@@ -158,7 +172,7 @@ export function quotaWindowTokens(sessions, fromMs, toMs, provider) {
  * @param {Array<{t: number, provider: string, window: string, pct: number}>} series
  *   - the host's utilization snapshot points (any window mix; this audit is
  *   per provider, window-agnostic — intervals are chronological).
- * @param {Array<object>} sessions - payload session records.
+ * @param {Array<WindowedRecord>} sessions - payload session records.
  * @param {string} provider - provider route id.
  * @param {{fromMs?: number, toMs?: number}} [bounds] - the span the session
  *   records actually cover (the payload window). Intervals reaching outside
@@ -212,7 +226,7 @@ function localTokensBetween(sessions, fromMs, toMs, provider) {
  * label, descending, with the share of the whole. The baseline for the
  * monthly-fee apportionment (成本分摊) and for "which project eats the plan".
  *
- * @param {Array<object>} sessions - payload session records.
+ * @param {Array<WindowedRecord>} sessions - payload session records.
  * @param {number} fromMs - window start (inclusive, epoch ms).
  * @param {number} toMs - window end (exclusive, epoch ms).
  * @param {string} provider - provider route id.

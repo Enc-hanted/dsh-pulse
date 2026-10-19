@@ -15,15 +15,27 @@ export declare const RECON_ABS_FLOOR = 0.1;
  * Sparse official days (see `balanceSpendSeries`) pass the flag through and
  * are skipped by calibration and drift for the same reason.
  *
+ * @param {Array<any>} sessions - windowed session records (whole corpus, never filtered).
+ * @param {{from?: string, to?: string, pricing?: Array<any>, fx?: {usdToCny?: number},
+ *   monthly?: string[], auxShape?: any, official?: Array<any>}} [options]
+ *   - `from`/`to` bound the day range (`YYYY-MM-DD`, inclusive); `pricing`
+ *   holds the user's own (editable) rules; `fx.usdToCny` converts USD-priced
+ *   rules; `monthly` lists flat-subscription provider ids; `auxShape` is the
+ *   learned/manual aux call shape; `official` is the `balanceSpendSeries`
+ *   output the gap is measured against.
  * @returns {Array<{key: string, est: number, aux: number, official: number|null,
  *   gap: number|null, auxCalls: number, unpriced: boolean, sparse: boolean}>}
  */
-export declare function reconcileSeries(sessions: any, { from, to, pricing, fx, monthly, auxShape, official }?: {
+export declare function reconcileSeries(sessions: Array<any>, { from, to, pricing, fx, monthly, auxShape, official }?: {
+    from?: string;
+    to?: string;
+    pricing?: Array<any>;
+    fx?: {
+        usdToCny?: number;
+    };
+    monthly?: string[];
     auxShape?: any;
-    fx?: {};
-    monthly?: any[];
-    official?: any[];
-    pricing?: any[];
+    official?: Array<any>;
 }): Array<{
     key: string;
     est: number;
@@ -50,23 +62,34 @@ export declare function reconcileSeries(sessions: any, { from, to, pricing, fx, 
  * switch the active shape; anything less keeps the seed. A manual
  * `searchShape` config freezes the mechanism entirely (`status: "manual"`).
  *
- * @param {Array<object>} rows - reconcileSeries output.
+ * @param {Array<{key: string, est: number, aux: number, official: number|null,
+ *   gap: number|null, auxCalls: number, unpriced?: boolean, sparse?: boolean}>} rows
+ *   - reconcileSeries output.
  * @param {object} [options]
  * @param {{miss: number, hit: number, out: number}} [options.seed] - the
  *   shape to scale (the payload's effective default).
  * @param {boolean} [options.manual] - a user-configured shape exists.
- * @param {string} options.today - `YYYY-MM-DD`; earlier days only.
+ * @param {string} [options.today] - `YYYY-MM-DD`; earlier days only.
  * @returns {{shape: {miss, hit, out}, status: "manual"|"calibrated"|"insufficient"|"divergent",
  *   samples: number, medianS: number|null, controlDays: number, divergentDays: number, checkedDays: number}}
  */
-export declare function auxCalibration(rows: Array<object>, { seed, manual, today }?: {
+export declare function auxCalibration(rows: Array<{
+    key: string;
+    est: number;
+    aux: number;
+    official: number | null;
+    gap: number | null;
+    auxCalls: number;
+    unpriced?: boolean;
+    sparse?: boolean;
+}>, { seed, manual, today }?: {
     seed?: {
         miss: number;
         hit: number;
         out: number;
     };
     manual?: boolean;
-    today: string;
+    today?: string;
 }): {
     shape: {
         miss: any;
@@ -91,11 +114,27 @@ export declare function auxCalibration(rows: Array<object>, { seed, manual, toda
  * reports a problem, it never adjusts anything. `null` when the recent
  * window reconciles (or is unknown).
  *
+ * @param {Array<{key: string, est: number, aux: number, official: number|null,
+ *   gap: number|null, auxCalls: number, unpriced?: boolean, sparse?: boolean}>} rows
+ *   - reconcileSeries output.
+ * @param {{today?: string, window?: number, threshold?: number}} [options]
+ *   - `today` bounds the audit (`YYYY-MM-DD`; earlier days only), `window`
+ *   counts recent days, `threshold` is the relative divergence fraction.
  * @returns {{pct: number, day: string, count: number, days: Array<{key: string, pct: number}>}|null}
  */
-export declare function reconDrift(rows: any, { today, window, threshold }?: {
-    threshold?: number;
+export declare function reconDrift(rows: Array<{
+    key: string;
+    est: number;
+    aux: number;
+    official: number | null;
+    gap: number | null;
+    auxCalls: number;
+    unpriced?: boolean;
+    sparse?: boolean;
+}>, { today, window, threshold }?: {
+    today?: string;
     window?: number;
+    threshold?: number;
 }): {
     pct: number;
     day: string;
@@ -117,10 +156,16 @@ export declare function reconDrift(rows: any, { today, window, threshold }?: {
  * one call away for the day the two bill differently. Providers outside a
  * family are returned untouched (`models` order and totals unchanged).
  *
- * @param {object} view - a {@link buildView} result.
+ * @param {{models?: Array<any>, modelBuckets?: any, bucketCosts?: any, knownModels?: any}} view
+ *   - a {@link buildView} result (model display structures only).
  * @returns {{view: object, modelRoutes: Array<object>}}
  */
-export declare function rollupModelFamilies(view: object): {
+export declare function rollupModelFamilies(view: {
+    models?: Array<any>;
+    modelBuckets?: any;
+    bucketCosts?: any;
+    knownModels?: any;
+}): {
     view: object;
     modelRoutes: Array<object>;
 };

@@ -1,6 +1,15 @@
 import { Config } from "./host/config-schema.js";
 export { Config };
 /**
+ * The shared aggregation entry (`/pulse/stats` and any embedded consumer —
+ * the optional usage_query tool package — fold the corpus through this one
+ * function, so embedded answers can never drift from the dashboard).
+ * Signature: `(ctx, resolveConfig, input, snapshotsOf?) → Promise<payload>`.
+ *
+ * @function buildStats
+ */
+export { buildStats };
+/**
  * dsh-pulse — the usage & cost observatory.
  *
  * Host half: registers the `pulseUsage` session-projection unit (the
@@ -22,6 +31,62 @@ export { Config };
  */
 /** Cordis plugin name used by loader diagnostics. */
 export declare const name = "pulse";
+export type HostCtx = {
+    /**
+     * - live session store.
+     */
+    sessions?: any;
+    /**
+     * - projection registry (the fold driver).
+     */
+    sessionProjections?: any;
+    /**
+     * - persisted projection cache.
+     */
+    sessionProjectionCache?: any;
+    /**
+     * - query corpus (listing + log reads).
+     */
+    sessionQuery?: any;
+    /**
+     * - prefix-route registrar.
+     */
+    webServer?: any;
+    /**
+     * - fiber logger.
+     */
+    logger?: any;
+    /**
+     * - fiber-scoped effect ledger.
+     */
+    effect?: any;
+    /**
+     * - late service injector.
+     */
+    inject?: any;
+    /**
+     * - service getter.
+     */
+    get?: (name: string, optional?: boolean) => any;
+};
+/**
+ * The plugin context the host hands `apply` and the services: the injected
+ * members (the `inject` list below) plus the fiber runtime. Members are
+ * optional and loosely typed — assemblies differ (a profile without the
+ * web bundle leaves the fiber pending) and every access is guarded at
+ * runtime.
+ *
+ * @typedef {object} HostCtx
+ * @property {any} [sessions] - live session store.
+ * @property {any} [sessionProjections] - projection registry (the fold driver).
+ * @property {any} [sessionProjectionCache] - persisted projection cache.
+ * @property {any} [sessionQuery] - query corpus (listing + log reads).
+ * @property {any} [webServer] - prefix-route registrar.
+ * @property {any} [logger] - fiber logger.
+ * @property {any} [effect] - fiber-scoped effect ledger.
+ * @property {any} [inject] - late service injector.
+ * @property {(name: string, optional?: boolean) => any} [get] - service getter.
+ */
 /**
  * Host services: the projection registry + persisted cache (the fold), the
  * session store (live snapshots), the query corpus (listing), and the web
@@ -29,6 +94,7 @@ export declare const name = "pulse";
  * web bundle) the fiber stays pending.
  */
 export declare const inject: string[];
+declare function buildStats(ctx: any, resolveConfig: any, input: any, snapshotsOf: any): Promise<any>;
 /**
  * Register the `pulseUsage` projection unit, the `pulse` settings namespace
  * (user-editable pricing and cost display), the `/pulse` command and the
@@ -41,7 +107,7 @@ export declare const inject: string[];
  * rows stop matching, so every session re-folds from its log on the next
  * read and history reprices correctly. Price-only edits (rates, currency,
  * fx, costEnabled) never touch the fold and never trigger a replay.
- * @param {object} ctx - plugin context carrying the injected services.
+ * @param {HostCtx} ctx - plugin context carrying the injected services.
  * @param {object} config - deployment configuration (the settings namespace's composition `base` layer).
  */
-export declare function apply(ctx: object, config: object): void;
+export declare function apply(ctx: HostCtx, config: object): void;

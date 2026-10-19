@@ -31,6 +31,27 @@ export const EMPTY_TOKENS = () => ({ input: 0, output: 0, cacheRead: 0, cacheWri
 export const EMPTY_MODEL_ROW = () => ({ ...EMPTY_TOKENS(), peak: EMPTY_TOKENS(), offpeak: EMPTY_TOKENS() });
 
 /**
+ * One windowed session record as served by `/pulse/stats` (a `sliceRecord`
+ * output of the host fold): per-day maps keyed `YYYY-MM-DD`, model maps
+ * keyed by the composite `provider\u0000model`. Map values stay loose —
+ * every reader guards shapes at runtime.
+ *
+ * @typedef {object} WindowedRecord
+ * @property {string|null} [project]
+ * @property {boolean} [subagent]
+ * @property {string|null} [day] - the windowed record's anchor day.
+ * @property {Object.<string, any>} [byDay] - day → token totals.
+ * @property {Object.<string, Object.<string, any>>} [modelsByDay] - day → model → tokens.
+ * @property {Object.<string, Object.<string, Object.<string, any>>>} [hoursByDay] - day → `HH` → model → tokens.
+ * @property {Object.<string, Object.<string, any>>} [tiersByDay] - day → model → peak/off-peak split.
+ * @property {Object.<string, number>} [turnsByDay]
+ * @property {Object.<string, number>} [toolCallsByDay]
+ * @property {Object.<string, any>} [auxByDay] - day → aux counters.
+ * @property {number} [turns] - schema-2 fallback scalar.
+ * @property {number} [toolCalls] - schema-2 fallback scalar.
+ */
+
+/**
  * Fold windowed session records into one dashboard view.
  *
  * Records carry per-day maps (`byDay`, `modelsByDay`, `hoursByDay`,
@@ -41,11 +62,11 @@ export const EMPTY_MODEL_ROW = () => ({ ...EMPTY_TOKENS(), peak: EMPTY_TOKENS(),
  * view. Schema-2 records (hosts without the projection unit) carry scalar
  * window-scoped turns/tool-calls instead, which the view accepts as-is.
  *
- * @param {Array<object>} sessions - payload session records.
+ * @param {Array<WindowedRecord>} sessions - payload session records.
  * @param {object} options
  * @param {('day'|'week'|'month')} [options.granularity='day'] - chart bucket size.
- * @param {string} options.from - inclusive `YYYY-MM-DD`.
- * @param {string} options.to - inclusive `YYYY-MM-DD`.
+ * @param {string} [options.from] - inclusive `YYYY-MM-DD`.
+ * @param {string} [options.to] - inclusive `YYYY-MM-DD`.
  * @param {string} [options.project] - restrict to one project label ("" = all).
  * @param {string} [options.model] - restrict to one model id ("" = all).
  * @param {string[]} [options.models] - multi-select model filter (wins over
@@ -54,11 +75,12 @@ export const EMPTY_MODEL_ROW = () => ({ ...EMPTY_TOKENS(), peak: EMPTY_TOKENS(),
  * @param {{miss: number, hit: number, out: number}} [options.auxShape] - the
  *   aux call shape (learned / manually configured); defaults to the built-in
  *   seed when omitted.
- * @param {Array<{model: string, input: number, cacheRead?: number, output: number, currency?: string, peak?: {input?: number, cacheRead?: number, output?: number}}>} [options.pricing]
+ * @param {Array<any>} [options.pricing]
  * @param {{usdToCny?: number}} [options.fx] - USD→CNY rate for the unified cost display.
  * @param {string[]} [options.monthly] - provider ids billed as a flat monthly
  *   subscription; their models cost 0 (configured, never "unpriced").
- * @returns {{buckets: Array, totals: object, models: Array, projects: Array, cost: object, hasData: boolean, knownProjects: string[], knownModels: string[]}}
+ * @returns {{buckets: Array, modelBuckets: Array, bucketCosts: Array, totals: object,
+ *   models: Array, projects: Array, cost: object, hasData: boolean, knownProjects: string[], knownModels: string[]}}
  */
 export function buildView(sessions, { granularity = "day", from, to, project = "", model = "", models: modelsOpt = [], pricing = [], fx = {}, monthly = [], auxShape: auxShapeOpt = null }) {
   const keys = rangeKeys(granularity, from, to);
@@ -135,6 +157,9 @@ export function buildView(sessions, { granularity = "day", from, to, project = "
     bm.cost += cny;
     dayBucket.byModel.set(modelName, bm);
   };
+  /** Window totals; `cacheHitRate` is derived right after the fold loop.
+   * @type {{sessions: number, subagents: number, turns: number, toolCalls: number,
+   *   input: number, output: number, cacheRead: number, cacheWrite: number, cacheHitRate?: number}} */
   const totals = { sessions: 0, subagents: 0, turns: 0, toolCalls: 0, ...EMPTY_TOKENS() };
   const models = new Map();
   const projects = new Map();
@@ -438,9 +463,9 @@ export function heatmapLevel(value, max) {
  * over every in-scope record's `hoursByDay`, honoring the project and model
  * filters. Schema-2 records carry no hour maps and simply contribute zeros.
  *
- * @param {Array<object>} sessions - payload session records.
+ * @param {Array<WindowedRecord>} sessions - payload session records.
  * @param {string} day - `YYYY-MM-DD` to bucket.
- * @param {{project?: string, model?: string}} [filters]
+ * @param {{project?: string, model?: string, models?: Array<any>}} [filters]
  * @returns {Array<{key: string, input: number, output: number, cacheRead: number, cacheWrite: number}>} 24 buckets, "00".."23".
  */
 export function hourlySeries(sessions, day, { project = "", model = "", models = [] } = {}) {
@@ -475,9 +500,9 @@ export function hourlySeries(sessions, day, { project = "", model = "", models =
  * monthly providers price at zero marginal, and unpriced models are counted
  * for the footnote instead of guessed at a rate.
  *
- * @param {Array<object>} sessions - payload session records.
+ * @param {Array<WindowedRecord>} sessions - payload session records.
  * @param {string} day - `YYYY-MM-DD` to price.
- * @param {{pricing?: Array<object>, fx?: object, monthly?: string[], models?: Array<string|{provider?: string, model?: string}>, project?: string}} [options]
+ * @param {{pricing?: Array<any>, fx?: {usdToCny?: number}, monthly?: string[], models?: Array<string|{provider?: string, model?: string}>, project?: string}} [options]
  * @returns {{hours: Array<{key: string, cost: number, peak: number, offpeak: number}>, unpricedTokens: number}}
  */
 export function hourlyCostSeries(sessions, day, { pricing = [], fx = {}, monthly = [], models = [], project = "" } = {}) {

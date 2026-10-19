@@ -20,15 +20,18 @@
  * Create the quota service.
  *
  * @param {object} deps
- * @param {() => object} deps.resolveConfig - live plugin config (quotaOff).
- * @param {() => object|null} deps.llmService - the llm bundle's provider list.
- * @param {() => object|null} deps.llmDescribe - the settings forms' describe
+ * @param {any} [deps.ctx] - plugin context (storage domain through `get`,
+ *   fiber `effect` for the close hook).
+ * @param {() => any} deps.resolveConfig - live plugin config (`quotaOff`).
+ * @param {() => any} deps.llmServiceOf - the llm bundle's provider list.
+ * @param {() => any} deps.llmDescribeOf - the settings forms' describe
  *   rows, the per-route `apiKeyEnv` override source (null on classic hosts).
  */
 export declare function createQuotaService({ ctx, resolveConfig, llmServiceOf, llmDescribeOf }: {
-    resolveConfig: () => object;
-    llmService: () => object | null;
-    llmDescribe: () => object | null;
+    ctx?: any;
+    resolveConfig: () => any;
+    llmServiceOf: () => any;
+    llmDescribeOf: () => any;
 }): {
     serveQuota: (req: any, res: any, url: any) => Promise<void>;
 };

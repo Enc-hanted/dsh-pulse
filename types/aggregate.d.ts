@@ -219,8 +219,151 @@ export declare function normalizePeakHours(hours: any): any[];
  *  `{hours, weekdaysOnly}` when a rule needs a specific day scope: with
  *  `weekdaysOnly` the peak hours apply on weekdays and every hour of Saturday
  *  and Sunday is off-peak. A bare hour array keeps the historical all-day
- *  reading (peak hours on every day of the week). */
-export declare function tierAt(timeMs: any, peakHours?: readonly number[]): "offpeak" | "peak";
+ *  reading (peak hours on every day of the week).
+ *
+ * @param {number} timeMs - epoch-ms timestamp.
+ * @param {any} [peakHours=PEAK_HOURS] - peak-hour spec: a bare hour array
+ *   (all days), the Set the projection materializes, or a
+ *   `{hours, weekdaysOnly}` object. Duck-typed at runtime (Array / `.has`
+ *   / spec-object probes), so the annotation stays loose on purpose.
+ * @returns {"peak"|"offpeak"} the pricing tier of that instant. */
+export declare function tierAt(timeMs: number, peakHours?: any): "peak" | "offpeak";
+export type ProjectionDefinition = {
+    /**
+     * - the registry's projection key.
+     */
+    key: string;
+    /**
+     * - legacy (pre-0.1.1-rc) client-view zod schema.
+     */
+    schema: any;
+    /**
+     * - 0.1.1-rc persisted-state zod schema.
+     */
+    stateSchema: any;
+    /**
+     * - the empty fold state.
+     */
+    init: () => any;
+    /**
+     * - one committed event's
+     * incremental fold (returns the same reference when nothing changed).
+     */
+    apply: (state: any, event: any) => any;
+    /**
+     * - the client-visible cut.
+     */
+    view: (state: any) => any;
+    /**
+     * - the
+     * 0.1.1-rc wire boundary.
+     */
+    wire: {
+        viewSchema: any;
+        view: (state: any) => any;
+    };
+    /**
+     * - fold-semantics version (cache key part).
+     */
+    stateVersion: number;
+};
+export type WindowedRecord = {
+    id?: string | null;
+    createdAt?: number | null;
+    /**
+     * - creation day, the empty-window anchor.
+     */
+    createdDay?: string;
+    project?: string | null;
+    subagent?: boolean;
+    parentSession?: string | null;
+    title?: string | null;
+    delegationDepth?: number;
+    /**
+     * - earliest attributed day.
+     */
+    firstDay?: string | null;
+    /**
+     * - the windowed record's anchor day.
+     */
+    day?: string | null;
+    /**
+     * - day → token totals.
+     */
+    byDay?: Record<string, any>;
+    /**
+     * - day → model → tokens.
+     */
+    modelsByDay?: Record<string, Record<string, any>>;
+    /**
+     * - day → `HH` → model → tokens.
+     */
+    hoursByDay?: Record<string, Record<string, Record<string, any>>>;
+    /**
+     * - day → model → peak/off-peak split.
+     */
+    tiersByDay?: Record<string, Record<string, any>>;
+    turnsByDay?: Record<string, number>;
+    toolCallsByDay?: Record<string, number>;
+    /**
+     * - day → tool → count.
+     */
+    toolHistogramByDay?: Record<string, Record<string, number>>;
+    /**
+     * - day → aux counters.
+     */
+    auxByDay?: Record<string, any>;
+    /**
+     * - schema-2 fallback scalar.
+     */
+    turns?: number;
+    /**
+     * - schema-2 fallback scalar.
+     */
+    toolCalls?: number;
+};
+/**
+ * @typedef {object} ProjectionDefinition
+ * @property {string} key - the registry's projection key.
+ * @property {*} schema - legacy (pre-0.1.1-rc) client-view zod schema.
+ * @property {*} stateSchema - 0.1.1-rc persisted-state zod schema.
+ * @property {() => any} init - the empty fold state.
+ * @property {(state: any, event: any) => any} apply - one committed event's
+ *   incremental fold (returns the same reference when nothing changed).
+ * @property {(state: any) => any} view - the client-visible cut.
+ * @property {{viewSchema: *, view: (state: any) => any}} wire - the
+ *   0.1.1-rc wire boundary.
+ * @property {number} stateVersion - fold-semantics version (cache key part).
+ */
+/**
+ * One windowed session record as served by `/pulse/stats`: per-day maps
+ * keyed `YYYY-MM-DD`, model maps keyed by the composite
+ * `provider\u0000model`. A `sliceRecord` output (also accepted as fold
+ * input for slicing). Map values stay loose — every reader guards shapes
+ * at runtime.
+ *
+ * @typedef {object} WindowedRecord
+ * @property {string|null} [id]
+ * @property {number|null} [createdAt]
+ * @property {string} [createdDay] - creation day, the empty-window anchor.
+ * @property {string|null} [project]
+ * @property {boolean} [subagent]
+ * @property {string|null} [parentSession]
+ * @property {string|null} [title]
+ * @property {number} [delegationDepth]
+ * @property {string|null} [firstDay] - earliest attributed day.
+ * @property {string|null} [day] - the windowed record's anchor day.
+ * @property {Object.<string, any>} [byDay] - day → token totals.
+ * @property {Object.<string, Object.<string, any>>} [modelsByDay] - day → model → tokens.
+ * @property {Object.<string, Object.<string, Object.<string, any>>>} [hoursByDay] - day → `HH` → model → tokens.
+ * @property {Object.<string, Object.<string, any>>} [tiersByDay] - day → model → peak/off-peak split.
+ * @property {Object.<string, number>} [turnsByDay]
+ * @property {Object.<string, number>} [toolCallsByDay]
+ * @property {Object.<string, Object.<string, number>>} [toolHistogramByDay] - day → tool → count.
+ * @property {Object.<string, any>} [auxByDay] - day → aux counters.
+ * @property {number} [turns] - schema-2 fallback scalar.
+ * @property {number} [toolCalls] - schema-2 fallback scalar.
+ */
 /**
  * The `pulseUsage` projection unit for `ctx.sessionProjections.register`.
  *
@@ -261,8 +404,9 @@ export declare function tierAt(timeMs: any, peakHours?: readonly number[]): "off
  *   (weekdays only). Defaults to the official windows for everything.
  * @param {number} [options.stateVersion=10] - fold-semantics version; the
  *   host bumps it when peak-hour settings change so persisted rows replay.
- * @returns {object} the projection definition (`key`, `stateSchema`, `wire`,
- *   `init`, `apply`, `stateVersion`, plus the legacy `schema`/`view` pair).
+ * @returns {ProjectionDefinition} the projection definition (`key`,
+ *   `stateSchema`, `wire`, `init`, `apply`, `stateVersion`, plus the legacy
+ *   `schema`/`view` pair).
  *
  * Registration contract: the harness's session-projection registry renamed
  * its boundary in 0.1.1-rc — the client-visible view now nests under
@@ -279,7 +423,7 @@ export declare function pulseProjectionDefinition({ peakHoursFor, stateVersion }
         weekdaysOnly?: boolean;
     };
     stateVersion?: number;
-}): object;
+}): ProjectionDefinition;
 /** Fold a synthetic event array with the projection unit (tests, offline use).
  *  `options` reach {@link pulseProjectionDefinition} (`peakHoursFor`). */
 export declare function foldEvents(events: any, options?: {}): any;
@@ -324,12 +468,12 @@ export declare function balanceSpendSeries(snapshots: Array<{
  * or the creation day when the session was created inside the window without
  * activity yet. Records with nothing in the window fold to null.
  *
- * @param {object} record - `{id, createdAt, createdDay, project, subagent, parentSession, delegationDepth, firstDay, byDay, modelsByDay, turnsByDay, toolCallsByDay}`.
+ * @param {WindowedRecord} record - the projection-backed record to slice.
  * @param {string} fromDay - inclusive `YYYY-MM-DD`.
  * @param {string} toDay - inclusive `YYYY-MM-DD`.
- * @returns {object|null} the windowed record, or null when nothing lands in the window.
+ * @returns {WindowedRecord|null} the windowed record, or null when nothing lands in the window.
  */
-export declare function sliceRecord(record: object, fromDay: string, toDay: string): object | null;
+export declare function sliceRecord(record: WindowedRecord, fromDay: string, toDay: string): WindowedRecord | null;
 /**
  * Compact event-level timeline of one session's LLM usage, extracted from
  * its raw event log (seconds-accurate timestamps). Each entry is one
@@ -341,19 +485,30 @@ export declare function sliceRecord(record: object, fromDay: string, toDay: stri
  * title entries' text-derived input/output estimates, so the detail view can
  * render an honest auxiliary bill without re-reading the log.
  *
- * @param {Array<object>} events - a session's raw event log (ascending seq).
+ * @param {Array<{type?: string, time?: number, data?: any}>} events - a session's raw event log (ascending seq).
  * @param {object} [options]
  * @param {string} [options.id] - session id echoed into the result.
- * @param {object} [options.header] - the session header (identity fields).
+ * @param {{id?: string|null, createdAt?: number|null, cwd?: string|null, origin?: string, parentSession?: string|null, delegationDepth?: number}} [options.header] - the session header (identity fields).
  * @returns {{id: string|null, header: object, events: Array, turns: Array, aux: Array}}
  *   `events` = `[{t, i, o, cr, cw, key}]` sorted by time; `turns` =
  *   `[{start, end, preview}]` in time order, where `preview` is the turn's
  *   opening user message flattened and capped to 40 code points (null when
  *   the turn carries no user text); `aux` = `[{t, kind, key?, in?, out?}]`.
  */
-export declare function timelineEvents(events: Array<object>, { id, header }?: {
+export declare function timelineEvents(events: Array<{
+    type?: string;
+    time?: number;
+    data?: any;
+}>, { id, header }?: {
     id?: string;
-    header?: object;
+    header?: {
+        id?: string | null;
+        createdAt?: number | null;
+        cwd?: string | null;
+        origin?: string;
+        parentSession?: string | null;
+        delegationDepth?: number;
+    };
 }): {
     id: string | null;
     header: object;
@@ -365,10 +520,10 @@ export declare function timelineEvents(events: Array<object>, { id, header }?: {
  * Build the wire payload served by `/pulse/stats` (schema 4).
  *
  * @param {object} options
- * @param {Array<object>} options.records - `sliceRecord` outputs for the window.
+ * @param {Array<WindowedRecord>} [options.records] - `sliceRecord` outputs for the window.
  * @param {string} [options.fromDay] - window start echoed to the client.
  * @param {string} [options.toDay] - window end echoed to the client.
- * @param {Array<object>} [options.pricing] - pricing rules echoed to the client.
+ * @param {Array<any>} [options.pricing] - pricing rules echoed to the client.
  * @param {number} [options.topProjects] - project-row cap echoed to the client.
  * @param {boolean} [options.costEnabled] - whether the client should show cost estimates.
  * @param {{usdToCny?: number}} [options.fx] - USD→CNY rate for the unified
@@ -381,13 +536,17 @@ export declare function timelineEvents(events: Array<object>, { id, header }?: {
  *   array alone cannot express (and which a freshly booted harness hits
  *   before its first message commits).
  * @param {number} [options.now] - clock override for tests.
- * @returns {object} the JSON payload.
+ * @returns {{schema: number, generatedAt: number, today: string, fromDay: string, toDay: string,
+ *   pricing: Array<any>, monthly: string[], topProjects: number, costEnabled: boolean,
+ *   fx: {usdToCny: number}, corpusSessions: number, sessions: Array<WindowedRecord>,
+ *   anomalies?: any, balanceSeries?: Array<any>, modelColors?: any, auxShape?: any}}
+ *   the JSON payload (the host may pin the optional overlay fields on top).
  */
 export declare function buildPayload({ records, fromDay, toDay, pricing, topProjects, costEnabled, fx, monthly, corpusSessions, now }: {
-    records: Array<object>;
+    records?: Array<WindowedRecord>;
     fromDay?: string;
     toDay?: string;
-    pricing?: Array<object>;
+    pricing?: Array<any>;
     topProjects?: number;
     costEnabled?: boolean;
     fx?: {
@@ -396,4 +555,23 @@ export declare function buildPayload({ records, fromDay, toDay, pricing, topProj
     monthly?: string[];
     corpusSessions?: number;
     now?: number;
-}): object;
+}): {
+    schema: number;
+    generatedAt: number;
+    today: string;
+    fromDay: string;
+    toDay: string;
+    pricing: Array<any>;
+    monthly: string[];
+    topProjects: number;
+    costEnabled: boolean;
+    fx: {
+        usdToCny: number;
+    };
+    corpusSessions: number;
+    sessions: Array<WindowedRecord>;
+    anomalies?: any;
+    balanceSeries?: Array<any>;
+    modelColors?: any;
+    auxShape?: any;
+};

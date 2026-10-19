@@ -6,4 +6,4 @@
 - [Changelog](../CHANGELOG.md)
 - [Companion package: `dsh-pulse-usage-query`](https://github.com/Enc-hanted/dsh-pulse/blob/main/packages/dsh-pulse-usage-query/README.md)
 
-The user-facing overview lives in the [README](../README.md) ([简体中文](../README.zh.md)).
+The user-facing overview lives in the [README](../README.md) — Chinese by default, with a one-click switch to [English](../README.en.md).

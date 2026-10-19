@@ -7,34 +7,34 @@
 
 # dsh-pulse
 
-A usage and cost observatory for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) sessions. It folds every session — live or persisted, from any frontend — into token trends, prices them at the official DeepSeek rates, and puts the platform balance and subscription quotas next to the estimate. Pure UI: no model-visible tools, no tokens spent by the plugin, and usage data never leaves this machine.
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的会话用量与费用观测台。它把每个会话——无论活跃还是已持久化、来自哪种前端——折算成 token 走势，按 DeepSeek 官方费率计价，并把平台余额与订阅额度放在估算旁边。纯界面：没有模型可见的工具，插件不消耗 token，数据不离开本机。
 
-**English** · [简体中文](./README.zh.md) · [Documentation](./docs/) · [Changelog](./CHANGELOG.md)
+**简体中文** · [English](./README.en.md) · [文档](./docs/) · [更新日志](./CHANGELOG.md)
 
-![Dashboard: cost estimate, official balance, subscription quota, cache-hit rate](assets/shots/canvas-wide.png)
+![仪表盘：费用估算、官方余额、订阅额度、缓存命中率](assets/shots/canvas-wide.png)
 
-## What you get
+## 功能
 
-- **Usage trends** — hourly / daily / 90-day and 1-year heatmaps for any window up to 30 days; click through a day into per-model and input/cache/output splits, with model share and project ranking beside the trend.
-- **Cost estimate with a reality check** — official peak/off-peak rates, per-model and per-provider pricing, unpriced usage called out instead of folded into the total; expand the card for the monthly budget and a daily reconciliation table between local estimate and official spend.
-- **Balance and subscriptions** — the DeepSeek platform balance beside the estimate, plus monthly coding plans (GLM Coding Plan, Kimi For Coding, MiniMax Coding Plan) with 5-hour / weekly windows, reset times, burn-rate forecast and per-project burn.
-- **Session detail** — sessions grouped by project with subagent subtotals; place up to three breaks on a session's cumulative-consumption curve to read each segment's tokens and cost.
-- **Anomaly watch** — days burning ≥3× the 7-day P95, and sessions repeating one tool call dozens of times in a day. Numbers and identifiers only; it never tells you what to do.
-- **Fits the workflow** — a compact overlay from the `/` menu scoped to the current session, shared project/model filters, four themes, CSV export, and a draggable panel width.
+- **用量走势**：不超过 30 天的任意窗口，提供小时 / 每日 / 90 天与 1 年热力图；点进某一天可下钻到逐模型以及输入 / 缓存 / 输出的拆分，模型占比与项目排行就在走势旁边。
+- **费用估算与对账**：按官方峰谷费率计价，逐模型、逐供应商定价，未定价用量单独列出而不并入总额；展开卡片可看月度预算与本地估算、官方扣费的逐日对账表。
+- **余额与订阅**：估算旁边就是 DeepSeek 平台余额，另有月付 Coding 套餐（GLM Coding Plan、Kimi For Coding、MiniMax Coding Plan），带 5 小时 / 每周窗口、重置时刻、燃速预估与分项目消耗。
+- **会话明细**：会话按项目分组并带子代理小计；在会话的累计消耗曲线上放最多三个断点，即可读出每一段的 token 与费用。
+- **异常观察**：单日消耗达到前 7 日 P95 的 3 倍以上，以及一天内把同一工具调用重复几十次的会话。只给数字与标识，不告诉你该怎么做。
+- **贴合工作流**：从 `/` 菜单打开、限定于当前会话的精简浮层，共享的项目 / 模型过滤器，四套主题，CSV 导出，面板宽度可拖拽。
 
-Subscription-quota and reconciliation expansions:
+订阅额度与对账的展开图：
 
-![Subscription quota expansion: GLM and Kimi 5-hour/weekly window usage](assets/shots/quota-expanded.png)
+![订阅额度展开：GLM 与 Kimi 的 5 小时 / 每周窗口用量](assets/shots/quota-expanded.png)
 
-![Reconciliation: daily official spend, local estimate and gap](assets/shots/canvas-recon.png)
+![对账：逐日官方扣费、本地估算与差额](assets/shots/canvas-recon.png)
 
-## Install
+## 安装
 
 ```bash
 dsh plugin --profile web add -w dsh-pulse
 ```
 
-Restart `dsh web` — the host half registers at plugin load — then open **Settings → Usage Pulse**. Three ways in: the button at the sidebar's foot, the settings page, and the **pulse** row in any conversation's `/` menu, which opens an overlay scoped to that session's workspace. All of them share one data source, `GET /pulse/stats`; the panel's left edge drags to resize.
+重启 `dsh web`——宿主侧在插件加载时完成注册——然后打开 **设置 → 用量观测台**。入口有三处：侧栏底部按钮、设置页，以及任意对话 `/` 菜单中的 **pulse** 一行（打开限定于该会话工作区的浮层）。三者共用同一个数据源 `GET /pulse/stats`；面板左缘可拖拽调宽。
 
 ```bash
 # update / remove
@@ -42,28 +42,28 @@ dsh plugin --profile web add -w dsh-pulse@latest
 dsh plugin --profile web remove -w dsh-pulse
 ```
 
-Other sources install the same way — re-run `add` with the tarball, git URL or `link:` checkout you want:
+其他来源用同样的命令安装——用你需要的 tarball、git URL 或 `link:` 检出重新 `add` 一次：
 
 ```bash
 dsh plugin --profile web add -w /abs/path/to/dsh-pulse-<version>.tgz
 dsh plugin --profile web add -w link:/abs/path/to/dsh-pulse
 ```
 
-If a `DEEPSEEK_API_KEY` is already configured, the balance and reconciliation lines appear automatically.
+若已配置 `DEEPSEEK_API_KEY`，余额与对账线会自动出现。
 
-## Privacy and data
+## 隐私与数据
 
-- **The source of truth is dsh's own session logs.** There is no plugin-private usage history: every number is folded at request time. Uninstall, reinstall, even delete the projection cache — the full history comes back.
-- **Two plugin-owned snapshot files**, both optional and both deletable: balance snapshots (amounts only, rolling 30 days) and quota snapshots (one percentage per window, rolling 30 days). They only feed the reconciliation line and the burn forecast.
-- **Credentials never persist.** The API key stays in the host process and appears in exactly one outbound `Authorization` header per request.
-- **Exactly three kinds of outbound requests**: official balance, subscription quota, and the manual update check on the About panel (bottom of the plugin's Settings tab) — never automatic, no telemetry.
-- **Zero model-visible surface by default.** The main package registers no tools. The optional companion package `dsh-pulse-usage-query` adds one read-only tool and is [not mounted unless you mount it yourself](https://github.com/Enc-hanted/dsh-pulse/blob/main/packages/dsh-pulse-usage-query/README.md).
+- **事实来源是 dsh 自己的会话日志。** 插件没有私有的用量历史：每个数字都在请求时折出。卸载、重装，甚至删掉投影缓存，完整历史都会重新折出。
+- **两个插件自有的快照文件**，都是可选的，也都可以删：余额快照（只存金额，滚动 30 天）与额度快照（每个窗口一个百分比，滚动 30 天）。它们只用于对账线和燃速预估。
+- **凭据从不落盘。** API key 只留在宿主进程内，每次请求只出现在一个出站 `Authorization` 头里。
+- **出站请求只有三类**：官方余额、订阅额度，以及「关于」面板（插件「设置」标签页底部）上的手动检查更新——绝不自动发起，没有遥测。
+- **默认没有任何模型可见的接口。** 主包不注册任何工具。可选的配套包 `dsh-pulse-usage-query` 增加一个只读工具，[只有你自己挂载才会生效](https://github.com/Enc-hanted/dsh-pulse/blob/main/packages/dsh-pulse-usage-query/README.md)。
 
-Full storage table: [Configuration → Data & storage](./docs/CONFIGURATION.md#data--storage).
+完整存储表：[配置 → 数据与存储](./docs/CONFIGURATION.md#data--storage)。
 
-## Configuration
+## 配置
 
-Day-to-day settings live in **Settings → Usage Pulse**: pricing and cost, display and theme, plan comparison, and the manual update check. The monthly budget is a card on the dashboard itself. Per-profile overrides go in `cordis.patch.yml`:
+日常设置都在 **设置 → 用量观测台**：定价与费用、显示与主题、方案对比，以及手动检查更新；月度预算则是仪表盘上的一张卡片。按 profile 的覆盖写在 `cordis.patch.yml`：
 
 ```yaml
 - insert:
@@ -77,27 +77,27 @@ Day-to-day settings live in **Settings → Usage Pulse**: pricing and cost, disp
         monthlyProviders: []
 ```
 
-Rates are CNY per million tokens and default to the official price page; peak windows are Beijing-time weekdays 09:00–12:00 and 14:00–18:00, every other slot is half price. The [configuration reference](./docs/CONFIGURATION.md) covers the full option table, custom peak hours, per-provider pricing, monthly-paid providers and the aux-call estimate.
+单价以每百万 token 的 CNY 金额计，默认取自官方价格页；高峰时段为北京时间工作日的 09:00–12:00 与 14:00–18:00，其余时段一律半价。[配置参考](./docs/CONFIGURATION.md)覆盖完整选项表、自定义高峰时段、逐供应商定价、月付供应商与辅助调用（估算）。
 
-## Compatibility
+## 兼容性
 
-- **dsh ≥ 0.2.0-rc.2 (the 0.2.x family)**, Node ≥ 22.19. Seam packages are peers, so the plugin always runs against the host's own copies.
-- **Web frontend**: the full observatory and the session overlay.
-- **Terminal face (optional)**: mounts inside [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI) ≥ 0.13.0 (verified on 0.16.1) and serves `/pulse`, `/pulse-day`, `/pulse-month`, `/pulse-year`, `/pulse-cost`, `/pulse-sessions`. The mini card sits above the input box; `Esc` unwinds the scene level by level.
-- **Usage is frontend-agnostic**: sessions run from Web, dsh-tui, headless or ACP are all counted.
+- **dsh ≥ 0.2.0-rc.2（0.2.x 系列）**，Node ≥ 22.19。接缝包是 peer 依赖，插件始终运行在宿主自己的副本上。
+- **Web 前端**：完整观测台与会话浮层。
+- **终端面（可选）**：挂载于 [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI) ≥ 0.13.0（已在 0.16.1 上验证），提供 `/pulse`、`/pulse-day`、`/pulse-month`、`/pulse-year`、`/pulse-cost`、`/pulse-sessions`。迷你卡位于输入框上方；`Esc` 逐级返回上一场景。
+- **用量与前端无关**：Web、dsh-tui、headless 或 ACP 跑出的会话都会被统计。
 
-Degradations, diagnostics and the 0.1.x generation history: [Compatibility notes](./docs/COMPATIBILITY.md).
+降级行为、诊断与 0.1.x 代际的历史见[兼容性说明](./docs/COMPATIBILITY.md)。
 
 ## FAQ
 
-- **No data in the panel?** A fresh install has no history to fold yet — run a session; also make sure the plugin is installed in the active profile and `dsh web` was restarted.
-- **No balance block?** The host needs a DeepSeek API key (`DEEPSEEK_API_KEY` or a client sign-in); without one the block hides itself.
-- **Estimate and official spend differ?** The official number is that key's total spend — other tools sharing the key count too; helper calls are estimates that self-calibrate, and a persistent drift raises an alert.
-- **Subscription percentages look low?** Plans report percentages only; the total is back-solved from this machine's traffic, so a shared key reads low. Read it as a trend.
-- **A save returned 409?** It raced another window's save; the editor has already refreshed — just retry.
-- **`/pulse` missing in dsh-tui?** Check the plugin is installed in the `dsh-tui` profile too and restart it; one `C-070 … unattributed` line in the boot log is expected.
+- **面板没有数据？** 刚装完没有可折的历史——先跑一个会话；同时确认插件装在活跃 profile 中，且 `dsh web` 已重启。
+- **没有余额块？** 宿主需要配置 DeepSeek API key（`DEEPSEEK_API_KEY` 或客户端登录）；没有时该块自动隐藏。
+- **估算与官方扣费不一致？** 官方数字是那把 key 的总扣费——共用同一把 key 的其他工具也会算进来；辅助调用是估算，会自我校准，偏差持续时会触发告警。
+- **订阅百分比看起来偏低？** 套餐只上报百分比；总额由本机流量反推，共用 key 时读数会偏低。按趋势看即可。
+- **保存返回 409？** 与其他窗口的保存撞车了；编辑器已自动刷新，重试即可。
+- **dsh-tui 里没有 `/pulse`？** 确认插件也装在 `dsh-tui` profile 中并重启；启动日志里出现一行 `C-070 … unattributed` 属预期。
 
-## Development
+## 开发
 
 ```bash
 npm ci
@@ -106,8 +106,8 @@ npm run typecheck
 npm run build     # rebuild lib/client.js from src/
 ```
 
-Build setup, test map, extension slots for plugin authors and the release checklist: [Development](./docs/DEVELOPMENT.md).
+构建配置、测试地图、面向插件作者的扩展槽位与发版清单见[开发](./docs/DEVELOPMENT.md)。
 
-Special thanks to the [Linux Do](https://linux.do/) community.
+特别致谢 [Linux Do](https://linux.do/) 社区。
 
-MIT — see [LICENSE](./LICENSE).
+MIT — 见 [LICENSE](./LICENSE)。

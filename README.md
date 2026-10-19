@@ -59,7 +59,7 @@ dsh plugin --profile web add -w link:/abs/path/to/dsh-pulse
 - **出站请求只有三类**：官方余额、订阅额度，以及「关于」面板（插件「设置」标签页底部）上的手动检查更新——绝不自动发起，没有遥测。
 - **默认没有任何模型可见的接口。** 主包不注册任何工具。可选的配套包 `dsh-pulse-usage-query` 增加一个只读工具，[只有你自己挂载才会生效](https://github.com/Enc-hanted/dsh-pulse/blob/main/packages/dsh-pulse-usage-query/README.md)。
 
-完整存储表：[配置 → 数据与存储](./docs/CONFIGURATION.md#data--storage)。
+完整存储表：[配置 → 数据与存储](./docs/CONFIGURATION.md#数据与存储)。
 
 ## 配置
 

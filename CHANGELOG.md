@@ -1,6 +1,6 @@
 # Changelog
 
-Releases are cut by git tag. This file lists notable changes per release; the user-facing overview lives in the [README](README.md), and host-generation history in [Compatibility notes](docs/COMPATIBILITY.md).
+Releases are cut by git tag. This file lists notable changes per release; the user-facing overview lives in the [README](README.md), and host-generation history in [Compatibility notes](docs/en/COMPATIBILITY.md).
 
 ## v0.6.1 — 2026-10-19
 
@@ -17,7 +17,7 @@ Releases are cut by git tag. This file lists notable changes per release; the us
 
 ### Changed
 
-- **The host floor is the 0.2.x family** — `engines.dsh` and both seam peers are `>=0.2.0-rc.2 <0.3` (prerelease-inclusive). The previous single-point floor made the dsh-tui kernel reject the whole bundle: web and dsh-tui are separate kernels, so the floor has to describe the family. See [Compatibility](docs/COMPATIBILITY.md).
+- **The host floor is the 0.2.x family** — `engines.dsh` and both seam peers are `>=0.2.0-rc.2 <0.3` (prerelease-inclusive). The previous single-point floor made the dsh-tui kernel reject the whole bundle: web and dsh-tui are separate kernels, so the floor has to describe the family. See [Compatibility](docs/en/COMPATIBILITY.md).
 - **Seam packages are peers** — `@deepseek-ai/dsh-credentials` and `@deepseek-ai/dsh-storage-domain` moved from `dependencies` to `peerDependencies`, so the host's resolver serves its own copies. The projection path registers one supported shape (0.1.7+) instead of arity duck-typing; the per-day tool histogram raises the projection state schema to 11, and older caches refold automatically.
 - **Documentation split from the README** — configuration, compatibility and development references moved to `docs/`; the README is now the user-facing overview. Root cleanup: the obsolete `dsh-plugin.json` (last shipped in 0.6.0, unused by any supported mounting path) and the root `screenshots.json` are gone (the screenshot index moved under `assets/shots/`).
 - **Release hygiene** — the published `files` list is trimmed to what the plugin requires, `docs/` and `assets/shots/` included for README rendering, the lockfile is committed, CI runs `npm ci` on ubuntu + windows, typecheck runs before the suite, and `manifest-test` enforces the seam-peer rule, the locale/icon contract and "no tests in the published package".
@@ -37,9 +37,9 @@ Releases are cut by git tag. This file lists notable changes per release; the us
 
 - Install `0.6.1` into each profile you use (`dsh plugin --profile <name> add -w dsh-pulse@latest`, or re-run your tarball/link `add`) and restart the host. A source-link install shows as `link:` in `dsh plugin list`.
 - No data migration: settings keep their location, usage history refolds from session logs, and the shapes of the two private snapshot files are unchanged.
-- dsh-tui users: the kernel must be on the 0.2.x family; the same package mounts as the terminal face. One `C-070 … unattributed` line in the boot log is expected — see [Compatibility](docs/COMPATIBILITY.md).
+- dsh-tui users: the kernel must be on the 0.2.x family; the same package mounts as the terminal face. One `C-070 … unattributed` line in the boot log is expected — see [Compatibility](docs/en/COMPATIBILITY.md).
 - dsh 0.1.x remains unsupported (since 0.6.0).
 
 ## Earlier releases
 
-Release notes for v0.6.0 and earlier are available from the git tags. The host-generation adaptation notes that used to live here are in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md#historical-generation-notes).
+Release notes for v0.6.0 and earlier are available from the git tags. The host-generation adaptation notes that used to live here are in [docs/en/COMPATIBILITY.md](docs/en/COMPATIBILITY.md#historical-generation-notes).

@@ -9,7 +9,7 @@
 
 A usage and cost observatory for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) sessions. It folds every session — live or persisted, from any frontend — into token trends, prices them at the official DeepSeek rates, and puts the platform balance and subscription quotas next to the estimate. Pure UI: no model-visible tools, no tokens spent by the plugin, and usage data never leaves this machine.
 
-[简体中文](./README.md) · **English** · [Documentation](./docs/) · [Changelog](./CHANGELOG.md)
+[简体中文](./README.md) · **English** · [Documentation](./docs/en/) · [Changelog](./CHANGELOG.md)
 
 ![Dashboard: cost estimate, official balance, subscription quota, cache-hit rate](assets/shots/canvas-wide.png)
 
@@ -59,7 +59,7 @@ If a `DEEPSEEK_API_KEY` is already configured, the balance and reconciliation li
 - **Exactly three kinds of outbound requests**: official balance, subscription quota, and the manual update check on the About panel (bottom of the plugin's Settings tab) — never automatic, no telemetry.
 - **Zero model-visible surface by default.** The main package registers no tools. The optional companion package `dsh-pulse-usage-query` adds one read-only tool and is [not mounted unless you mount it yourself](https://github.com/Enc-hanted/dsh-pulse/blob/main/packages/dsh-pulse-usage-query/README.md).
 
-Full storage table: [Configuration → Data & storage](./docs/CONFIGURATION.md#data--storage).
+Full storage table: [Configuration → Data & storage](./docs/en/CONFIGURATION.md#data--storage).
 
 ## Configuration
 
@@ -77,7 +77,7 @@ Day-to-day settings live in **Settings → Usage Pulse**: pricing and cost, disp
         monthlyProviders: []
 ```
 
-Rates are CNY per million tokens and default to the official price page; peak windows are Beijing-time weekdays 09:00–12:00 and 14:00–18:00, every other slot is half price. The [configuration reference](./docs/CONFIGURATION.md) covers the full option table, custom peak hours, per-provider pricing, monthly-paid providers and the aux-call estimate.
+Rates are CNY per million tokens and default to the official price page; peak windows are Beijing-time weekdays 09:00–12:00 and 14:00–18:00, every other slot is half price. The [configuration reference](./docs/en/CONFIGURATION.md) covers the full option table, custom peak hours, per-provider pricing, monthly-paid providers and the aux-call estimate.
 
 ## Compatibility
 
@@ -86,7 +86,7 @@ Rates are CNY per million tokens and default to the official price page; peak wi
 - **Terminal face (optional)**: mounts inside [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI) ≥ 0.13.0 (verified on 0.16.1) and serves `/pulse`, `/pulse-day`, `/pulse-month`, `/pulse-year`, `/pulse-cost`, `/pulse-sessions`. The mini card sits above the input box; `Esc` unwinds the scene level by level.
 - **Usage is frontend-agnostic**: sessions run from Web, dsh-tui, headless or ACP are all counted.
 
-Degradations, diagnostics and the 0.1.x generation history: [Compatibility notes](./docs/COMPATIBILITY.md).
+Degradations, diagnostics and the 0.1.x generation history: [Compatibility notes](./docs/en/COMPATIBILITY.md).
 
 ## FAQ
 
@@ -106,7 +106,7 @@ npm run typecheck
 npm run build     # rebuild lib/client.js from src/
 ```
 
-Build setup, test map, extension slots for plugin authors and the release checklist: [Development](./docs/DEVELOPMENT.md).
+Build setup, test map, extension slots for plugin authors and the release checklist: [Development](./docs/en/DEVELOPMENT.md).
 
 Special thanks to the [Linux Do](https://linux.do/) community.
 

@@ -10,6 +10,7 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
 	viewSlice, mergeRecord, money, wrapDisplay, displayWidth, eqId,
@@ -612,6 +613,21 @@ test("renderCalendar: the wide two-column layout binds leftW (v0.6.0 ReferenceEr
 	assert.notEqual(wide, undefined, "the wide two-column render completes (leftW is bound)");
 	const narrow = renderCalendar({ h, Box: "Box", Text: "Text" }, { ...base, contentW: 60, termRows: 30 });
 	assert.notEqual(narrow, undefined, "the narrow single-column render completes");
+});
+
+test("pulse-tui row injects `commands` (cordis 4 hides non-injected services)", () => {
+	// dsh-tui 0.13.0's mediated registerCommand requires an admitted
+	// Component identity; a plain dsh bundle falls through to the C-070
+	// direct `commands.register` — which reads ctx.get('commands') and is
+	// invisible unless the patch row injects it. Without this entry /pulse
+	// silently never registers on a real host (the stub ctx in the suites
+	// above exposes every service, so only the row text can lock it).
+	const yml = readFileSync(new URL("../cordis.patch.yml", import.meta.url), "utf8");
+	const row = yml.slice(yml.indexOf("- id: pulse-tui"));
+	assert.ok(row.length > 0, "the pulse-tui row exists in the bundle patch");
+	const injectBlock = row.slice(row.indexOf("inject:"), row.indexOf("config:"));
+	assert.ok(/-\s+commands\s*$/m.test(injectBlock),
+		"pulse-tui must inject `commands` — the C-070 fallback cannot see it otherwise");
 });
 
 test("foldCache freshness: live seq growth refolds, closed sessions stay cached", async () => {

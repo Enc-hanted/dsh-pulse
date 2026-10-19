@@ -50,13 +50,16 @@
     - id: pulse-tui
       name: 'dsh-pulse/tui'
       # cordis 4.0.4 (dsh 0.2.0) hides every non-injected service from this
-      # row's ctx.get — the four tui seams carry the mini card / commands /
-      # shortcuts / scenes, and the two data seams feed the observatory:
-      # `sessionQuery` is collect()'s only hard dependency (without it the
-      # scenes render 读取失败), `sessions` supplies the live session's
-      # event-log length as the fold-cache version stamp (without it the
-      # 30s poll never refolds the active session). All six are core
-      # services a booting dsh always mounts.
+      # row's ctx.get — the four tui seams carry the mini card / shortcuts /
+      # scenes / the mediated plugin host, and the remaining seams feed the
+      # observatory: `sessionQuery` is collect()'s only hard dependency
+      # (without it the scenes render 读取失败), `sessions` supplies the
+      # live session's event-log length as the fold-cache version stamp
+      # (without it the 30s poll never refolds the active session), and
+      # `commands` is where /pulse and the five sub-commands land when the
+      # dsh-tui mediated registration is unavailable (no admitted Component
+      # identity for a plain dsh bundle → the C-070 direct fallback). All
+      # are core services a booting dsh always mounts.
       inject:
         - tuiScenes
         - tuiPluginHost
@@ -64,6 +67,7 @@
         - tuiShortcuts
         - sessionQuery
         - sessions
+        - commands
       config:
         defaultDays: 30
         topProjects: 8

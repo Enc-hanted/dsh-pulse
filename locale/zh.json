@@ -1,4 +1,6 @@
 {
-  "title": "Pulse 用量观测台",
-  "description": "dsh 的跨会话 token 用量、缓存命中与费用观测台——按天图表、热力图、模型与工作区分布。"
+  "meta": {
+    "title": "Pulse 用量观测台",
+    "description": "dsh 的跨会话 token 用量、缓存命中与费用观测台——按天图表、热力图、模型与工作区分布。"
+  }
 }

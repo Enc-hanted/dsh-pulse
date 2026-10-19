@@ -1,4 +1,6 @@
 {
-  "title": "Pulse Usage Observatory",
-  "description": "Cross-session token usage, cache-hit rates and cost estimates for dsh — daily charts, heatmaps, and model/project breakdowns in the web UI."
+  "meta": {
+    "title": "Pulse Usage Observatory",
+    "description": "Cross-session token usage, cache-hit rates and cost estimates for dsh — daily charts, heatmaps, and model/project breakdowns in the web UI."
+  }
 }

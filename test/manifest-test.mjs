@@ -114,11 +114,16 @@ assert.deepEqual(staleSeats, [], `SEAT_LEDGER entries no longer referenced (prun
 for (const key of ["./locale/en.json", "./locale/zh.json"]) {
   assert.ok(typeof manifest.exports?.[key] === "string", `exports must expose ${key}`);
   const file = JSON.parse(readFileSync(join(root, manifest.exports[key]), "utf8"));
-  assert.deepEqual(Object.keys(file).sort(), ["description", "title"],
-    `${key} carries exactly title/description`);
-  for (const [field, value] of Object.entries(file)) {
+  // The harness reader reads `meta.title` / `meta.description` from each
+  // locale file (dsh-app-boot: dictionariesOf). A top-level title is IGNORED
+  // and the plugin silently falls back to package.json's English copy — the
+  // shape is the contract, so it is asserted exactly.
+  assert.deepEqual(Object.keys(file), ["meta"], `${key} carries a meta object`);
+  assert.deepEqual(Object.keys(file.meta ?? {}).sort(), ["description", "title"],
+    `${key} meta carries exactly title/description`);
+  for (const [field, value] of Object.entries(file.meta ?? {})) {
     assert.ok(typeof value === "string" && value.trim().length > 0,
-      `${key}.${field} is a non-empty string`);
+      `${key} meta.${field} is a non-empty string`);
   }
 }
 const iconExport = manifest.exports?.["./icon"];
@@ -127,7 +132,10 @@ assert.ok(typeof iconExport === "string" && /\.(svg|png|jpe?g|webp)$/i.test(icon
 const iconStat = statSync(join(root, iconExport));
 assert.ok(iconStat.isFile() && iconStat.size <= 256 * 1024,
   "the icon is a regular file of at most 256 KiB");
+assert.ok(readFileSync(join(root, iconExport), "utf8").includes("#4D6BFE"),
+  "the manager icon uses fixed colors (a data-URL <img> cannot resolve currentColor — it would render black)");
 assert.ok((manifest.files ?? []).includes("locale"), "the shipped file list carries locale/");
+assert.ok((manifest.files ?? []).includes("assets/icon.svg"), "the shipped file list carries the manager icon");
 assert.ok(!(manifest.files ?? []).includes("test"), "the published package must not ship tests");
 
 // Guardrail A: seam packages ride peerDependencies, never dependencies. The

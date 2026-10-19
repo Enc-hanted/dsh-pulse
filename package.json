@@ -26,7 +26,7 @@
     "./pricing": "./src/pricing/index.js",
     "./locale/en.json": "./locale/en.json",
     "./locale/zh.json": "./locale/zh.json",
-    "./icon": "./assets/logo.svg",
+    "./icon": "./assets/icon.svg",
     "./package.json": "./package.json"
   },
   "files": [
@@ -36,6 +36,7 @@
     "locale",
     "assets/logo.svg",
     "assets/logo-dark.svg",
+    "assets/icon.svg",
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",

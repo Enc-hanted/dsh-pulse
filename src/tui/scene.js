@@ -1117,7 +1117,7 @@ export async function apply(ctx, config = {}) {
 				host.registerCommand(ctx, definition);
 				return true;
 			} catch (error) {
-				// dsh-tui 0.13.0 mediates registration through a manifest-backed
+				// dsh-tui 0.13+ mediates registration through a manifest-backed
 				// identity; without admission every mediated call throws. Fall
 				// through to the host-documented C-070 boundary — direct
 				// `commands.register` stays unattributed — warning once per

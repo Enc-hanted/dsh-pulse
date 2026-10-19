@@ -616,7 +616,7 @@ test("renderCalendar: the wide two-column layout binds leftW (v0.6.0 ReferenceEr
 });
 
 test("pulse-tui row injects `commands` (cordis 4 hides non-injected services)", () => {
-	// dsh-tui 0.13.0's mediated registerCommand requires an admitted
+	// dsh-tui's mediated registerCommand (0.13+) requires an admitted
 	// Component identity; a plain dsh bundle falls through to the C-070
 	// direct `commands.register` — which reads ctx.get('commands') and is
 	// invisible unless the patch row injects it. Without this entry /pulse

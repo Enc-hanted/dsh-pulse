@@ -23,7 +23,7 @@ import { DEFAULT_USD_TO_CNY } from "./../view.js";
 		];
 		/** Numeric semantic-version compare: `a` newer than `b` → >0. The
 		 *  prerelease suffix is ignored, which is what this comparison needs
-		 *  (0.5.1 vs a published 0.5.0 / 0.6.0). */
+		 *  (a local build vs the published version). */
 		export function compareVersions(a, b) {
 			const parts = (value) => String(value ?? "").split("-")[0].split(".").map((n) => Number(n) || 0);
 			const left = parts(a);

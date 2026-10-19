@@ -1,21 +1,45 @@
 # Changelog
 
-发布以 GitHub tag 为准。本文件收录自 README 迁出的**宿主兼容性历史备注**，供仍运行旧版 dsh 的使用者备查；当前支持矩阵见 README 的「兼容性」一节。
+Releases are cut by git tag. This file lists notable changes per release; the user-facing overview lives in the [README](README.md), and host-generation history in [Compatibility notes](docs/COMPATIBILITY.md).
 
-## v0.6.1
+## v0.6.1 — 2026-10-19
 
-- **宿主地板定为 dsh ≥ 0.2.0-rc.2（整个 0.2.x 家族）**（Node ≥ 22.19 不变）。口径来自现场事实：web 宿主跑 0.2.1-alpha.5，而 dsh-tui 内核跑 0.2.0-rc.2——单点抬到 0.2.1 会让 TUI 宿主在兼容性检查时把整个 bundle 判为不兼容并跳过。宿主求值用 `includePrerelease` 语义，`>=0.2.0-rc.2 <0.3` 同时覆盖两代（新版宿主有 `engines.dsh` 时以 engines 一票决定、忽略 peer；TUI 那代内核只查 peer——两处口径一致）。`dsh-credentials`/`dsh-storage-domain` 从 dependencies（钉 0.2.0-rc.2，且本地树实为 0.1.7-alpha.2 陈旧副本）迁至 peerDependencies：宿主对链接根的解析拦截只接管 peer 名单内的包，此前插件在 0.2.1 宿主里实际加载的是自带旧副本。迁移后运行时一律使用宿主副本；devDependencies 固定 `0.2.1-alpha.5` 供本地测试对真实包跑接缝。两包 0.1.7→0.2.1 之间的差异已逐行核对为纯注释，无行为变化。
-- **启动 seam 版本日志**：host 半 apply() 时输出一行——dsh-pulse 版本 + 两个 seam 包的实载版本。版本偏斜从此在宿主日志直接可见，不再需要解剖 node_modules。
-- **展示元数据（locale + icon）**：新增包根 `locale/en.json`/`locale/zh.json`（`meta.title`/`meta.description`，harness `readPluginMeta` 只读 `meta` 包裹的字段）与 `./icon` 资源导出（`./assets/icon.svg`，固定品牌蓝 `#4D6BFE`——data URL `<img>` 无 currentColor 继承，黑线在暗色主题不可见）。图标 SVG/PNG/JPEG/WebP ≤ 256KiB。
-- **发布与 CI 卫生**：`files` 摘除 `test/` 与构建脚本，新增 `locale/`；lockfile 解禁入库，CI 改 `npm ci` + npm 缓存并增加 windows-latest 矩阵；manifest-test 新增护栏——`@deepseek-ai/*` seam 包禁入 dependencies（纯库白名单除外）、locale/icon 导出与体积断言、发布清单不含测试。
+### Added
 
-## 宿主兼容性备注（0.1.x 世代）
+- **Anomaly watch panel** — strictly observational signals derived on the fly from the records the fold already produces: daily burn-rate spikes (a day above 3× the P95 of the previous 7 days, with a 20k-token floor) and loop fingerprints (one tool called ≥25 times in a day while that day burns ≥4× the session's median day). The stats payload gains an `anomalies` block; no new storage, no timers. UI copy is locked to numbers and identifiers by the style suite.
+- **Versioned rate card and a UI-free pricing service** — official peak/off-peak rates moved into `src/pricing/ratecard.json` (version 1) behind `src/pricing/`, so a price change is a versioned data change rather than an edit buried in the UI. The manual update-check response reports the rate-card version.
+- **Subscription-quota adapter SPI** — `src/quota-adapters/` separates provider detection, request building and response parsing (zai / kimi / minimax) from the query orchestration. Recorded fixture/replay cases and a sanitizing manual recorder (`scripts/record-quota-fixture.mjs`) make parser changes testable without live accounts.
+- **Optional `dsh-pulse-usage-query` package** — one read-only, model-visible `usage_query` tool over the same aggregates. It is not mounted by default and the main package still registers zero tools; see [its README](https://github.com/Enc-hanted/dsh-pulse/blob/main/packages/dsh-pulse-usage-query/README.md).
+- **Display metadata** — `locale/en.json` / `locale/zh.json` (`meta.title` / `meta.description`) and the `./icon` export, so the plugin manager shows a localized name and description instead of the English package copy, and a blue icon instead of a black glyph.
+- **Type declarations** — `.d.ts` generated from JSDoc, with `npm run typecheck` as a CI gate.
+- **Startup seam log** — `dsh-pulse <version> on seams dsh-credentials <version> / dsh-storage-domain <version>`, making a host/plugin version skew visible in the boot log.
+- **Guardrails B and C** — a startup shape assertion (mismatch is logged and `/pulse/stats` returns 503 instead of a silently empty dashboard) and a test against the real `SessionProjectionCache` prototype.
 
-**v0.6.0 起插件只支持 dsh ≥ 0.2.0-rc.2（Node ≥ 22.19），0.1.x 线废弃不再适配。** v0.4.4 及更早在 **0.1.5-rc.3** 真机验证过（当时走纯经典注册）；v0.4.5 引入的世代判别式曾把 0.1.5–0.1.6 经典线误路由（那些 provider 同样自带 describe/update），v0.6.0 已改为结构探测修复——0.1.5-rc.3 / 0.1.6-alpha.2 / 0.1.7-alpha.2 / 0.2.0-rc.2 各代 provider 形态已对照 registry 实包逐一核对。各接缝在运行时探测：
+### Changed
 
-- **投影注册**：0.1.2-rc 宿主读取 `stateSchema` + `wire`，旧宿主（0.1.0-rc.x）读取旧版顶层 `schema`/`view`。
-- **持久化缓存**：在 0.1.2-rc 及以后插件自己走消费者读取阶梯（未播种会话用零 I/O 的 `cachedSnapshot` 行——0.1.7 之前带显式 cut、之后仅凭 header 身份——否则 `sessionQuery.readSession` + 同步 `coldSnapshot(meta, inheritedEventCount, events)`），旧宿主（0.1.2-rc 之前）仍用缓存自读取的异步 `coldSnapshot(id)`（按形参个数识别）。
-- **设置**：世代判别式按结构探测（存在 arity ≥ 2 的 `register` 即经典 `SettingsProvider`——含 rc.7 这类 register/describe/update 三全的形态——否则走 `SettingsForms`）。经典宿主注册独立命名空间；0.1.7+ 宿主按条目 id 寻址写入条目配置并带版本号守卫（过期写入返回 HTTP 409；条目被改名时 GET 如实报不可写）。展示类字段声明为 volatile，修改它们不会重启插件；settings 服务中途卸载时，两条缝的复位清单一致（GET 报不可写、POST 503）。
-- **设置页校验取舍**：宿主设置页直接消费本插件的 schemastery `Config`，字段级校验与持久化是宿主的；插件自带的浮动设置页草稿校验是手写的（数字类型、跨行模型唯一性），未下发 `schema.toJSON()` 信封、未接 `dsh-client-schema-form` 的 `validateDraft`。这是有意取舍：草稿级校验拦不住跨行唯一性与 fx 下界这类语义，接入会用 schemastery 的英文报错替换现有本地化文案，还要为老宿主模块表多背一个软降级 external——当前表单规模不值得这个成本。
-- **客户端**：0.1.7 的图标改名（`IconXOutline16` → `IconXOutlineMedium`）已做桥接；仪表盘工厂只在 `slots.registerFactory` 存在的宿主上注册。旧版宿主（不含分时明细）仍可正常显示，费用按谷价估算。
-- **仅 0.1.7 的席位**：store 引擎（`dsh-client-store`）通过特性检测 + try/catch 引入——缺失时 store 席位、通用设置开关和侧栏实时同步退场，普通仪表盘照常工作。插件管理器席位（`plugins.row.config`、`plugins.detail.badge`、`plugins.detail.section`）与每个工厂注册各自独立拒绝，宿主拒绝任何一个未知槽位都不会拖垮其余注册。
+- **The host floor is the 0.2.x family** — `engines.dsh` and both seam peers are `>=0.2.0-rc.2 <0.3` (prerelease-inclusive). The previous single-point floor made the dsh-tui kernel reject the whole bundle: web and dsh-tui are separate kernels, so the floor has to describe the family. See [Compatibility](docs/COMPATIBILITY.md).
+- **Seam packages are peers** — `@deepseek-ai/dsh-credentials` and `@deepseek-ai/dsh-storage-domain` moved from `dependencies` to `peerDependencies`, so the host's resolver serves its own copies. The projection path registers one supported shape (0.1.7+) instead of arity duck-typing; the per-day tool histogram raises the projection state schema to 11, and older caches refold automatically.
+- **Documentation split from the README** — configuration, compatibility and development references moved to `docs/`; the README is now the user-facing overview. Root cleanup: the obsolete `dsh-plugin.json` (last shipped in 0.6.0, unused by any supported mounting path) and the root `screenshots.json` are gone (the screenshot index moved under `assets/shots/`).
+- **Release hygiene** — the published `files` list is trimmed to what the plugin requires, `docs/` and `assets/shots/` included for README rendering, the lockfile is committed, CI runs `npm ci` on ubuntu + windows, typecheck runs before the suite, and `manifest-test` enforces the seam-peer rule, the locale/icon contract and "no tests in the published package".
+
+### Fixed
+
+- **`/pulse` command family on dsh-tui** — the `pulse-tui` row now injects `commands`. The C-070 fallback (`commands.register`) needs the service explicitly injected; without it all six commands silently failed to register.
+- **Wide-terminal crash** — `renderCalendar` referenced `leftW` outside its destructuring scope (regression since v0.6.0); wide terminals crashed. Fixed and covered by a stub-kit regression test.
+- **Plugin manager metadata** — locale files now carry the `meta` wrapper the harness reads; the manager icon uses fixed brand blue (`#4D6BFE`) because a data-URL `<img>` cannot resolve `currentColor` (the old strokes rendered black in dark themes).
+
+### Engineering
+
+- The test chain now runs ten suites: host, aggregate, view, quota adapters, package shape, client smoke, TUI, golden, style and manifest. New suites cover the quota SPI, the guardrail-B seam stub, the real projection-cache prototype, the anomaly fixtures, and the `pulse-tui` patch injection.
+- `.github/workflows/test.yml` is the release gate: `npm ci` → `npm run typecheck` → `npm test`, on ubuntu-latest and windows-latest.
+
+### Upgrading from 0.6.0
+
+- Install `0.6.1` into each profile you use (`dsh plugin --profile <name> add -w dsh-pulse@latest`, or re-run your tarball/link `add`) and restart the host. A source-link install shows as `link:` in `dsh plugin list`.
+- No data migration: settings keep their location, usage history refolds from session logs, and the shapes of the two private snapshot files are unchanged.
+- dsh-tui users: the kernel must be on the 0.2.x family; the same package mounts as the terminal face. One `C-070 … unattributed` line in the boot log is expected — see [Compatibility](docs/COMPATIBILITY.md).
+- dsh 0.1.x remains unsupported (since 0.6.0).
+
+## Earlier releases
+
+Release notes for v0.6.0 and earlier are available from the git tags. The host-generation adaptation notes that used to live here are in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md#historical-generation-notes).

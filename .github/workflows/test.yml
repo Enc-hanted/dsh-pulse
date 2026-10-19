@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.19
           cache: npm
       # The lockfile is tracked, so `npm ci` reproduces the audited tree
       # exactly — a package.json edit without a lockfile refresh fails
@@ -24,7 +24,7 @@ jobs:
       # #2b type green gate: the same checkJs pass the declaration build
       # runs, as a hard noEmit gate before any behavior test.
       - run: npm run typecheck
-      # host-test stubs three harness cache generations (pre-0.1.2, 0.1.2-rc
-      # and 0.1.7-alpha) plus both settings generations, so every push
-      # re-proves the cross-generation contracts the plugin depends on.
+      # host-test stubs the one supported projection seam (plus a deliberately
+      # wrong shape for guardrail B) and both settings generations, so every
+      # push re-proves the host contracts the plugin depends on.
       - run: npm test

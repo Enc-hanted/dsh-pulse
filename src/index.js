@@ -374,14 +374,14 @@ function assertSeamShape(ctx) {
   const fastArity = typeof cache.cachedSnapshot === "function" ? cache.cachedSnapshot.length : -1;
   if (coldArity >= 3 && fastArity === 2) return;
   seamShapeFailure = `sessionProjectionCache seam shape mismatch (coldSnapshot arity ${coldArity}, cachedSnapshot arity ${fastArity}); `
-    + "expected the 0.1.7+ shapes this build supports — see docs/ROADMAP.md #4";
+    + "expected the 0.1.7+ shapes this build supports — see docs/COMPATIBILITY.md#guardrails";
   ctx.logger?.error?.(`dsh-pulse: ${seamShapeFailure}`);
 }
 
 /**
  * Register the `pulseUsage` projection unit, the `pulse` settings namespace
- * (user-editable pricing and cost display), the `/pulse` command and the
- * `/pulse` HTTP routes. Every registration is an effect on this fiber, so
+ * (user-editable pricing and cost display) and the `/pulse` HTTP routes.
+ * Every registration is an effect on this fiber, so
  * unloading the plugin removes all of them.
  *
  * The projection unit is registered with the peak-hour map derived from the

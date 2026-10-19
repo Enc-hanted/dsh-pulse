@@ -24,7 +24,7 @@ Requirements:
   dependency `dsh-pulse@0.6.1`): this tool reads its `pulseUsage`
   projections through dsh-pulse's own aggregation entry (`buildStats`) —
   the same fold behind `/pulse/stats`.
-- A harness host with the tool registry (dsh ≥ 0.2.0-rc.2; verified against the 0.2.1-alpha.5 snapshot).
+- A harness host with the tool registry (dsh ≥ 0.2.0-rc.2 <0.3; the registration seam is recorded against the 0.2.1-alpha.5 host snapshot in `docs/seam-notes.md`).
 
 Once mounted, the tool is visible to **every** agent in the profile. That
 global model-visible surface is exactly why this capability ships as a

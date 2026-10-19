@@ -1,13 +1,13 @@
 {
   "name": "dsh-pulse",
   "version": "0.6.1",
-  "description": "Cross-session usage & cost observatory for dsh — daily token charts, cache hit ring, 90d/1y heatmaps, model and project breakdowns, adaptive color themes and CSV export in the web UI",
+  "description": "Usage & cost observatory for dsh: session-folded token trends, official-rate cost estimates, balance and subscription quotas, anomaly watch — as a web panel and an optional dsh-tui terminal face",
   "type": "module",
   "main": "src/index.js",
   "types": "./types/index.d.ts",
   "engines": {
     "node": ">=22.19",
-    "dsh": ">=0.2.0-rc.2"
+    "dsh": ">=0.2.0-rc.2 <0.3"
   },
   "repository": {
     "type": "git",
@@ -37,6 +37,9 @@
     "assets/logo.svg",
     "assets/logo-dark.svg",
     "assets/icon.svg",
+    "assets/shots",
+    "docs",
+    "CHANGELOG.md",
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
@@ -61,8 +64,6 @@
     "build": "node scripts/build-client.mjs",
     "build:types": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.check.json",
-    "demo": "node scripts/build-canvas-demo.mjs",
-    "shots": "node scripts/shoot-canvas-matrix.mjs",
     "test": "npm run build && node test/host-test.mjs && node test/aggregate-test.mjs && node test/view-test.mjs && node test/quota-adapters-test.mjs && node packages/dsh-pulse-usage-query/test/shape-test.mjs && node test/client-smoke-test.mjs && node test/tui-test.mjs && node test/golden-test.mjs && node test/style-test.mjs && node test/manifest-test.mjs"
   },
   "dependencies": {
@@ -72,7 +73,7 @@
   "peerDependencies": {
     "@deepseek-ai/dsh-credentials": ">=0.2.0-rc.2 <0.3",
     "@deepseek-ai/dsh-storage-domain": ">=0.2.0-rc.2 <0.3",
-    "@deepseek-harness-tui/dsh-tui": "0.13.0"
+    "@deepseek-harness-tui/dsh-tui": ">=0.13.0 <0.17"
   },
   "peerDependenciesMeta": {
     "@deepseek-harness-tui/dsh-tui": {

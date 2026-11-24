@@ -155,11 +155,11 @@ const flatHoursFolded = foldEvents([
 assert.equal(flatHoursFolded.tiersByDay[localDay(bj(10))]["m-flat"].input.peak, 0, "empty hour set: 10:00 Beijing is off-peak");
 assert.equal(flatHoursFolded.tiersByDay[localDay(bj(10))]["m-flat"].input.offpeak, 5);
 // the definition carries its stateVersion (host bumps it on peak-hour changes);
-// 12 is the fork-aware fold — persisted pre-12 rows re-fold to drop the
-// inherited prefixes they counted
-assert.equal(PULSE_STATE_VERSION, 12);
-assert.equal(pulseProjectionDefinition().stateVersion, 12);
-assert.equal(pulseProjectionDefinition({ stateVersion: 13 }).stateVersion, 13);
+// 13 folds the auxiliary bills the fold used to miss — compaction usage and
+// timeline call counts — so persisted pre-13 rows re-fold to pick them up
+assert.equal(PULSE_STATE_VERSION, 13);
+assert.equal(pulseProjectionDefinition().stateVersion, 13);
+assert.equal(pulseProjectionDefinition({ stateVersion: 99 }).stateVersion, 99);
 // The official peak windows run Monday–Friday: the same 10:00 Beijing hour is
 // off-peak on a weekend. 2026-08-15 is a Saturday, 2026-08-14 a Friday. A bare
 // hour set keeps the historical all-days reading; the projection and the host
@@ -339,6 +339,65 @@ assert.deepEqual(titleView.auxByDay[auxDay], {
   titleOut: { peak: 8, offpeak: 0 },
   titleKey: "deepseek-v4-pro",
 }, "title text → token estimate (10×0.6 + 11×0.3 → 6+4), cap clamped, route recorded");
+
+// --- compaction usage (the harness's own compaction run bills real tokens) ---
+// 真实日志里 compaction/summary 27/27 带 usage + provider + model：官方账单
+// 上有、折叠里曾缺失的最大一块。两种字段形状都要计入且不重复计数：
+// totalTokens / reasoningTokens 是派生读数，绝不进四桶之和。
+const compView = foldEvents([
+  {
+    type: "compaction/summary", time: nineAm - 60_000, seq: 8,
+    data: {
+      compactionId: "c1", provider: "zai-coding-cn", model: "glm-5.3-flash",
+      usage: { inputTokens: 410_634, outputTokens: 3549, totalTokens: 414_183 },
+    },
+  },
+  {
+    type: "compaction/summary", time: nineAm + 60_000, seq: 9,
+    data: {
+      compactionId: "c2", provider: "deepseek-official", model: "deepseek-v4-flash",
+      usage: { inputTokens: 331_529, outputTokens: 2489, cacheReadTokens: 0, reasoningTokens: 29 },
+    },
+  },
+]);
+assert.deepEqual(compView.byDay[auxDay], { input: 742_163, output: 6038, cacheRead: 0, cacheWrite: 0 },
+  "compaction usage folds into the day totals; totalTokens/reasoning never double-count");
+assert.deepEqual(compView.modelsByDay[auxDay]["zai-coding-cn\u0000glm-5.3-flash"],
+  { input: 410_634, output: 3549, cacheRead: 0, cacheWrite: 0 }, "compaction attributes under its own provider/model key");
+assert.deepEqual(compView.modelsByDay[auxDay]["deepseek-official\u0000deepseek-v4-flash"],
+  { input: 331_529, output: 2489, cacheRead: 0, cacheWrite: 0 });
+assert.deepEqual(compView.tiersByDay[auxDay]["zai-coding-cn\u0000glm-5.3-flash"].input,
+  { peak: 0, offpeak: 410_634 }, "the 08:59 compaction sits off-peak");
+assert.deepEqual(compView.tiersByDay[auxDay]["deepseek-official\u0000deepseek-v4-flash"].input,
+  { peak: 331_529, offpeak: 0 }, "the 09:01 compaction sits in the peak hour");
+assert.equal(Object.keys(compView.hoursByDay[auxDay]).length, 2, "compaction lands in the hourly maps too");
+// no usage / no model: the event is skipped whole, state untouched
+const compUnit = pulseProjectionDefinition();
+const compEmpty = compUnit.init({}, 0);
+assert.equal(compUnit.apply(compEmpty, { type: "compaction/summary", time: bj(12), seq: 1, data: { compactionId: "c3", provider: "p", model: "m" } }), compEmpty,
+  "a compaction without usage counts nothing");
+assert.equal(compUnit.apply(compEmpty, { type: "compaction/summary", time: bj(12), seq: 1, data: { usage: { inputTokens: 5 } } }), compEmpty,
+  "a compaction without a model attributes nowhere");
+// an inherited compaction belongs to the parent, like any inherited event
+const compFork = foldEvents([
+  { type: "compaction/summary", time: bj(12), seq: 1, data: { provider: "p", model: "m", usage: { inputTokens: 9 } } },
+], {}, { inheritedEventCount: 2 });
+assert.deepEqual(compFork.byDay, {}, "an inherited compaction stays out of the fork");
+
+// --- timeline report requests (call counts; no usage event exists) ----------
+const tlFoldView = foldEvents([
+  { type: "plugin:timeline/request", time: nineAm - 60_000, data: { request: { provider: "zai-coding-cn", model: "glm-5.3-flash", purpose: "timeline-report" } } },
+  { type: "plugin:timeline/request", time: nineAm + 60_000, data: { request: { provider: "zai-coding-cn", model: "glm-5.3-flash" } } },
+  { type: "plugin:timeline/request", time: nineAm + 120_000, data: {} },
+]);
+assert.deepEqual(tlFoldView.auxByDay[auxDay], { timeline: { peak: 2, offpeak: 1 } },
+  "timeline requests count per tier under their own model's spec (fallback: the aux billing model)");
+assert.deepEqual(tlFoldView.byDay, {}, "timeline counts never touch the token totals");
+// the count survives the persisted-state boundary (the .strict() schema)
+const tlUnit = pulseProjectionDefinition();
+let tlState = tlUnit.init({}, 0);
+tlState = tlUnit.apply(tlState, { type: "plugin:timeline/request", time: bj(12), seq: 3, data: { request: { provider: "", model: "glm-5.4" } } });
+assert.deepEqual(tlUnit.stateSchema.parse(tlState), tlState, "the timeline count survives the state boundary");
 
 // --- sliceRecord ------------------------------------------------------------
 const base = {
@@ -589,5 +648,14 @@ assert.deepEqual(auxTimeline.aux, [
   { t: 1500, kind: "search" },
 ], "aux events ride the timeline sorted by time, title with its estimates");
 assert.equal(auxTimeline.events.length, 1);
+
+// timeline report requests ride the aux array with their billed model
+assert.deepEqual(timelineEvents([
+  { type: "plugin:timeline/request", time: 700, data: { request: { provider: "zai-coding-cn", model: "glm-5.3-flash" } } },
+  { type: "plugin:timeline/request", time: 800, data: {} },
+]).aux, [
+  { t: 700, kind: "timeline", key: "zai-coding-cn\u0000glm-5.3-flash" },
+  { t: 800, kind: "timeline", key: null },
+], "timeline requests ride the aux array with their billed model");
 
 console.log("aggregate-test: all assertions passed");

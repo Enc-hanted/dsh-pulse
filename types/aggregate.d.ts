@@ -124,6 +124,10 @@ export declare const pulseUsageSchema: z.ZodObject<{
             offpeak: z.ZodNumber;
         }, z.core.$strict>>;
         titleKey: z.ZodOptional<z.ZodString>;
+        timeline: z.ZodOptional<z.ZodObject<{
+            peak: z.ZodNumber;
+            offpeak: z.ZodNumber;
+        }, z.core.$strict>>;
     }, z.core.$strict>>;
     title: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     firstDay: z.ZodNullable<z.ZodString>;
@@ -193,6 +197,10 @@ export declare const pulseUsageStateSchema: z.ZodObject<{
             offpeak: z.ZodNumber;
         }, z.core.$strict>>;
         titleKey: z.ZodOptional<z.ZodString>;
+        timeline: z.ZodOptional<z.ZodObject<{
+            peak: z.ZodNumber;
+            offpeak: z.ZodNumber;
+        }, z.core.$strict>>;
     }, z.core.$strict>>;
     title: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     firstDay: z.ZodNullable<z.ZodString>;
@@ -369,10 +377,13 @@ export type WindowedRecord = {
  * @property {number} [toolCalls] - schema-2 fallback scalar.
  */
 /** Fold-semantics version of the `pulseUsage` unit at load (the host adds its
- *  peak-hour epoch on top). 12 is the fork-aware fold: a seeded session's
- *  inherited prefix stops counting, so every row persisted before it
- *  replays from its log. 11 added the tool histogram. */
-export declare const PULSE_STATE_VERSION = 12;
+ *  peak-hour epoch on top). 13 folds the auxiliary bills the fold used to
+ *  miss: `compaction/summary` carries real usage under its own provider and
+ *  model, and `plugin:timeline/request` at least carries its call. 12 was the
+ *  fork-aware fold: a seeded session's inherited prefix stops counting, so
+ *  every row persisted before it replays from its log. 11 added the tool
+ *  histogram. */
+export declare const PULSE_STATE_VERSION = 13;
 /**
  * The `pulseUsage` projection unit for `ctx.sessionProjections.register`.
  *
@@ -385,8 +396,11 @@ export declare const PULSE_STATE_VERSION = 12;
  *   The one exception is `session/title` — a fork stays named after the
  *   conversation it forked from until it earns a title of its own.
  * - `byDay` / `modelsByDay` accumulate the disjoint provider usage of each
- *   `assistant/message` event (input = uncached input; cacheRead/cacheWrite
- *   are reported separately by the harness adapters). Model keys are
+ *   `assistant/message` and each `compaction/summary` event — a compaction
+ *   run bills the provider under the provider/model its event names, and
+ *   current hosts report its exact usage buckets there (input = uncached
+ *   input; cacheRead/cacheWrite are reported separately by the harness
+ *   adapters). Model keys are
  *   `provider\u0000model` composites from the event's message source, so
  *   same-named models of different providers fold into distinct rows; a
  *   missing provider (legacy events) falls back to the bare model id.
@@ -500,9 +514,10 @@ export declare function sliceRecord(record: WindowedRecord, fromDay: string, toD
  * `provider\u0000model` composites the projection folds. `turns` collects
  * closed `turn/start`→`turn/end` boundaries so the client can align break
  * marks to task stages, not just wall-clock time. `aux` collects the
- * session's auxiliary requests (official web_search, title LLM) with the
- * title entries' text-derived input/output estimates, so the detail view can
- * render an honest auxiliary bill without re-reading the log. Events inside
+ * session's auxiliary requests (official web_search, title LLM, timeline
+ * reports) with the title entries' text-derived input/output estimates, so
+ * the detail view can render an honest auxiliary bill without re-reading the
+ * log. Events inside
  * a fork's inherited prefix are skipped, like the projection fold: the
  * detail view shows the session's own consumption, not its parent's.
  *

@@ -130,6 +130,15 @@ function addTier(bucket, usage, tier) {
   bucket.cacheWrite[tier] += num(usage.cacheWriteTokens);
 }
 
+/** One usage record's disjoint token sum — the fold's counting rule, shared
+ *  by every event whose usage counts (`assistant/message`, `compaction/summary`).
+ *  Fields outside the four buckets (`totalTokens`, `reasoningTokens`) are
+ *  derived or auxiliary readings and must never add to the sum. */
+function usageSum(usage) {
+  return num(usage.inputTokens) + num(usage.outputTokens)
+    + num(usage.cacheReadTokens) + num(usage.cacheWriteTokens);
+}
+
 /** One token kind split across the two pricing tiers. */
 const tierSplit = z.object({
   peak: z.number().nonnegative(),
@@ -180,20 +189,23 @@ export const pulseUsageSchema = z.object({
    *  content. Optional so pre-histogram rows and view literals stay valid;
    *  the stateVersion bump is what forces history to re-fold with it. */
   toolHistogramByDay: z.record(z.string(), z.record(z.string(), z.number().int().nonnegative())).optional(),
-  /** Auxiliary-call counters (official `web_search` / title LLM): per day.
-   *  Locally only the request event exists — no usage event — so search
-   *  stays a count (the view's shape turns counts into estimated tokens),
-   *  while title requests carry their exact prompt text and output cap and
-   *  are therefore folded as TEXT-DERIVED token estimates (`titleIn` /
-   *  `titleOut`, tier-split by the event's own instant) plus the route the
-   *  day's title calls billed under (last route wins after a config change
-   *  mid-day). */
+  /** Auxiliary-call counters (official `web_search` / title LLM / timeline
+   *  report LLM): per day. Locally only the request event exists — no usage
+   *  event — so search stays a count (the view's shape turns counts into
+   *  estimated tokens), while title requests carry their exact prompt text
+   *  and output cap and are therefore folded as TEXT-DERIVED token estimates
+   *  (`titleIn` / `titleOut`, tier-split by the event's own instant) plus the
+   *  route the day's title calls billed under (last route wins after a
+   *  config change mid-day). Timeline report requests keep a plain count
+   *  tier-split by the billed model their request names — no usage event
+   *  exists to estimate from, so they never become tokens. */
   auxByDay: z.record(z.string(), z.object({
     search: auxTierCountsSchema.optional(),
     title: auxTierCountsSchema.optional(),
     titleIn: auxTierCountsSchema.optional(),
     titleOut: auxTierCountsSchema.optional(),
     titleKey: z.string().optional(),
+    timeline: auxTierCountsSchema.optional(),
   }).strict()),
   /** The session's display title (last `session/title` event wins): rides the
    *  fold so the sessions list can name rows without a per-session service
@@ -374,10 +386,13 @@ export function tierAt(timeMs, peakHours = PEAK_HOURS) {
  */
 
 /** Fold-semantics version of the `pulseUsage` unit at load (the host adds its
- *  peak-hour epoch on top). 12 is the fork-aware fold: a seeded session's
- *  inherited prefix stops counting, so every row persisted before it
- *  replays from its log. 11 added the tool histogram. */
-export const PULSE_STATE_VERSION = 12;
+ *  peak-hour epoch on top). 13 folds the auxiliary bills the fold used to
+ *  miss: `compaction/summary` carries real usage under its own provider and
+ *  model, and `plugin:timeline/request` at least carries its call. 12 was the
+ *  fork-aware fold: a seeded session's inherited prefix stops counting, so
+ *  every row persisted before it replays from its log. 11 added the tool
+ *  histogram. */
+export const PULSE_STATE_VERSION = 13;
 
 /** The registry's fork cut, normalized: a positive safe integer, else 0
  *  (unseeded sessions, synthetic folds, older hosts that pass nothing). */
@@ -402,8 +417,11 @@ function isInherited(event, inheritedEventCount) {
  *   The one exception is `session/title` — a fork stays named after the
  *   conversation it forked from until it earns a title of its own.
  * - `byDay` / `modelsByDay` accumulate the disjoint provider usage of each
- *   `assistant/message` event (input = uncached input; cacheRead/cacheWrite
- *   are reported separately by the harness adapters). Model keys are
+ *   `assistant/message` and each `compaction/summary` event — a compaction
+ *   run bills the provider under the provider/model its event names, and
+ *   current hosts report its exact usage buckets there (input = uncached
+ *   input; cacheRead/cacheWrite are reported separately by the harness
+ *   adapters). Model keys are
  *   `provider\u0000model` composites from the event's message source, so
  *   same-named models of different providers fold into distinct rows; a
  *   missing provider (legacy events) falls back to the bare model id.
@@ -493,6 +511,46 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = PULSE_S
     }
     return pruned ?? hoursByDay;
   };
+  /** One billed call's day attribution, shared by every event that carries a
+   *  real usage object under its own model key (`assistant/message`,
+   *  `compaction/summary`): the day total, the per-model and per-hour maps,
+   *  the peak/off-peak tier split, `firstDay`. Returns the state unchanged
+   *  when the event carries no usable timestamp. */
+  const accumulateUsage = (state, event, key, usage) => {
+    const day = dayOf(event);
+    if (day === null) return state; // untimestamped: nothing is day-attributed
+    const next = { ...state };
+    next.byDay = { ...state.byDay };
+    const daily = { ...(state.byDay[day] ?? EMPTY_TOKENS()) };
+    addTokens(daily, usage);
+    next.byDay[day] = daily;
+    next.modelsByDay = { ...state.modelsByDay };
+    const dayModels = { ...(state.modelsByDay[day] ?? {}) };
+    const perModel = { ...(dayModels[key] ?? EMPTY_TOKENS()) };
+    addTokens(perModel, usage);
+    dayModels[key] = perModel;
+    next.modelsByDay[day] = dayModels;
+    next.hoursByDay = prunedHours(state.hoursByDay, day);
+    const hh = hourKey(event.time);
+    const dayHours = { ...(next.hoursByDay[day] ?? {}) };
+    const hourModels = { ...(dayHours[hh] ?? {}) };
+    const perHourModel = { ...(hourModels[key] ?? EMPTY_TOKENS()) };
+    addTokens(perHourModel, usage);
+    hourModels[key] = perHourModel;
+    dayHours[hh] = hourModels;
+    next.hoursByDay = { ...next.hoursByDay, [day]: dayHours };
+    // Peak/off-peak split (Beijing-time hours, weekday-scoped per the
+    // rule) per day and model, the cost estimate's tier source for any
+    // window length.
+    const dayTiers = { ...(state.tiersByDay[day] ?? {}) };
+    const modelTiers = { ...(dayTiers[key] ?? EMPTY_TIER()) };
+    const tierSpec = hoursOf(key);
+    addTier(modelTiers, usage, tierAt(event.time, { hours: tierSpec.hours, weekdaysOnly: tierSpec.weekdaysOnly }));
+    dayTiers[key] = modelTiers;
+    next.tiersByDay = { ...state.tiersByDay, [day]: dayTiers };
+    withFirstDay(next, day);
+    return next;
+  };
   /** One client-visible cut of the fold state; shared by the legacy and the
    *  0.1.1-rc `wire` view so both hosts serve the same shape. */
   const viewOf = (state) => ({
@@ -536,46 +594,24 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = PULSE_S
       if (type === "assistant/message") {
         const usage = data.usage;
         if (usage === null || typeof usage !== "object") return state;
-        const sum = num(usage.inputTokens) + num(usage.outputTokens)
-          + num(usage.cacheReadTokens) + num(usage.cacheWriteTokens);
-        if (sum <= 0) return state;
+        if (usageSum(usage) <= 0) return state;
         const source = data.message?.source;
         // Provider + model provenance: the composite key keeps same-named
         // models of different providers distinct in every per-model map.
-        const key = modelKey(source?.provider, source?.model);
-        const day = dayOf(event);
-        if (day === null) return state; // untimestamped: nothing is day-attributed
-        const next = { ...state };
-        next.byDay = { ...state.byDay };
-        const daily = { ...(state.byDay[day] ?? EMPTY_TOKENS()) };
-        addTokens(daily, usage);
-        next.byDay[day] = daily;
-        next.modelsByDay = { ...state.modelsByDay };
-        const dayModels = { ...(state.modelsByDay[day] ?? {}) };
-        const perModel = { ...(dayModels[key] ?? EMPTY_TOKENS()) };
-        addTokens(perModel, usage);
-        dayModels[key] = perModel;
-        next.modelsByDay[day] = dayModels;
-        next.hoursByDay = prunedHours(state.hoursByDay, day);
-        const hh = hourKey(event.time);
-        const dayHours = { ...(next.hoursByDay[day] ?? {}) };
-        const hourModels = { ...(dayHours[hh] ?? {}) };
-        const perHourModel = { ...(hourModels[key] ?? EMPTY_TOKENS()) };
-        addTokens(perHourModel, usage);
-        hourModels[key] = perHourModel;
-        dayHours[hh] = hourModels;
-        next.hoursByDay = { ...next.hoursByDay, [day]: dayHours };
-        // Peak/off-peak split (Beijing-time hours, weekday-scoped per the
-        // rule) per day and model, the cost estimate's tier source for any
-        // window length.
-        const dayTiers = { ...(state.tiersByDay[day] ?? {}) };
-        const modelTiers = { ...(dayTiers[key] ?? EMPTY_TIER()) };
-        const tierSpec = hoursOf(key);
-        addTier(modelTiers, usage, tierAt(event.time, { hours: tierSpec.hours, weekdaysOnly: tierSpec.weekdaysOnly }));
-        dayTiers[key] = modelTiers;
-        next.tiersByDay = { ...state.tiersByDay, [day]: dayTiers };
-        withFirstDay(next, day);
-        return next;
+        return accumulateUsage(state, event, modelKey(source?.provider, source?.model), usage);
+      }
+      if (type === "compaction/summary") {
+        // The harness's compaction run bills the provider under the
+        // provider/model its event names, and current hosts report the exact
+        // usage buckets on the event — fold them like any message. Older
+        // hosts' compaction events carry no usage: nothing to count, nothing
+        // invented; the event is skipped the same way an unreported message
+        // always was.
+        const usage = data.usage;
+        if (usage === null || typeof usage !== "object") return state;
+        if (usageSum(usage) <= 0) return state;
+        if (typeof data.model !== "string" || data.model === "") return state;
+        return accumulateUsage(state, event, modelKey(typeof data.provider === "string" ? data.provider : "", data.model), usage);
       }
       if (type === "step/end") {
         if (state.lastTurn === data.turn) return state;
@@ -600,14 +636,16 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = PULSE_S
         withFirstDay(next, day);
         return next;
       }
-      if (type === "web/deepseek-search-llm-request" || type === "session/title-llm-request") {
-        // Auxiliary LLM calls (official web_search, title generation): the
-        // log-only request event is the whole story locally. Search keeps a
-        // count (the billing shape is the view's concern, self-calibrated
-        // there); title carries its exact text and output cap, so the fold
-        // records TEXT-DERIVED token estimates split by the pricing tier of
-        // the event's own instant — the route's tier spec when the event
-        // names one, the aux billing model's otherwise.
+      if (type === "web/deepseek-search-llm-request" || type === "session/title-llm-request"
+        || type === "plugin:timeline/request") {
+        // Auxiliary LLM calls (official web_search, title generation, timeline
+        // reports): the log-only request event is the whole story locally.
+        // Search keeps a count (the billing shape is the view's concern,
+        // self-calibrated there); title carries its exact text and output
+        // cap, so the fold records TEXT-DERIVED token estimates split by the
+        // pricing tier of the event's own instant — the route's tier spec
+        // when the event names one, the aux billing model's otherwise.
+        // Timeline keeps a plain count under its billed model's tier spec.
         const day = dayOf(event);
         if (day === null) return state;
         const next = { ...state };
@@ -619,7 +657,7 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = PULSE_S
           const kindAux = { ...(dayAux.search ?? { peak: 0, offpeak: 0 }) };
           kindAux[tier] = (kindAux[tier] ?? 0) + 1;
           dayAux.search = kindAux;
-        } else {
+        } else if (type === "session/title-llm-request") {
           const route = data?.route;
           const titleKey = typeof route?.model === "string" && route.model !== ""
             ? modelKey(typeof route?.provider === "string" ? route.provider : "", route.model)
@@ -642,6 +680,19 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = PULSE_S
           // Last route wins: a mid-day config change prices the day under the
           // route its newest title call used (the estimate is labeled 估算).
           if (titleKey !== null) dayAux.titleKey = titleKey;
+        } else {
+          // Timeline report requests: no usage event exists, so the count is
+          // the honest whole — tiered by the billed model the request names
+          // (its own tier spec), the aux billing model's when it names none.
+          const request = data?.request;
+          const requestKey = typeof request?.model === "string" && request.model !== ""
+            ? modelKey(typeof request?.provider === "string" ? request.provider : "", request.model)
+            : null;
+          const tierSpec = hoursOf(requestKey ?? auxTierKey());
+          const tier = tierAt(event.time, { hours: tierSpec.hours, weekdaysOnly: tierSpec.weekdaysOnly });
+          const counts = { ...(dayAux.timeline ?? { peak: 0, offpeak: 0 }) };
+          counts[tier] = (counts[tier] ?? 0) + 1;
+          dayAux.timeline = counts;
         }
         next.auxByDay[day] = dayAux;
         withFirstDay(next, day);
@@ -798,9 +849,10 @@ export function sliceRecord(record, fromDay, toDay) {
  * `provider\u0000model` composites the projection folds. `turns` collects
  * closed `turn/start`→`turn/end` boundaries so the client can align break
  * marks to task stages, not just wall-clock time. `aux` collects the
- * session's auxiliary requests (official web_search, title LLM) with the
- * title entries' text-derived input/output estimates, so the detail view can
- * render an honest auxiliary bill without re-reading the log. Events inside
+ * session's auxiliary requests (official web_search, title LLM, timeline
+ * reports) with the title entries' text-derived input/output estimates, so
+ * the detail view can render an honest auxiliary bill without re-reading the
+ * log. Events inside
  * a fork's inherited prefix are skipped, like the projection fold: the
  * detail view shows the session's own consumption, not its parent's.
  *
@@ -867,6 +919,18 @@ export function timelineEvents(events, { id = null, header = null, inheritedEven
             : null,
           in: titleInputEstimate(event.data),
           out: titleOutEstimate(event.data?.maxTokens),
+        });
+      }
+    } else if (event.type === "plugin:timeline/request") {
+      const t = num(event.time);
+      if (t > 0) {
+        const request = event.data?.request;
+        aux.push({
+          t,
+          kind: "timeline",
+          key: typeof request?.model === "string" && request.model !== ""
+            ? modelKey(typeof request?.provider === "string" ? request.provider : "", request.model)
+            : null,
         });
       }
     }

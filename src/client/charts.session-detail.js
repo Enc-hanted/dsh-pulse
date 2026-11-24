@@ -127,40 +127,40 @@ import { applyDisplay } from "../view.js";
 				.join(" ");
 			const turns = Array.isArray(state.data?.turns) ? state.data.turns : [];
 			const segments = breaksSegments(events, breaks, { pricing, fx, monthly, models, catalog });
-			/** 辅助调用账单（估算）：该会话的 web_search / 标题 LLM 请求，从
-			 *  /pulse/session 的 aux 事件聚合；搜索按（自校准后的）形状折算，
-			 *  标题按折算层给出的实文估算 token 计价，事件按自身时刻定峰谷。 */
+			/** 辅助调用账单（估算）：该会话的 web_search / 标题 LLM / 时间线报告
+			 *  请求，从 /pulse/session 的 aux 事件聚合；搜索按（自校准后的）形状
+			 *  折算，标题按折算层给出的实文估算 token 计价，事件按自身时刻定峰
+			 *  谷。时间线请求没有 usage 事件——只计数，不计价；次数不随成本
+			 *  开关变化。 */
 			const auxEvents = (Array.isArray(state.data?.aux) ? state.data.aux : [])
 				.filter((e) => e !== null && typeof e === "object" && Number.isFinite(e.t));
 			const billShape = auxShape !== null && typeof auxShape === "object" ? auxShape : AUX_SHAPE;
-			let auxSearchN = 0;
-			let auxTitleN = 0;
+			const auxSearchN = auxEvents.filter((e) => e.kind === "search").length;
+			const auxTitleN = auxEvents.filter((e) => e.kind === "title").length;
+			const auxTimelineN = auxEvents.filter((e) => e.kind === "timeline").length;
 			let auxCost = 0;
 			if (auxEvents.length > 0 && costEnabled) {
 				const maps = ruleMaps(pricing);
 				const monthlySet = monthlySetOf(monthly);
 				const usd = fxRateOf(fx);
 				for (const e of auxEvents) {
+					// 无 usage 事件的调用（时间线报告）没有可计价的形状，只计数。
+					if (e.kind !== "search" && e.kind !== "title") continue;
 					const priceAs = e.kind === "title" && typeof e.key === "string" && e.key !== "" ? e.key : modelKey("", AUX_PRICE_AS);
 					// 标题路由不在官方账号上时，官方口径的账单不含它——不计价。
 					if (e.kind === "title" && !isOfficialProvider(splitModelKey(priceAs).provider)) continue;
-					if (monthlySet.has(splitModelKey(priceAs).provider)) {
-						if (e.kind === "search") auxSearchN += 1; else auxTitleN += 1;
-						continue;
-					}
+					if (monthlySet.has(splitModelKey(priceAs).provider)) continue;
 					const rule = ruleFor(maps, priceAs);
 					if (rule === undefined) continue;
 					const rates = resolveRates(rule);
 					const conv = rule.currency === "USD" ? usd : 1;
 					const tier = tierAtMs(e.t, rule.peakHours);
 					if (e.kind === "search") {
-						auxSearchN += 1;
 						auxCost += priceTier({ input: billShape.miss, cacheRead: billShape.hit, output: billShape.out, cacheWrite: 0 }, rates, tier) * conv;
 						/** 官方按次费窗口 [2026-11-01, 2026-11-18 12:00)：¥0.005/次
 						 *  成功搜索，与 token 形状无关，按事件自身时刻精确门控。 */
 						if (e.t >= AUX_CALL_FEE.fromMs && e.t < AUX_CALL_FEE.untilMs) auxCost += AUX_CALL_FEE.cnyPerCall;
 					} else {
-						auxTitleN += 1;
 						auxCost += priceTier({ input: e.in || 0, cacheRead: 0, output: e.out || 0, cacheWrite: 0 }, rates, tier) * conv;
 					}
 				}
@@ -259,6 +259,7 @@ import { applyDisplay } from "../view.js";
 				auxEvents.length > 0 && jsxs("div", { className: "dp_auxBill", children: [
 					jsx("span", { className: "dp_auxBillName", children: t("detailAuxTitle") }),
 					jsx("span", { children: fill(t("detailAuxLine"), { s: auxSearchN, t: auxTitleN }) }),
+					auxTimelineN > 0 && jsx("span", { children: fill(t("detailAuxTimeline"), { n: auxTimelineN }) }),
 					costEnabled && auxCost > 0 && jsx("span", { children: `≈${moneyCny(auxCost)}` }),
 				] }),
 				jsxs("div", { className: "dp_curveWrap", onPointerLeave: () => setHoverTurn(null), children: [

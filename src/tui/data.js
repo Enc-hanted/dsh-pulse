@@ -52,7 +52,9 @@ async function foldSession(sessionQuery, id, version) {
 	// readSession); keep both shapes so a future rename cannot silently
 	// blank every header downstream.
 	const header = loaded?.header ?? loaded?.session ?? null;
-	const record = foldEvents(events, {});
+	// The fork cut rides in: a seeded session's record is its own events,
+	// never the parent history its log opens with.
+	const record = foldEvents(events, {}, { header, inheritedEventCount: loaded?.inheritedEventCount });
 	foldCache.set(id, { version, header, record });
 	if (foldCache.size > 240) foldCache.delete(foldCache.keys().next().value);
 	return { header, record };

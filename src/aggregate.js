@@ -204,12 +204,14 @@ export const pulseUsageSchema = z.object({
 
 /** Full fold-state shape of the `pulseUsage` unit: the client-visible view
  *  plus the fold's own internals (`lastTurn`, the id of the last folded
- *  turn). Since the 0.1.1-rc session-projection registry validates persisted
+ *  turn; `inheritedEventCount`, the fork cut below which nothing counts).
+ *  Since the 0.1.1-rc session-projection registry validates persisted
  *  checkpoint rows against the unit's STATE schema (`stateSchema`), it must
  *  cover every field the fold keeps — the view schema alone would reject
  *  rows at restore and demote every cold read to a full-log replay. */
 export const pulseUsageStateSchema = pulseUsageSchema.extend({
   lastTurn: z.number().int().nonnegative().nullable(),
+  inheritedEventCount: z.number().int().nonnegative(),
 });
 
 /** Local `HH` hour key for a timestamp (e.g. "07", "23"). */
@@ -331,7 +333,8 @@ export function tierAt(timeMs, peakHours = PEAK_HOURS) {
  * @property {string} key - the registry's projection key.
  * @property {*} schema - legacy (pre-0.1.1-rc) client-view zod schema.
  * @property {*} stateSchema - 0.1.1-rc persisted-state zod schema.
- * @property {() => any} init - the empty fold state.
+ * @property {(header: any, inheritedEventCount: number) => any} init - the
+ *   empty fold state for one session (the registry's fork cut rides in).
  * @property {(state: any, event: any) => any} apply - one committed event's
  *   incremental fold (returns the same reference when nothing changed).
  * @property {(state: any) => any} view - the client-visible cut.
@@ -370,10 +373,34 @@ export function tierAt(timeMs, peakHours = PEAK_HOURS) {
  * @property {number} [toolCalls] - schema-2 fallback scalar.
  */
 
+/** Fold-semantics version of the `pulseUsage` unit at load (the host adds its
+ *  peak-hour epoch on top). 12 is the fork-aware fold: a seeded session's
+ *  inherited prefix stops counting, so every row persisted before it
+ *  replays from its log. 11 added the tool histogram. */
+export const PULSE_STATE_VERSION = 12;
+
+/** The registry's fork cut, normalized: a positive safe integer, else 0
+ *  (unseeded sessions, synthetic folds, older hosts that pass nothing). */
+function cutOf(inheritedEventCount) {
+  return Number.isSafeInteger(inheritedEventCount) && inheritedEventCount > 0 ? inheritedEventCount : 0;
+}
+
+/** Whether `event` sits inside a fork's inherited prefix. */
+function isInherited(event, inheritedEventCount) {
+  return inheritedEventCount > 0 && typeof event.seq === "number" && event.seq < inheritedEventCount;
+}
+
 /**
  * The `pulseUsage` projection unit for `ctx.sessionProjections.register`.
  *
  * Folding semantics:
+ * - A seeded session (a fork, or a subagent spawned from the parent's
+ *   history) opens with a copy of its parent's events. The registry hands
+ *   the cut to `init` and then drives `apply` over the copied events too.
+ *   Every event below the cut is skipped: the parent's own fold already
+ *   counts that usage, and counting each copy billed it once more per fork.
+ *   The one exception is `session/title` — a fork stays named after the
+ *   conversation it forked from until it earns a title of its own.
  * - `byDay` / `modelsByDay` accumulate the disjoint provider usage of each
  *   `assistant/message` event (input = uncached input; cacheRead/cacheWrite
  *   are reported separately by the harness adapters). Model keys are
@@ -408,8 +435,9 @@ export function tierAt(timeMs, peakHours = PEAK_HOURS) {
  *   - peak-hour spec per composite model key (`provider\u0000model`, bare id
  *   without a provider); omitted models fold at the official windows
  *   (weekdays only). Defaults to the official windows for everything.
- * @param {number} [options.stateVersion=10] - fold-semantics version; the
- *   host bumps it when peak-hour settings change so persisted rows replay.
+ * @param {number} [options.stateVersion=PULSE_STATE_VERSION] - fold-semantics
+ *   version; the host bumps it when peak-hour settings change so persisted
+ *   rows replay.
  * @returns {ProjectionDefinition} the projection definition (`key`,
  *   `stateSchema`, `wire`, `init`, `apply`, `stateVersion`, plus the legacy
  *   `schema`/`view` pair).
@@ -423,7 +451,7 @@ export function tierAt(timeMs, peakHours = PEAK_HOURS) {
  * (a unit without `wire` is treated as host-internal and never surfaces in
  * snapshot values — the failure mode this dual contract exists to prevent).
  */
-export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 11 } = {}) {
+export function pulseProjectionDefinition({ peakHoursFor, stateVersion = PULSE_STATE_VERSION } = {}) {
   const dayOf = (event) => (num(event.time) > 0 ? localDay(event.time) : null);
   /** Per-model tier specs, materialized once (the map lives and dies with one
    *  registration, so a re-register on settings change starts it fresh). An
@@ -486,15 +514,25 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 11 } = 
     // 0.1.1-rc harnesses read `stateSchema` (full fold state, restore
     // boundary) and `wire` (client-visible view).
     stateSchema: pulseUsageStateSchema,
-    init() {
+    init(_header, inheritedEventCount) {
       return {
-        byDay: {}, modelsByDay: {}, hoursByDay: {}, tiersByDay: {}, turnsByDay: {}, toolCallsByDay: {}, toolHistogramByDay: {}, auxByDay: {}, firstDay: null, lastTurn: null, title: null,
+        byDay: {}, modelsByDay: {}, hoursByDay: {}, tiersByDay: {}, turnsByDay: {}, toolCallsByDay: {}, toolHistogramByDay: {}, auxByDay: {}, firstDay: null, lastTurn: null, inheritedEventCount: cutOf(inheritedEventCount), title: null,
       };
     },
     apply(state, event) {
       if (event === null || typeof event !== "object") return state;
       const { type, data } = event;
       if (data === null || typeof data !== "object") return state;
+      if (type === "session/title") {
+        // Last title wins: the log carries one per generation (llm or
+        // fallback), and the newest names the session best. Rides the
+        // inherited prefix too — it is a label, not usage.
+        const title = typeof data.title === "string" && data.title.trim() !== "" ? data.title.trim() : null;
+        if (title === null || title === state.title) return state;
+        return { ...state, title };
+      }
+      // Below the fork cut lies the parent's history, already folded there.
+      if (isInherited(event, state.inheritedEventCount)) return state;
       if (type === "assistant/message") {
         const usage = data.usage;
         if (usage === null || typeof usage !== "object") return state;
@@ -562,13 +600,6 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 11 } = 
         withFirstDay(next, day);
         return next;
       }
-      if (type === "session/title") {
-        // Last title wins: the log carries one per generation (llm or
-        // fallback), and the newest names the session best.
-        const title = typeof data.title === "string" && data.title.trim() !== "" ? data.title.trim() : null;
-        if (title === null || title === state.title) return state;
-        return { ...state, title };
-      }
       if (type === "web/deepseek-search-llm-request" || type === "session/title-llm-request") {
         // Auxiliary LLM calls (official web_search, title generation): the
         // log-only request event is the whole story locally. Search keeps a
@@ -625,10 +656,12 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 11 } = 
 }
 
 /** Fold a synthetic event array with the projection unit (tests, offline use).
- *  `options` reach {@link pulseProjectionDefinition} (`peakHoursFor`). */
-export function foldEvents(events, options = {}) {
+ *  `options` reach {@link pulseProjectionDefinition} (`peakHoursFor`);
+ *  `seed` is what the registry hands `init` — the session header and its
+ *  fork cut (`inheritedEventCount`; omitted means an unseeded session). */
+export function foldEvents(events, options = {}, seed = {}) {
   const definition = pulseProjectionDefinition(options);
-  let state = definition.init();
+  let state = definition.init(seed.header, seed.inheritedEventCount);
   for (const event of Array.isArray(events) ? events : []) {
     state = definition.apply(state, event);
   }
@@ -767,27 +800,32 @@ export function sliceRecord(record, fromDay, toDay) {
  * marks to task stages, not just wall-clock time. `aux` collects the
  * session's auxiliary requests (official web_search, title LLM) with the
  * title entries' text-derived input/output estimates, so the detail view can
- * render an honest auxiliary bill without re-reading the log.
+ * render an honest auxiliary bill without re-reading the log. Events inside
+ * a fork's inherited prefix are skipped, like the projection fold: the
+ * detail view shows the session's own consumption, not its parent's.
  *
  * @param {Array<{type?: string, time?: number, data?: any}>} events - a session's raw event log (ascending seq).
  * @param {object} [options]
  * @param {string} [options.id] - session id echoed into the result.
  * @param {{id?: string|null, createdAt?: number|null, cwd?: string|null, origin?: string, parentSession?: string|null, delegationDepth?: number}} [options.header] - the session header (identity fields).
+ * @param {number} [options.inheritedEventCount] - the fork cut: events with a lower `seq` are the parent's and stay out.
  * @returns {{id: string|null, header: object, events: Array, turns: Array, aux: Array}}
  *   `events` = `[{t, i, o, cr, cw, key}]` sorted by time; `turns` =
  *   `[{start, end, preview}]` in time order, where `preview` is the turn's
  *   opening user message flattened and capped to 40 code points (null when
  *   the turn carries no user text); `aux` = `[{t, kind, key?, in?, out?}]`.
  */
-export function timelineEvents(events, { id = null, header = null } = {}) {
+export function timelineEvents(events, { id = null, header = null, inheritedEventCount = 0 } = {}) {
   const out = [];
   const turns = [];
   const aux = [];
+  const cut = cutOf(inheritedEventCount);
   let openStart = null;
   let pendingPreview = null;
   let standbyPreview = null;
   for (const event of Array.isArray(events) ? events : []) {
     if (event === null || typeof event !== "object") continue;
+    if (isInherited(event, cut)) continue;
     if (event.type === "assistant/message") {
       const t = num(event.time);
       const u = compactUsage(event);

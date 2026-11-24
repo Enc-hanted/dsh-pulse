@@ -22,7 +22,7 @@ export { Config };
 export { buildStats };
 import {
   balanceSpendSeries, buildPayload, localDay, normalizePeakHours, projectOf,
-  pulseProjectionDefinition, resolveWindow, sliceRecord, timelineEvents, PEAK_HOURS,
+  pulseProjectionDefinition, resolveWindow, sliceRecord, timelineEvents, PEAK_HOURS, PULSE_STATE_VERSION,
 } from "./aggregate.js";
 import { detectAnomalies } from "./view/anomaly.js";
 import { AUX_SHAPE, AUX_PRICE_AS, DEFAULT_USD_TO_CNY, modelKey, OFFICIAL_PRICE_SCHEDULES, splitModelKey, applyDisplay } from "./view.js";
@@ -486,7 +486,7 @@ export function apply(ctx, config) {
    *  (the official hours, weekdays only). */
   const peakHoursFor = (model) => peakMap.get(model) ?? peakMap.get(splitModelKey(model).model) ?? { hours: PEAK_HOURS, weekdaysOnly: true };
   let disposeProjection = ctx.sessionProjections.register(
-    pulseProjectionDefinition({ peakHoursFor, stateVersion: 11 + epoch }),
+    pulseProjectionDefinition({ peakHoursFor, stateVersion: PULSE_STATE_VERSION + epoch }),
   );
   ctx.effect(() => () => disposeProjection(), "dsh-pulse: projection fallback");
   /** After a re-register every session must re-fold (persisted rows no
@@ -520,7 +520,7 @@ export function apply(ctx, config) {
     resetProjections();
     disposeProjection();
     disposeProjection = ctx.sessionProjections.register(
-      pulseProjectionDefinition({ peakHoursFor, stateVersion: 11 + epoch }),
+      pulseProjectionDefinition({ peakHoursFor, stateVersion: PULSE_STATE_VERSION + epoch }),
     );
     void warmUpRefolds();
   };
@@ -946,7 +946,12 @@ async function serveSession(ctx, url, req, res) {
   }
   try {
     const loaded = await ctx.sessionQuery.readSession(id);
-    const value = { ...timelineEvents(loaded.events, { id, header: loaded.session }), card: activeCard().card, cardOrigin: activeCard().origin };
+    // The fork cut rides in: a seeded session's timeline is its own events,
+    // never the parent history its log opens with.
+    const value = {
+      ...timelineEvents(loaded.events, { id, header: loaded.session, inheritedEventCount: loaded.inheritedEventCount }),
+      card: activeCard().card, cardOrigin: activeCard().origin,
+    };
     sessionCache.delete(id);
     sessionCache.set(id, { at: Date.now(), value });
     while (sessionCache.size > SESSION_CACHE_MAX) sessionCache.delete(sessionCache.keys().next().value);

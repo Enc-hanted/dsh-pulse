@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { SEED_CARD, applyCard, resetCard, activeCard, PEAK_HOURS, PROVIDER_SPECS } from "../src/pricing-facts.js";
 import { validateCard } from "../src/pricing/card-schema.js";
-import { cardDiff } from "../src/pricing/card.js";
+import { cardDiff, credentialRoutingDiff } from "../src/pricing/card.js";
 import { officialRulesFor, isOffPeakDay } from "../src/view/official-pricing.js";
 import { effectivePricing } from "../src/host/pricing-config.js";
 import { buildView } from "../src/view.js";
@@ -155,6 +155,59 @@ assert.ok(cardDiff(SEED_CARD, provChanged).some((r) => r.label === "provider:ope
   const dReordered = cardDiff(SEED_CARD, reorderedEdit);
   assert.deepEqual(dReordered.map((r) => r.label), ["usdToCny"],
     "a reordered card with one real edit surfaces exactly that one row");
+}
+
+// --- credential routing: the apply guard's subset of the preview diff -------
+// routes / hosts / auth / envKeys decide which credential is read and where
+// it is sent; the host demands an explicit acknowledgement for exactly these
+// rows (routes.js answers 422 without one). Everything else stays out.
+{
+  const routing = credentialRoutingDiff;
+  assert.deepEqual(routing(SEED_CARD, changed), [], "a price-only change never gates the apply");
+  const hostOnly = structuredClone(SEED_CARD);
+  hostOnly.providers[0].hosts[0].base = "https://elsewhere.example/v1";
+  const dHost = routing(SEED_CARD, hostOnly);
+  assert.equal(dHost.length, 1, "a changed host is exactly one row");
+  assert.equal(dHost[0].label, "provider:zai-coding.hosts[0].base", "…at its leaf label");
+  assert.equal(dHost[0].b, "https://elsewhere.example/v1");
+  const envAdded = structuredClone(SEED_CARD);
+  envAdded.providers[0].envKeys.push("DEEPSEEK_API_KEY");
+  const dEnv = routing(SEED_CARD, envAdded);
+  assert.ok(dEnv.length >= 1 && dEnv.every((r) => r.label.startsWith("provider:zai-coding.envKeys")), "an added envKeys entry is a routing change");
+  const authOnly = structuredClone(SEED_CARD);
+  authOnly.providers[1].auth = "raw";
+  assert.deepEqual(routing(SEED_CARD, authOnly).map((r) => r.label), ["provider:kimi-coding.auth"]);
+  const routesOnly = structuredClone(SEED_CARD);
+  routesOnly.providers[2].routes.push("minimax-extra");
+  const claimed = `provider:minimax.routes[${routesOnly.providers[2].routes.length - 1}]`;
+  assert.deepEqual(routing(SEED_CARD, routesOnly).map((r) => r.label), [claimed], "a claimed route selects another stored credential");
+  const provAdded = structuredClone(SEED_CARD);
+  provAdded.providers.push({ ...SEED_CARD.providers[0], id: "zai-twin", routes: ["zai-twin"] });
+  const dAdded = routing(SEED_CARD, provAdded);
+  assert.equal(dAdded.length, 1, "a provider added whole is one row");
+  assert.equal(dAdded[0].label, "provider:zai-twin");
+  assert.equal(dAdded[0].a, null, "…with no old value");
+  const provRemoved = structuredClone(SEED_CARD);
+  provRemoved.providers.pop();
+  assert.deepEqual(routing(SEED_CARD, provRemoved), [], "a removed provider sends nothing anywhere");
+  const windowOnly = structuredClone(SEED_CARD);
+  windowOnly.providers[1].windows[0].windowMs = 86400000;
+  assert.deepEqual(routing(SEED_CARD, windowOnly), [], "a windowMs edit is not a routing change");
+  const pathOnly = structuredClone(SEED_CARD);
+  pathOnly.providers[3].requests[0].path = "/inference/go/v1/usage";
+  assert.deepEqual(routing(SEED_CARD, pathOnly), [], "a request path only spends the credential");
+  // An id containing dots must not be split by a label pattern: the ids
+  // present in the two cards decide where the id ends and the field starts.
+  const dotted = structuredClone(SEED_CARD);
+  dotted.providers.push({ ...SEED_CARD.providers[0], id: "a.hosts", routes: ["a-hosts"] });
+  const dottedLabel = structuredClone(dotted);
+  dottedLabel.providers[4].label = "renamed";
+  assert.deepEqual(routing(dotted, dottedLabel), [], "a label edit under a dotted id is not routing");
+  const dottedHost = structuredClone(dotted);
+  dottedHost.providers[4].hosts[0].base = "https://b.example/v1";
+  const dDotted = routing(dotted, dottedHost);
+  assert.equal(dDotted.length, 1);
+  assert.equal(dDotted[0].label, "provider:a.hosts.hosts[0].base", "the dotted id stays whole in the label");
 }
 
 // --- apply reprices history and the merge; reset restores the seed --------

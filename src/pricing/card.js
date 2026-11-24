@@ -122,3 +122,44 @@ export function cardDiff(a, b) {
   for (const [id, spec] of pa) if (!pb.has(id)) push(`provider:${id}`, spec, undefined);
   return out;
 }
+
+/** Provider-spec fields that decide WHICH credential is read and WHERE it
+ *  is sent: `routes` selects the host-stored credential record
+ *  (`llm-pi-ai/<route>`) and the settings' per-route `apiKeyEnv`; `hosts`
+ *  and `auth` decide the destination and the header the credential travels
+ *  in; `envKeys` names ambient credential refs. Everything else a spec
+ *  carries (windows, counts, plan fees, request paths, error gates) only
+ *  spends the credential; it cannot redirect it. */
+const ROUTING_FIELDS = ["routes", "hosts", "auth", "envKeys"];
+
+/**
+ * The credential-routing subset of `cardDiff(a, b)`: the same row shape and
+ * labels, so what the preview flags is exactly what the host's apply guard
+ * demands an acknowledgement for. Kept rows: a provider added whole
+ * (`a === null` — a new spec is a new destination) and every changed leaf
+ * under the four routing fields, arrays per index (host order is match
+ * order). A removed provider, a price, a window, a plan fee or a request
+ * path never appears. Ids are matched against the ids actually present in
+ * the two cards, longest first, so an id containing dots cannot be split
+ * the wrong way by a label pattern. Pure.
+ * @param {any} a - the active card.
+ * @param {any} b - the candidate card.
+ * @returns {{label: string, a: any, b: any}[]} */
+export function credentialRoutingDiff(a, b) {
+  const prefix = "provider:";
+  const ids = [...new Set([...(a.providers ?? []), ...(b.providers ?? [])].map((spec) => spec.id))]
+    .sort((x, y) => y.length - x.length);
+  const out = [];
+  for (const row of cardDiff(a, b)) {
+    if (!row.label.startsWith(prefix)) continue;
+    const id = ids.find((candidate) => row.label === `${prefix}${candidate}` || row.label.startsWith(`${prefix}${candidate}.`));
+    if (id === undefined) continue;
+    const rest = row.label.slice((prefix + id).length);
+    if (rest === "") {
+      if (row.a === null) out.push(row);
+      continue;
+    }
+    if (ROUTING_FIELDS.some((field) => rest === `.${field}` || rest.startsWith(`.${field}[`) || rest.startsWith(`.${field}.`))) out.push(row);
+  }
+  return out;
+}

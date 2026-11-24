@@ -27,3 +27,21 @@ export declare const jsonEqual: (a: any, b: any) => boolean;
  *  row. The UI truncates at 40 rows with an overflow line. Pure; the UI
  *  renders it. */
 export declare function cardDiff(a: any, b: any): any[];
+/**
+ * The credential-routing subset of `cardDiff(a, b)`: the same row shape and
+ * labels, so what the preview flags is exactly what the host's apply guard
+ * demands an acknowledgement for. Kept rows: a provider added whole
+ * (`a === null` — a new spec is a new destination) and every changed leaf
+ * under the four routing fields, arrays per index (host order is match
+ * order). A removed provider, a price, a window, a plan fee or a request
+ * path never appears. Ids are matched against the ids actually present in
+ * the two cards, longest first, so an id containing dots cannot be split
+ * the wrong way by a label pattern. Pure.
+ * @param {any} a - the active card.
+ * @param {any} b - the candidate card.
+ * @returns {{label: string, a: any, b: any}[]} */
+export declare function credentialRoutingDiff(a: any, b: any): {
+    label: string;
+    a: any;
+    b: any;
+}[];

@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, jsx, jsxs } from "./react.js";
 import { DP_BUILD } from "./css.js";
 import { fill, invalidateSettings, loadStats, payloadCache, payloadError, statsState } from "./stores.js";
-import { Btn, Input } from "./adapter.js";
-import { cardDiff } from "../pricing/card.js";
+import { Btn, Checkbox, Input } from "./adapter.js";
+import { cardDiff, credentialRoutingDiff } from "../pricing/card.js";
 		/** Numeric semantic-version compare: `a` newer than `b` → >0. The
 		 *  prerelease suffix is ignored, which is what this comparison needs
 		 *  (a local build vs the published version). */
@@ -25,7 +25,9 @@ import { cardDiff } from "../pricing/card.js";
 		// `armReset` 是「恢复内置」的两步确认（先 arm 再 confirm）：回到内置
 		// 卡会丢弃整份运行时卡，不可一键直达——第一次点只进入待确认态，再
 		// 点同钮才执行；期间发起导入/拉取/应用即自动解除。
-		const [state, setState] = useState({ status: "loading", info: null, preview: null, busy: null, error: null, saved: null, url: "", armReset: false });
+			// `ackRouting` 是凭据去向确认：预览里出现 routes / hosts / auth / envKeys 的
+		// 变化时，「应用」要等用户勾选核对后才可用；每次新预览、取消、应用后都清零。
+		const [state, setState] = useState({ status: "loading", info: null, preview: null, busy: null, error: null, saved: null, url: "", armReset: false, ackRouting: false });
 		const fileRef = useRef(null);
 		const load = () => fetch("/pulse/pricing-card", { credentials: "same-origin", headers: { accept: "application/json" } })
 			.then(async (res) => {
@@ -54,13 +56,19 @@ import { cardDiff } from "../pricing/card.js";
 			// echoes it back so the host can refuse a preview that drifted
 			// stale while it sat unconfirmed (the apply-flow's concurrency
 			// anchor — the preview itself, not a hidden server diff).
-			...s, preview: { card, origin, base: s.info?.card ?? null, diff: s.info !== null ? cardDiff(s.info.card, card) : [] }, error: null, saved: null, armReset: false,
+			// `routing` 是 diff 里决定凭据去向的那部分行（与宿主守卫同一个
+			// 分类器）：预览把它们单独列出来，未勾选确认就不能应用。
+			...s, preview: { card, origin, base: s.info?.card ?? null, diff: s.info !== null ? cardDiff(s.info.card, card) : [], routing: s.info !== null ? credentialRoutingDiff(s.info.card, card) : [] }, error: null, saved: null, armReset: false, ackRouting: false,
 		}));
 		const applyCandidate = () => {
 			const p = state.preview;
 			if (p === null) return;
+			// 勾选只在 routing 非空时有意义；宿主守卫按 routing 非空判定，所以
+			// ackCredentials 也只在 routing 非空且已勾选时随请求发送。
+			const needsAck = (p.routing?.length ?? 0) > 0;
+			if (needsAck && state.ackRouting !== true) return;
 			setState((s) => ({ ...s, busy: "apply", error: null, saved: null, armReset: false }));
-			fetch("/pulse/pricing-card", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ card: p.card, origin: p.origin, base: p.base }) })
+			fetch("/pulse/pricing-card", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ card: p.card, origin: p.origin, base: p.base, ...(needsAck ? { ackCredentials: true } : {}) }) })
 				.then(async (res) => {
 					const body = await res.json();
 					// 409 = the active card moved under this preview; nothing was
@@ -70,7 +78,16 @@ import { cardDiff } from "../pricing/card.js";
 					// it lands.
 					if (res.status === 409) {
 						await afterApply();
-						setState((s) => ({ ...s, busy: null, preview: null, error: t("cardConflict") }));
+						setState((s) => ({ ...s, busy: null, preview: null, ackRouting: false, error: t("cardConflict") }));
+						return null;
+					}
+					// 422 = 宿主的凭据去向守卫：这张卡改了 routes / hosts / auth /
+					// envKeys 而请求没带确认，什么都没应用。与 409 同样先重载再
+					// 报错并丢弃预览，用户需重新预览、逐行核对后勾选。
+					if (res.status === 422) {
+						const n = Array.isArray(body?.changes) ? body.changes.length : 0;
+						await afterApply();
+						setState((s) => ({ ...s, busy: null, preview: null, ackRouting: false, error: fill(t("cardRoutingRefused"), { n }) }));
 						return null;
 					}
 					payloadError(res, body);
@@ -78,7 +95,7 @@ import { cardDiff } from "../pricing/card.js";
 				})
 				.then((body) => {
 					if (body === null) return;
-					setState((s) => ({ ...s, busy: null, preview: null, saved: t("cardSaved") }));
+					setState((s) => ({ ...s, busy: null, preview: null, ackRouting: false, saved: t("cardSaved") }));
 					afterApply();
 				})
 				.catch((error) => setState((s) => ({ ...s, busy: null, error: fill(t("cardFailed"), { err: String(error?.message ?? error) }) })));
@@ -119,14 +136,17 @@ import { cardDiff } from "../pricing/card.js";
 			setState((s) => ({ ...s, busy: "reset", error: null, saved: null, armReset: false }));
 			fetch("/pulse/pricing-card/reset", { method: "POST", credentials: "same-origin" })
 				.then(async (res) => { const body = await res.json(); payloadError(res, body); return body; })
-				.then(() => { setState((s) => ({ ...s, busy: null, preview: null, saved: t("cardResetDone") })); afterApply(); })
+				.then(() => { setState((s) => ({ ...s, busy: null, preview: null, ackRouting: false, saved: t("cardResetDone") })); afterApply(); })
 				.catch((error) => setState((s) => ({ ...s, busy: null, error: fill(t("cardFailed"), { err: String(error?.message ?? error) }) })));
 		};
 		const info = state.info;
 		const originLabel = info === null ? "" : info.origin === "bundled" ? t("cardBundled") : info.origin === "pulled" ? t("cardPulled") : t("cardImported");
 		const fmtVal = (v) => v === null ? "−" : typeof v === "object" ? JSON.stringify(v) : String(v);
 		const diffRows = state.preview?.diff ?? [];
+		const routingRows = state.preview?.routing ?? [];
 		const cardBusy = state.busy !== null;
+		// 凭据去向有变化且未勾选：「应用」禁用（onClick 里还会再拦一次）。
+		const applyLocked = routingRows.length > 0 && state.ackRouting !== true;
 		/** 卡片两行的渲染门：常态（info 就绪）与偏斜降级都渲染——区别只在
 		 *  降级态的 — 占位与导出禁用。别把变量名读成「只有降级才渲染」：
 		 *  ready 态走到这里是本来面目，不是降级。 */
@@ -162,12 +182,19 @@ import { cardDiff } from "../pricing/card.js";
 			] }),
 			state.preview !== null && jsxs("div", { className: "dp_setRow", children: [
 				jsx("div", { className: "dp_setSub", children: t("cardPreview") }),
+			// 凭据去向变化单独成块，排在普通 diff 之前，且不受 40 行截断。
+			routingRows.length > 0 && jsxs("div", { className: "dp_setRouting", children: [
+				jsx("div", { className: "dp_setSub dp_setMsgWarn", children: t("cardRoutingTitle") }),
+				jsx("span", { className: "dp_setMsg dp_setMsgWarn", children: t("cardRoutingNote") }),
+				...routingRows.map((row) => jsx("div", { className: "dp_setMsg dp_setMsgWarn", children: `${row.label}: ${fmtVal(row.a)} → ${fmtVal(row.b)}` }, row.label)),
+				jsx(Checkbox, { checked: state.ackRouting, disabled: cardBusy, onChange: (checked) => setState((s) => ({ ...s, ackRouting: checked === true })), label: t("cardRoutingAck") }),
+			] }),
 				diffRows.length === 0 && jsx("span", { className: "dp_setMsg", children: t("cardNoChange") }),
 				diffRows.slice(0, 40).map((row) => jsx("div", { className: "dp_setMsg", children: `${row.label}: ${fmtVal(row.a)} → ${fmtVal(row.b)}` }, row.label)),
 				diffRows.length > 40 && jsx("span", { className: "dp_setMsg", children: fill(t("cardMore"), { n: diffRows.length - 40 }) }),
 				jsxs("div", { className: "dp_setRow dp_setRowMid", children: [
-					jsx(Btn, { fallbackClass: "dp_miniBtn", variant: "primary", size: "sm", disabled: cardBusy, onClick: applyCandidate, children: t("cardApply") }),
-					jsx(Btn, { fallbackClass: "dp_miniBtn", variant: "outline", size: "sm", disabled: cardBusy, onClick: () => setState((s) => ({ ...s, preview: null })), children: t("cardCancel") }),
+					jsx(Btn, { fallbackClass: "dp_miniBtn", variant: "primary", size: "sm", disabled: cardBusy || applyLocked, onClick: applyCandidate, children: t("cardApply") }),
+					jsx(Btn, { fallbackClass: "dp_miniBtn", variant: "outline", size: "sm", disabled: cardBusy, onClick: () => setState((s) => ({ ...s, preview: null, ackRouting: false })), children: t("cardCancel") }),
 				] }),
 			] }),
 			state.error !== null && jsx("span", { className: "dp_setMsg dp_setMsgErr", children: state.error }),

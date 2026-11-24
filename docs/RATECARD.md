@@ -61,4 +61,6 @@
 - request id 唯一；每个 `request` 引用必须指向已声明端点。
 - 供应商 id 唯一；同一路由不得被两个 spec 认领。
 
+改 `routes` / `hosts` / `auth` / `envKeys` 的卡会改变凭据去向，应用前要在预览里逐行确认，见[配置 → 数据包](./CONFIGURATION.md#数据包运行时价格更新)。
+
 自定义第三方路由走设置表单（保存为 `quotaSpecs`），不必改卡；语法无法表达的形状，仍可编写遵循 `src/quota-adapters/types.js` 契约的代码适配器。

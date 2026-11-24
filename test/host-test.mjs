@@ -1557,6 +1557,40 @@ assert.ok(env.coldReads.length <= before + 3, "shared flight reads the cold corp
   resetCard(); // leave the module-global facts on the seed for any later reader
 }
 
+// --- card apply: a credential-routing change needs an explicit ack ----------
+// routes / hosts / auth / envKeys decide which stored credential a spec reads
+// and where it sends it. The preview lists those rows apart; the host holds
+// every caller to the same line: without `ackCredentials` the apply is a 422
+// that changes nothing, and the refused rows come back machine-readable.
+// Fresh env; the module-global card is left on the seed.
+{
+  const env = makeCtx({ withSettings: false });
+  apply(env.ctx, config);
+  const before = JSON.parse((await env.serve("/pulse/pricing-card")).body).card;
+  const retargetedHost = structuredClone(SEED_CARD);
+  retargetedHost.providers[0].hosts[0].base = "https://elsewhere.example/v1";
+  retargetedHost.version = SEED_CARD.version + 1;
+  const refused = await env.serve("/pulse/pricing-card", { method: "POST", body: { card: retargetedHost, origin: "imported" } });
+  assert.equal(refused.status, 422, "a host change without the acknowledgement is a 422");
+  const refusedBody = JSON.parse(refused.body);
+  assert.equal(refusedBody.ok, false, "the {ok:false,error} contract");
+  assert.equal(refusedBody.error, "credential-routing-changed", "…with a stable code");
+  assert.ok(Array.isArray(refusedBody.changes) && refusedBody.changes.length >= 1
+    && refusedBody.changes.some((row) => String(row.label).includes("hosts")), "the refused rows name the host change");
+  const after = JSON.parse((await env.serve("/pulse/pricing-card")).body).card;
+  assert.equal(JSON.stringify(after), JSON.stringify(before), "the refusal applied nothing");
+  // A price-only card needs no acknowledgement (the concurrency block above
+  // applies such cards bare); the same host change WITH it applies.
+  const acked = await env.serve("/pulse/pricing-card", { method: "POST", body: { card: retargetedHost, origin: "imported", ackCredentials: true } });
+  assert.equal(acked.status, 200, "the acknowledged apply goes through");
+  assert.equal(JSON.parse(acked.body).ok, true);
+  const active = JSON.parse((await env.serve("/pulse/pricing-card")).body).card;
+  assert.equal(active.providers[0].hosts[0].base, "https://elsewhere.example/v1", "…and the active card carries the retargeted host");
+  const reset = await env.serve("/pulse/pricing-card/reset", { method: "POST" });
+  assert.equal(JSON.parse(reset.body).ok, true, "reset restores the seed for any later reader");
+  resetCard();
+}
+
 // --- card pull: the fetch target is scheme-gated ---------------------------
 // The pull URL is user-reachable config handed straight to node's fetch,
 // which accepts more than http(s) (data: at minimum). The gate limits it to

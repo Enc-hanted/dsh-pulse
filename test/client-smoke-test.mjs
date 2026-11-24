@@ -30,6 +30,7 @@ import Module from "node:module";
 import { fileURLToPath } from "node:url";
 import esbuild from "esbuild";
 import { zh as localeZh } from "../src/client/locale.js";
+import { SEED_CARD } from "../src/pricing-facts.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -493,6 +494,7 @@ try {
 	{
 		const posts = [];
 		let conflictMode = false;
+		let fullCard = false;
 		// The host refuses any write whose revision isn't the current one,
 		// conflictMode or not — a stale mount-time revision must never land.
 		let rev = 7;
@@ -523,8 +525,22 @@ try {
 					? { ok: false, status: 409, json: async () => ({ ok: false, error: "conflict", conflict: { expected: rev, actual: rev + 1 } }) }
 					: { ok: true, status: 200, json: async () => ({ ok: true, refold: false }) };
 			}
+			// The apply POST is recorded; the host's 422 path is host-test's
+			// contract, so here an acknowledged apply simply lands.
+			if (url === "/pulse/pricing-card" && method === "POST") {
+				posts.push({ url, body: JSON.parse(init.body) });
+				return { ok: true, status: 200, json: async () => ({ ok: true, refold: false }) };
+			}
 			if (url === "/pulse/pricing-card") {
-				return { ok: true, status: 200, json: async () => ({ ok: true, card: { schemaVersion: 3, version: 3, checkedAt: "2026-11-18" }, origin: "imported", seedVersion: 3, source: "https://x/ratecard.json" }) };
+				// `fullCard` swaps the mini card for the real seed once the
+				// credential-routing case needs a diffable base.
+				return { ok: true, status: 200, json: async () => ({ ok: true, card: fullCard ? SEED_CARD : { schemaVersion: 3, version: 3, checkedAt: "2026-11-18" }, origin: "imported", seedVersion: 3, source: "https://x/ratecard.json" }) };
+			}
+			if (url === "/pulse/pricing-card/pull") {
+				const retargeted = structuredClone(SEED_CARD);
+				retargeted.providers[0].hosts[0].base = "https://elsewhere.example/v1";
+				retargeted.version = SEED_CARD.version + 1;
+				return { ok: true, status: 200, json: async () => ({ ok: true, card: retargeted, source: "https://x/ratecard.json" }) };
 			}
 			if (url === "/pulse/pricing-card/reset") {
 				posts.push({ url, body: null });
@@ -605,6 +621,32 @@ try {
 			await settle();
 			assert.equal(posts.some((p) => p.url === "/pulse/pricing-card/reset"), true, "the second click executes the reset");
 			assert.equal(els(cardPanel.tree).some((el) => flatten(el.props?.children) === t("cardResetDone")), true, "the done line shows after the confirmed reset");
+
+			// PulseCardPanel: a card that changes credential routing (routes /
+			// hosts / auth / envKeys) lists those rows apart, keeps Apply
+			// disabled until the acknowledgement is ticked, and only then
+			// sends ackCredentials with the apply.
+			fullCard = true;
+			const routingPanel = harness(panels.PulseCardPanel);
+			await settle();
+			click(buttonOf(routingPanel.tree, t("cardPull")));
+			await settle();
+			const routingBox = els(routingPanel.tree).find((el) => el.props?.className === "dp_setRouting");
+			assert.ok(routingBox !== undefined, "the routing block renders apart from the plain diff");
+			assert.ok(/provider:zai-coding\.hosts\[0\]\.base: \S+ → https:\/\/elsewhere\.example\/v1/.test(flatten(routingBox.props.children)),
+				"the block names the host change old → new");
+			assert.equal(buttonOf(routingPanel.tree, t("cardApply")).props.disabled, true, "Apply stays disabled until the routing is acknowledged");
+			const ack = els(routingPanel.tree).find((el) => el.type === "input" && el.props.type === "checkbox");
+			assert.ok(ack !== undefined, "the acknowledgement checkbox renders");
+			ack.props.onChange({ target: { checked: true } });
+			const applyAcked = buttonOf(routingPanel.tree, t("cardApply"));
+			assert.equal(applyAcked.props.disabled, false, "ticking it unlocks Apply");
+			click(applyAcked);
+			await settle();
+			const applyPost = posts.find((p) => p.url === "/pulse/pricing-card" && p.body?.card !== undefined);
+			assert.ok(applyPost !== undefined, "the acknowledged apply POSTs the card");
+			assert.equal(applyPost.body.ackCredentials, true, "…and carries ackCredentials");
+			fullCard = false;
 
 			// PricingPage: persist rides writeSettings, so a revision another
 			// panel bumped after mount must NOT 409 the save — the skeleton

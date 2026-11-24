@@ -61,4 +61,6 @@ Each spec describes the wire facts: route claims, host variants, auth, endpoint 
 - Request ids are unique; every `request` reference must name a declared endpoint.
 - Provider ids are unique; no route may be claimed by two specs.
 
+A card that changes `routes` / `hosts` / `auth` / `envKeys` changes where credentials go; the apply needs a per-row acknowledgement in the preview, see [Configuration → Data card](./CONFIGURATION.md#data-card-runtime-price-updates).
+
 Custom third-party routes go through the settings form (saved as `quotaSpecs`), no card edit needed; a shape the grammar cannot express can still be a hand-written adapter honoring the `src/quota-adapters/types.js` contract.

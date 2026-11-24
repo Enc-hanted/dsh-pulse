@@ -8,7 +8,7 @@
 
 import { SEED_CARD, activeCard, resetCard } from "../pricing-facts.js";
 import { cardIssueLines, validateCard } from "./card-schema.js";
-import { jsonEqual } from "./card.js";
+import { credentialRoutingDiff, jsonEqual } from "./card.js";
 import { json, methodNotAllowed, refuseCrossSitePost, assertCardSourceUrl, readBody } from "../http-helpers.js";
 
 /**
@@ -58,6 +58,20 @@ export async function handlePricingCardRoute(pathname, req, res, deps) {
     // fails closed.
     if (parsed?.base !== undefined && !jsonEqual(parsed.base, activeCard().card)) {
       json(res, 409, { ok: false, error: "card-changed" });
+      return true;
+    }
+    // Credential-routing guard: the four provider fields that decide which
+    // credential is read and where it is sent (card.js
+    // credentialRoutingDiff — the SAME rows the preview lists apart) gate
+    // the apply behind an explicit `ackCredentials`. The preview's diff put
+    // a host change and a price change on the same line, so a card from an
+    // untrusted source could retarget a stored provider key with nothing
+    // but a grey row for warning. The baseline is the active card, which
+    // the base guard above already tied to what the preview showed; a
+    // caller that sends no base (curl, scripts) is held to it all the same.
+    const routing = credentialRoutingDiff(activeCard().card, card);
+    if (routing.length > 0 && parsed?.ackCredentials !== true) {
+      json(res, 422, { ok: false, error: "credential-routing-changed", changes: routing });
       return true;
     }
     const refold = await store.refreshCard(card, parsed?.origin === "pulled" ? "pulled" : "imported");

@@ -51,12 +51,12 @@ CI（`.github/workflows/test.yml`）在 ubuntu-latest 与 windows-latest（Node 
 src/index.js          宿主插件：投影单元、HTTP 路由、设置、启动接缝日志
 src/aggregate.js      折叠：会话日志 → 逐会话记录 → pulseUsage state
 src/view/             纯派生数据：build-view、定价引擎、对账、额度估算、异常
-src/pricing/          费率卡 ratecard.json + 校验 card-schema.js + diff/拉取 card.js + 服务 index.js
+src/pricing/          数据卡 ratecard.json + 校验 card-schema.js + diff/拉取 card.js + 存储 store.js + HTTP 路由 routes.js + 服务 index.js
 src/pricing-facts.js  卡事实的运行时 derive（价目、峰谷、节假日、按次费）
 src/quota-adapters/   额度 SPI：spec-engine.js 解析卡内声明式供应商 spec，types.js 契约
 src/balance-service.js  官方余额出站查询
 src/quota-service.js    订阅额度出站查询
-src/http-helpers.js   共享守卫：同源、拒重定向、环回 http
+src/http-helpers.js   共享守卫与助手：同源、拒重定向、环回 http、请求体读取 readBody
 src/client/           web UI 源码（esbuild → lib/client.js）
 src/tui/              终端面：scene、data、draw、strip
 src/host/             schemastery 配置 schema 与定价配置

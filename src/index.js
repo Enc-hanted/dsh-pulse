@@ -7,7 +7,7 @@ import {
 import {
 	mergePricingRows, effectivePricing, peakMapOf, peakMapKey, effectiveUsdToCny, effectiveCardSource,
 } from "./host/pricing-config.js";
-import { methodNotAllowed, assertCardSourceUrl, refuseCrossSitePost } from "./http-helpers.js";
+import { methodNotAllowed, assertCardSourceUrl, refuseCrossSitePost, readBody } from "./http-helpers.js";
 import { setQuickReader } from "./quick-reader.js";
 export { Config };
 
@@ -26,12 +26,11 @@ import {
 } from "./aggregate.js";
 import { detectAnomalies } from "./view/anomaly.js";
 import { AUX_SHAPE, AUX_PRICE_AS, DEFAULT_USD_TO_CNY, modelKey, OFFICIAL_PRICE_SCHEDULES, splitModelKey, applyDisplay } from "./view.js";
-import { RATECARD, RATECARD_VERSION, SEED_CARD, applyCard, resetCard, activeCard, PROVIDER_SPECS } from "./pricing-facts.js";
-import { cardIssueLines, validateCard, validateProviderSpec } from "./pricing/card-schema.js";
-import { DEFAULT_CARD_SOURCE, jsonEqual } from "./pricing/card.js";
-import { openRollingGlobalDomain } from "./rolling-domain.js";
-import { defineDomain } from "@deepseek-ai/dsh-storage-domain";
-import { z as zv } from "zod";
+import { RATECARD, RATECARD_VERSION, activeCard, PROVIDER_SPECS } from "./pricing-facts.js";
+import { validateProviderSpec } from "./pricing/card-schema.js";
+import { DEFAULT_CARD_SOURCE } from "./pricing/card.js";
+import { createCardStore } from "./pricing/store.js";
+import { handlePricingCardRoute } from "./pricing/routes.js";
 import { createBalanceService } from "./balance-service.js";
 import { createQuotaService } from "./quota-service.js";
 import { json } from "./http-helpers.js";
@@ -526,24 +525,6 @@ export function apply(ctx, config) {
     void warmUpRefolds();
   };
 
-  /** The stored data-card override (import/pull), opened once per fiber;
-   *  an absent storage facility degrades to the bundled seed. */
-  const openCardDomain = openRollingGlobalDomain(ctx, defineDomain({
-    name: "pulse_card",
-    version: 0,
-    tables: {},
-    global: {
-      // zod v4 (this package) vs the storage-domain seam's zod v3 types: the
-      // schema is plain data to the seam (it validates at the durable
-      // boundary), so the cross-version assignment is asserted away.
-      schema: /** @type {any} */ (zv.object({
-        card: zv.unknown().nullable(),
-        origin: zv.string(),
-        savedAt: zv.number(),
-      })),
-      initial: { card: null, origin: "bundled", savedAt: 0 },
-    },
-  }), "dsh-pulse: card domain");
   /** Re-derive the fold's tier map after a config edit OR a card apply;
    *  re-register (and warm refolds) only when the tier scope moved. The
    *  signature includes the LIVE official peak hours: official rows are
@@ -563,14 +544,6 @@ export function apply(ctx, config) {
       return true;
     }
     return false;
-  };
-  /** Store + apply a validated card, drop served payloads and the session
-   *  cache, and refold when the tier scope moved. Returns the refold flag. */
-  const refreshCard = async (card, origin) => {
-    applyCard(card, origin);
-    const domain = await openCardDomain();
-    if (domain !== null) await domain.global.set({ card, origin, savedAt: Date.now() });
-    return afterCardChange();
   };
 
   /** Track the `llm` service when present, for the settings editor's model
@@ -611,36 +584,12 @@ export function apply(ctx, config) {
   // The module-level TTL cache outlives a loader restart (only the fiber is
   // recycled), so every (re)application starts from a clean payload slate.
   invalidatePayload();
-  /** Boot applies the stored card before the first fold; buildStats awaits
-   *  this so a cold first request never prices against the seed by race. */
-  cardReady = (async () => {
-    try {
-      const domain = await openCardDomain();
-      if (domain === null) return;
-      const stored = domain.global.get();
-      if (stored !== null && typeof stored === "object" && stored.card) {
-        applyCard(validateCard(stored.card), stored.origin === "pulled" ? "pulled" : "imported");
-        // Same symmetry as refreshCard and the reset route: applyCard republished
-        // the card-derived DEFAULT_USD_TO_CNY, but this continuation always runs
-        // AFTER the synchronous applyDisplay below — the IIFE suspends at the
-        // storage read, so that first derive saw the bundled seed. A host whose
-        // config.usdToCny is not a usable positive number would otherwise keep
-        // the seed rate in the display realm (TUI strip, usage-query answers)
-        // until the next settings event or HTTP card apply.
-        afterCardChange();
-      }
-    } catch {
-      // One fail-open unit, read included: a throwing storage seam used to
-      // reject cardReady here and take every /pulse/stats request down with
-      // it. An unreadable or invalid stored card falls back to the bundled
-      // seed instead — and says so in the host log, because a silently
-      // ignored override is exactly the version skew that must be visible.
-      // resetCard is real work on a re-apply: module facts outlive the fiber,
-      // so a prior fiber may have left a now-undiscoverable card live.
-      resetCard();
-      ctx.logger?.info?.("dsh-pulse: stored data card ignored (unreadable or invalid) — the bundled seed stays authoritative");
-    }
-  })();
+  /** The stored data-card override (import/pull) lives in the card store:
+   *  it applies a stored card at boot (buildStats awaits `cardReady` so a
+   *  cold first request never prices against the seed by race), and every
+   *  card change funnels back through afterCardChange. */
+  const cardStore = createCardStore({ ctx, afterChange: afterCardChange });
+  cardReady = cardStore.cardReady;
   // apply() 时的一次性显示初始化经由 onSettingsChanged（内部走 afterCardChange
   // 的 helper 版 applyDisplay）：此前 569 行的裸 applyDisplay 与 572 行的重复
   // 调用是同一配置的连打，现在只保留 helper 里那一次。
@@ -877,98 +826,7 @@ export function apply(ctx, config) {
           await serveUpdateCheck(req, res, effectiveCardSource(resolveConfig()));
           return;
         }
-        if (pathname === "/pulse/pricing-card") {
-          if (req.method === "GET" || req.method === "HEAD") {
-            const a = activeCard();
-            json(res, 200, { ok: true, card: a.card, origin: a.origin, seedVersion: SEED_CARD.version, source: effectiveCardSource(resolveConfig()) });
-            return;
-          }
-          if (req.method !== "POST") {
-            methodNotAllowed(res, "GET, HEAD, POST");
-            return;
-          }
-          if (refuseCrossSitePost(req, res)) return;
-          let parsed;
-          try { parsed = JSON.parse(await readBody(req)); } catch { json(res, 400, { ok: false, error: "invalid JSON body" }); return; }
-          let card;
-          // A structural violation answers as readable per-field lines
-          // ("pricing.usdToCny: …") — the raw ZodError.message is an issues
-          // JSON string, hostile to a user hand-editing a card.
-          try { card = validateCard(parsed?.card); } catch (error) { json(res, 400, { ok: false, error: cardIssueLines(error) ?? String(error?.message ?? error) }); return; }
-          // Concurrency guard: the client echoes the card its preview was
-          // staged against (`base`). A mismatch means the active card moved
-          // under the preview — refusing beats silently overwriting a card
-          // the user never saw. The comparison is the SAME structural
-          // equality the preview diff renders (card.js jsonEqual): what the
-          // preview called "no change" must be exactly what this guard calls
-          // "safe to overwrite". Absent `base` keeps the legacy
-          // trusted-caller posture (curl, scripts); a base that never matches
-          // fails closed.
-          if (parsed?.base !== undefined && !jsonEqual(parsed.base, activeCard().card)) {
-            json(res, 409, { ok: false, error: "card-changed" });
-            return;
-          }
-          const refold = await refreshCard(card, parsed?.origin === "pulled" ? "pulled" : "imported");
-          json(res, 200, { ok: true, refold });
-          return;
-        }
-        if (pathname === "/pulse/pricing-card/validate") {
-          if (req.method !== "POST") {
-            methodNotAllowed(res, "POST");
-            return;
-          }
-          if (refuseCrossSitePost(req, res)) return;
-          let parsed;
-          try { parsed = JSON.parse(await readBody(req)); } catch { json(res, 400, { ok: false, error: "invalid JSON body" }); return; }
-          try { json(res, 200, { ok: true, card: validateCard(parsed?.card) }); } catch (error) { json(res, 400, { ok: false, error: cardIssueLines(error) ?? String(error?.message ?? error) }); }
-          return;
-        }
-        if (pathname === "/pulse/pricing-card/pull") {
-          if (req.method !== "POST") {
-            methodNotAllowed(res, "POST");
-            return;
-          }
-          if (refuseCrossSitePost(req, res)) return;
-          let body = {};
-          try { body = JSON.parse((await readBody(req)) || "{}"); } catch { json(res, 400, { ok: false, error: "invalid JSON body" }); return; }
-          const rawSource = typeof body?.url === "string" && body.url !== "" ? body.url : effectiveCardSource(resolveConfig());
-          // The fetch target is scheme-gated through the shared
-          // assertCardSourceUrl (update-check probes the same gate): node's
-          // fetch accepts more than http(s) (data: at minimum), and a pull
-          // URL is user-reachable config — it must never become a
-          // file:/data: side channel. http stays loopback-only (a local
-          // mirror is a legitimate dev setup); every remote source is
-          // pinned to https.
-          try { assertCardSourceUrl(rawSource); } catch (error) {
-            json(res, 400, { ok: false, error: String(error?.message ?? error) });
-            return;
-          }
-          try {
-            const response = await fetch(rawSource, { headers: { accept: "application/json" }, redirect: "error", signal: AbortSignal.timeout(8000) });
-            if (!response.ok) throw new Error(`card source HTTP ${response.status}`);
-            const card = validateCard(await response.json());
-            json(res, 200, { ok: true, card, source: rawSource });
-          } catch (error) {
-            json(res, 200, { ok: false, error: cardIssueLines(error) ?? String(error?.message ?? error) });
-          }
-          return;
-        }
-        if (pathname === "/pulse/pricing-card/reset") {
-          if (req.method !== "POST") {
-            methodNotAllowed(res, "POST");
-            return;
-          }
-          if (refuseCrossSitePost(req, res)) return;
-          resetCard();
-          const domain = await openCardDomain();
-          if (domain !== null) await domain.global.set({ card: null, origin: "bundled", savedAt: Date.now() });
-          // Same symmetry as refreshCard: the seed restores the card-derived
-          // DEFAULT_USD_TO_CNY, so the display rate must re-derive too (a
-          // pulled card's rate would otherwise linger after the reset).
-          const refold = afterCardChange();
-          json(res, 200, { ok: true, refold });
-          return;
-        }
+        if (await handlePricingCardRoute(pathname, req, res, { store: cardStore, cardSource: () => effectiveCardSource(resolveConfig()), afterChange: afterCardChange })) return;
         const wantsJson = pathname === "/pulse" || pathname === "/pulse/stats";
         if (!wantsJson || (req.method !== "GET" && req.method !== "HEAD")) {
           res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
@@ -1057,27 +915,6 @@ async function serveUpdateCheck(req, res, cardSource) {
   } catch (error) {
     json(res, 200, { ok: false, error: String(error?.message ?? error), checkedAt: Date.now() });
   }
-}
-
-/** Read a request body as UTF-8 text (streaming for real sockets, `req.body`
- *  for stubs/tests), capped at 1 MiB. */
-function readBody(req) {
-  if (typeof req.body === "string") return Promise.resolve(req.body);
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    let size = 0;
-    req.on("data", (chunk) => {
-      size += chunk.length;
-      if (size > 1e6) {
-        reject(new Error("request body too large"));
-        if (typeof req.destroy === "function") req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
-  });
 }
 
 /** Short TTL + bounded LRU for `/pulse/session` event timelines: the raw

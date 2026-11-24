@@ -51,12 +51,12 @@ CI (`.github/workflows/test.yml`) runs `npm ci → npm run typecheck → npm tes
 src/index.js          host plugin: projection unit, HTTP routes, settings, startup seam log
 src/aggregate.js      the fold: session logs → per-session records → pulseUsage state
 src/view/             pure derived data: build-view, pricing engine, reconciliation, quota estimates, anomaly
-src/pricing/          rate card ratecard.json + validation card-schema.js + diff/pull card.js + service index.js
+src/pricing/          data card ratecard.json + validation card-schema.js + diff/pull card.js + storage store.js + HTTP routes routes.js + service index.js
 src/pricing-facts.js  runtime derive of the card's facts (schedules, peak hours, holidays, per-call fees)
 src/quota-adapters/   quota SPI: spec-engine.js parses the card's declarative provider specs, types.js contract
 src/balance-service.js  official-balance outbound query
 src/quota-service.js    subscription-quota outbound query
-src/http-helpers.js   shared guards: same-origin, refuse redirects, loopback http
+src/http-helpers.js   shared guards and helpers: same-origin, refuse redirects, loopback http, request body reading (readBody)
 src/client/           web UI source (esbuild → lib/client.js)
 src/tui/              terminal face: scene, data, draw, strip
 src/host/             schemastery config schema and pricing config

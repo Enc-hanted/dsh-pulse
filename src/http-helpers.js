@@ -105,3 +105,29 @@ export function refuseCrossSitePost(req, res) {
   json(res, 403, { ok: false, error: "cross-site request refused" });
   return true;
 }
+
+/** Read a request body as UTF-8 text (streaming for real sockets, `req.body`
+ *  for stubs/tests), capped at 1 MiB. Shared by every POST route (settings,
+ *  quota probe, pricing-card).
+ *
+ * @param {any} req - node request (test stubs may carry a string `body`).
+ * @returns {Promise<string>} the body text.
+ */
+export function readBody(req) {
+  if (typeof req.body === "string") return Promise.resolve(req.body);
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > 1e6) {
+        reject(new Error("request body too large"));
+        if (typeof req.destroy === "function") req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
+}

@@ -40,3 +40,11 @@ export declare function isCrossSitePost(req: any): boolean;
 /** The shared refusal for cross-site mutation POSTs; true = reply written.
  *  Contract body, like every JSON error face: {ok:false,error}. */
 export declare function refuseCrossSitePost(req: any, res: any): boolean;
+/** Read a request body as UTF-8 text (streaming for real sockets, `req.body`
+ *  for stubs/tests), capped at 1 MiB. Shared by every POST route (settings,
+ *  quota probe, pricing-card).
+ *
+ * @param {any} req - node request (test stubs may carry a string `body`).
+ * @returns {Promise<string>} the body text.
+ */
+export declare function readBody(req: any): Promise<string>;

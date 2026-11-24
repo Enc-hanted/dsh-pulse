@@ -6,7 +6,7 @@
  */
 
 import { tokSum } from "./data.js";
-import { clockOf, fmtTokens, moneyCny } from "../view.js";
+import { clockOf, activeCurrency, fmtTokens, moneyCny } from "../view.js";
 
 // One abbreviation across both faces now — fmtTokens carries the B tier the
 // TUI ladder lacked (1.5e9 printed 1500.0M here, 1.5B on the web).
@@ -148,10 +148,13 @@ export function wrapDisplay(text, width) {
 
 /** Unified money label: ¥ never omitted, ≈ marks estimate-layer money.
  *  Bare numbers ("3.94" beside "138.5M tok") read as ambiguity — every
- *  amount in the scene goes through this. Exported for test/tui-test.mjs. */
+ *  amount in the scene goes through this, and the zero/invalid placeholder
+ *  carries the unit too (USD display mode reads "— USD"; CNY keeps "¥—"),
+ *  so the dash never names a currency the numbers don't use.
+ *  Exported for test/tui-test.mjs. */
 export function money(cost, estimated) {
 	const v = Number(cost);
-	if (!Number.isFinite(v) || v <= 0) return "¥—";
+	if (!Number.isFinite(v) || v <= 0) return activeCurrency() === "USD" ? "— USD" : "¥—";
 	return `${estimated ? "≈" : ""}${moneyCny(v)}`;
 }
 
@@ -276,13 +279,22 @@ const MODEL_ROW_STEPS = [
 	{ name: 14, bar: 0, pct: false, tokPad: 5, tight: true, cost: false },
 ];
 
+/** The cost column's reserved width, unit-aware: USD display mode prints the
+ *  unit TAIL ("≈1234.56 USD"), ~4 columns wider than the ¥ face the budget
+ *  was modeled on — a budget stuck on the ¥ shape under-reserves the row and
+ *  a narrow terminal wraps it mid-cost. CNY keeps the historical 10 so the
+ *  default ladder geometry (and its tui-test pins) never move. */
+function costBudget() {
+	return activeCurrency() === "USD" ? 14 : 10;
+}
+
 function modelRowWidth(step) {
 	return step.name
 		+ (step.bar > 0 ? step.bar + 1 : 0)
 		+ (step.pct ? 4 : 0)
 		+ step.tokPad + 1
 		+ 3 // 计价 tag
-		+ (step.cost ? 10 : 0); // " ≈¥123.45"
+		+ (step.cost ? costBudget() : 0); // " ≈¥1234.56" / USD: " ≈1234.56 USD"
 }
 
 /** Exported for test/tui-test.mjs. */

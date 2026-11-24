@@ -7,6 +7,8 @@
 
 import z from "@deepseek-ai/schemastery";
 import { AUX_SHAPE } from "../view.js";
+import { DEFAULT_CARD_SOURCE } from "../pricing/card.js";
+import { validateProviderSpec } from "../pricing/card-schema.js";
 import { DEFAULT_USD_TO_CNY } from "../pricing-facts.js";
 
 /** One pricing rule (top-level rates are off-peak; `peak` holds the
@@ -32,28 +34,34 @@ const pricingRuleSchema = z.object({
 /** Schemastery validation with deployment-friendly defaults. Display fields
  *  are `.volatile()`: the harness hands them to `apply` as live references
  *  and commits edits to them in place — no plugin restart, no fold epoch
- *  reset. `pricing` deliberately stays ordinary: its peak-hour half must
- *  re-fold history, and the entry restart an ordinary edit triggers is
- *  exactly that boundary (persisted rows keyed by the pre-restart
- *  `stateVersion` mismatch and replay once). */
+ *  reset. `pricing` is volatile too: peak-hour changes re-fold through
+ *  syncPeak's `peakMapKey` signature (indexed off the custom rules'
+ *  peakHours in pricing-config.js peakMapOf) which bumps the fold epoch, and
+ *  price-only edits need no refold at all — so the entry restart an
+ *  ordinary edit triggers is no longer the necessary boundary (persisted
+ *  rows replay at the bumped stateVersion without it). */
 export const Config = z.object({
-  currency: z.union(["CNY", "USD"]).default("CNY").description("global pricing currency; every effective rule prices in it and USD rates convert to the unified CNY total").volatile(),
+  currency: z.union(["CNY", "USD"]).default("CNY").description("currency your custom rates are denominated in; official rules keep their published currency and USD rates convert to the unified CNY total").volatile(),
+  displayCurrency: z.union(["CNY", "USD"]).default("CNY").description("display currency for every money face (estimates and balances convert at the single money exit; internal accounting stays CNY)").volatile(),
   topProjects: z.number().default(8).description("how many project rows to keep in the breakdown").volatile(),
   projectDepth: z.number().default(1).description("path segments kept in a project label (1..3; deeper disambiguates same-named directories)").volatile(),
   defaultDays: z.number().default(30).description("day window served when the client sends no range").volatile(),
   costEnabled: z.boolean().default(true).description("show cost estimates; off hides the cost chip and the /pulse command cost line").volatile(),
   usdToCny: z.number().default(DEFAULT_USD_TO_CNY).description("USD→CNY rate converting USD-priced models into the unified CNY estimate").volatile(),
+  pricingCardSource: z.string().default(DEFAULT_CARD_SOURCE).description("URL the settings page's pull action fetches the data card from; importing a file needs no network"),
   monthlyProviders: z.array(z.string()).default([]).description("provider route ids billed as a flat monthly subscription — their models cost 0 marginal and need no per-model rates").volatile(),
   monthlyFee: z.dict(z.number()).default({}).description("provider route id → flat monthly price (CNY/month); the amount shows beside the 月付费 toggle and joins plan comparison as a subscription row").volatile(),
   searchShape: z.dict(z.number()).default({}).description("manual per-search-call token shape, keys miss/hit/out (tokens per call); empty = auto, letting the view self-calibrate the shape against the official balance. Any key here freezes calibration").volatile(),
   quotaOff: z.array(z.string()).default([]).description("provider route ids whose subscription-quota queries are disabled (quota-capable routes are detected automatically)").volatile(),
+  footSource: z.string().default("").description("sidebar quick-display source: '' = auto (official balance when configured, else the first answered subscription), 'official', or a provider route id").volatile(),
+  quotaSpecs: z.dict(z.any()).default({}).description("route id → custom provider query spec (the card's declarative wire grammar); claims only routes no card spec claims").volatile(),
   modelColors: z.dict(z.string()).default({}).description("per-model accent colors for the model charts, keyed by model id; '' restores the automatic vendor/hue assignment").volatile(),
-  pricing: z.array(pricingRuleSchema).default([]).description("per-model rates; empty disables cost estimation"),
+  pricing: z.array(pricingRuleSchema).default([]).description("per-model rates; empty disables cost estimation").volatile(),
 });
 
 /** The Config keys marked `.volatile()` — the only fields the harness may
  *  hand over as live references instead of plain values. */
-const VOLATILE_KEYS = ["currency", "topProjects", "projectDepth", "defaultDays", "costEnabled", "usdToCny", "monthlyProviders", "monthlyFee", "quotaOff", "modelColors", "searchShape"];
+const VOLATILE_KEYS = ["currency", "displayCurrency", "topProjects", "projectDepth", "defaultDays", "costEnabled", "usdToCny", "pricing", "monthlyProviders", "monthlyFee", "quotaOff", "modelColors", "searchShape", "footSource", "quotaSpecs"];
 
 /** Unwrap one live reference (a volatile value implements `.get()`) while
  *  letting plain values through, so one reader serves every host generation. */
@@ -119,6 +127,26 @@ function sanitizeSearchShape(value) {
   return out;
 }
 
+/** Wire filter for custom provider query specs: each entry must validate
+ *  against the card's spec grammar and claim its own route key; bounded
+ *  count so a hand-edited patch cannot grow the roster unboundedly. */
+function sanitizeQuotaSpecs(value) {
+  const out = {};
+  if (value === null || typeof value !== "object") return out;
+  for (const [route, spec] of Object.entries(value)) {
+    if (typeof route !== "string" || route === "" || route.length > 120) continue;
+    if (Object.keys(out).length >= 16) break;
+    try {
+      const validated = validateProviderSpec(spec);
+      if (!validated.routes.includes(route)) continue;
+      out[route] = validated;
+    } catch {
+      // invalid custom specs stay inert, never break the settings face
+    }
+  }
+  return out;
+}
+
 /** The payload's effective aux shape: the manual keys overlay the built-in
  *  seed; `manual` tells the client whether the self-calibration is frozen. */
 function effectiveAuxShape(config) {
@@ -136,12 +164,19 @@ function settingsPatchOf(body) {
     ...(body.usdToCny !== undefined ? { usdToCny: body.usdToCny } : {}),
     ...(body.pricing !== undefined ? { pricing: body.pricing } : {}),
     ...(body.currency !== undefined ? { currency: body.currency } : {}),
+    // displayCurrency must ride the patch explicitly: the POST schema accepts
+    // it and GET echoes it, but without this line the write "succeeds" while
+    // the stored config silently stays CNY — every money face keeps rendering
+    // CNY no matter what the panel flipped (the reported 「改完自己又变回 CNY」).
+    ...(body.displayCurrency !== undefined ? { displayCurrency: body.displayCurrency === "USD" ? "USD" : "CNY" } : {}),
     ...(body.monthly !== undefined ? { monthlyProviders: body.monthly } : {}),
     ...(body.monthlyFee !== undefined ? { monthlyFee: sanitizeMonthlyFee(body.monthlyFee) } : {}),
     ...(body.quotaOff !== undefined ? { quotaOff: body.quotaOff.filter((id) => typeof id === "string" && id.length > 0 && id.length <= 120).slice(0, 64) } : {}),
     ...(body.modelColors !== undefined ? { modelColors: sanitizeModelColors(body.modelColors) } : {}),
     ...(body.searchShape !== undefined ? { searchShape: sanitizeSearchShape(body.searchShape) } : {}),
+    ...(body.footSource !== undefined ? { footSource: typeof body.footSource === "string" ? body.footSource.slice(0, 120) : "" } : {}),
+    ...(body.quotaSpecs !== undefined ? { quotaSpecs: sanitizeQuotaSpecs(body.quotaSpecs) } : {}),
   };
 }
 
-export { pricingRuleSchema, VOLATILE_KEYS, unwrapVolatile, liveConfig, sanitizeModelColors, sanitizeMonthlyFee, sanitizeSearchShape, effectiveAuxShape, settingsPatchOf };
+export { pricingRuleSchema, VOLATILE_KEYS, unwrapVolatile, liveConfig, sanitizeModelColors, sanitizeMonthlyFee, sanitizeSearchShape, sanitizeQuotaSpecs, effectiveAuxShape, settingsPatchOf };

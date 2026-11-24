@@ -49,23 +49,29 @@ declare const pricingRuleSchema: z<Schemastery.ObjectS<NoInfer<{
 /** Schemastery validation with deployment-friendly defaults. Display fields
  *  are `.volatile()`: the harness hands them to `apply` as live references
  *  and commits edits to them in place — no plugin restart, no fold epoch
- *  reset. `pricing` deliberately stays ordinary: its peak-hour half must
- *  re-fold history, and the entry restart an ordinary edit triggers is
- *  exactly that boundary (persisted rows keyed by the pre-restart
- *  `stateVersion` mismatch and replay once). */
+ *  reset. `pricing` is volatile too: peak-hour changes re-fold through
+ *  syncPeak's `peakMapKey` signature (indexed off the custom rules'
+ *  peakHours in pricing-config.js peakMapOf) which bumps the fold epoch, and
+ *  price-only edits need no refold at all — so the entry restart an
+ *  ordinary edit triggers is no longer the necessary boundary (persisted
+ *  rows replay at the bumped stateVersion without it). */
 export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     currency: z<"CNY" | "USD", "CNY" | "USD", "volatile-defined">;
+    displayCurrency: z<"CNY" | "USD", "CNY" | "USD", "volatile-defined">;
     topProjects: z<number, number, "volatile-defined">;
     projectDepth: z<number, number, "volatile-defined">;
     defaultDays: z<number, number, "volatile-defined">;
     costEnabled: z<boolean, boolean, "volatile-defined">;
     usdToCny: z<number, number, "volatile-defined">;
+    pricingCardSource: z<string, string, "defined">;
     monthlyProviders: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
     monthlyFee: z<NoInfer<import("@deepseek-ai/cosmokit").Dict<number, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<number, string>>, "volatile-defined">;
     searchShape: z<NoInfer<import("@deepseek-ai/cosmokit").Dict<number, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<number, string>>, "volatile-defined">;
     quotaOff: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
+    footSource: z<string, string, "volatile-defined">;
+    quotaSpecs: z<NoInfer<import("@deepseek-ai/cosmokit").Dict<any, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<any, string>>, "volatile-defined">;
     modelColors: z<NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, "volatile-defined">;
-    pricing: z<Schemastery.ObjectS<NoInfer<{
+    pricing: z<NoInfer<Schemastery.ObjectS<NoInfer<{
         provider: z<string, string, "defined">;
         model: z<string, string, "plain">;
         input: z<number, number, "defined">;
@@ -83,7 +89,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
         peakHours: z<number[], number[], "plain">;
         weekdaysOnly: z<boolean, boolean, "plain">;
         currency: z<"CNY" | "USD", "CNY" | "USD", "defined">;
-    }>>[], Schemastery.ObjectT<NoInfer<{
+    }>>[]>, NoInfer<Schemastery.ObjectT<NoInfer<{
         provider: z<string, string, "defined">;
         model: z<string, string, "plain">;
         input: z<number, number, "defined">;
@@ -101,20 +107,24 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
         peakHours: z<number[], number[], "plain">;
         weekdaysOnly: z<boolean, boolean, "plain">;
         currency: z<"CNY" | "USD", "CNY" | "USD", "defined">;
-    }>>[], "defined">;
+    }>>[]>, "volatile-defined">;
 }>>, Schemastery.ObjectT<NoInfer<{
     currency: z<"CNY" | "USD", "CNY" | "USD", "volatile-defined">;
+    displayCurrency: z<"CNY" | "USD", "CNY" | "USD", "volatile-defined">;
     topProjects: z<number, number, "volatile-defined">;
     projectDepth: z<number, number, "volatile-defined">;
     defaultDays: z<number, number, "volatile-defined">;
     costEnabled: z<boolean, boolean, "volatile-defined">;
     usdToCny: z<number, number, "volatile-defined">;
+    pricingCardSource: z<string, string, "defined">;
     monthlyProviders: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
     monthlyFee: z<NoInfer<import("@deepseek-ai/cosmokit").Dict<number, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<number, string>>, "volatile-defined">;
     searchShape: z<NoInfer<import("@deepseek-ai/cosmokit").Dict<number, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<number, string>>, "volatile-defined">;
     quotaOff: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
+    footSource: z<string, string, "volatile-defined">;
+    quotaSpecs: z<NoInfer<import("@deepseek-ai/cosmokit").Dict<any, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<any, string>>, "volatile-defined">;
     modelColors: z<NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, "volatile-defined">;
-    pricing: z<Schemastery.ObjectS<NoInfer<{
+    pricing: z<NoInfer<Schemastery.ObjectS<NoInfer<{
         provider: z<string, string, "defined">;
         model: z<string, string, "plain">;
         input: z<number, number, "defined">;
@@ -132,7 +142,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
         peakHours: z<number[], number[], "plain">;
         weekdaysOnly: z<boolean, boolean, "plain">;
         currency: z<"CNY" | "USD", "CNY" | "USD", "defined">;
-    }>>[], Schemastery.ObjectT<NoInfer<{
+    }>>[]>, NoInfer<Schemastery.ObjectT<NoInfer<{
         provider: z<string, string, "defined">;
         model: z<string, string, "plain">;
         input: z<number, number, "defined">;
@@ -150,7 +160,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
         peakHours: z<number[], number[], "plain">;
         weekdaysOnly: z<boolean, boolean, "plain">;
         currency: z<"CNY" | "USD", "CNY" | "USD", "defined">;
-    }>>[], "defined">;
+    }>>[]>, "volatile-defined">;
 }>>, "plain">;
 /** The Config keys marked `.volatile()` — the only fields the harness may
  *  hand over as live references instead of plain values. */
@@ -170,6 +180,10 @@ declare function sanitizeMonthlyFee(value: any): {};
  *  known keys survive, as sane positive token amounts. An empty object means
  *  "auto" — the view's self-calibration owns the shape. */
 declare function sanitizeSearchShape(value: any): {};
+/** Wire filter for custom provider query specs: each entry must validate
+ *  against the card's spec grammar and claim its own route key; bounded
+ *  count so a hand-edited patch cannot grow the roster unboundedly. */
+declare function sanitizeQuotaSpecs(value: any): {};
 /** The payload's effective aux shape: the manual keys overlay the built-in
  *  seed; `manual` tells the client whether the self-calibration is frozen. */
 declare function effectiveAuxShape(config: any): {
@@ -186,10 +200,13 @@ declare function settingsPatchOf(body: any): {
     usdToCny?: any;
     pricing?: any;
     currency?: any;
+    displayCurrency?: string;
     monthlyProviders?: any;
     monthlyFee?: {};
     quotaOff?: any;
     modelColors?: {};
     searchShape?: {};
+    footSource?: any;
+    quotaSpecs?: {};
 };
-export { pricingRuleSchema, VOLATILE_KEYS, unwrapVolatile, liveConfig, sanitizeModelColors, sanitizeMonthlyFee, sanitizeSearchShape, effectiveAuxShape, settingsPatchOf };
+export { pricingRuleSchema, VOLATILE_KEYS, unwrapVolatile, liveConfig, sanitizeModelColors, sanitizeMonthlyFee, sanitizeSearchShape, sanitizeQuotaSpecs, effectiveAuxShape, settingsPatchOf };

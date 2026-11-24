@@ -8,6 +8,11 @@
 import { strict as assert } from "node:assert";
 import { apply, Config } from "../src/index.js";
 import { localDay } from "../src/aggregate.js";
+import { specAdapter } from "../src/quota-adapters/spec-engine.js";
+import { createQuotaService } from "../src/quota-service.js";
+import { displayAmount } from "../src/view.js";
+import { SEED_CARD, resetCard } from "../src/pricing-facts.js";
+import { VOLATILE_KEYS } from "../src/host/config-schema.js";
 import { SessionProjectionCache } from "@deepseek-ai/dsh-session-projection-cache";
 
 const DAY = 86400000;
@@ -35,7 +40,9 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
   const commands = [];
   const coldReads = [];
   const fastReads = [];
+  let listCalls = 0;
   const logErrors = [];
+  const logInfos = [];
   const settingsWatches = new Set();
   let registeredUnit = null;
   let registerCount = 0;
@@ -71,7 +78,19 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
     },
     close: async () => {},
   };
-  const fakeStorageDomain = { open: async (spec) => (spec?.name === "pulse_quota" ? fakeQuotaDomain : fakeDomain) };
+  /** The card domain's stored row (`pulse_card`): tests seed a corrupted card
+   *  or flip `cardGetThrows` BEFORE apply() to exercise the boot read's
+   *  fail-open posture — a storage seam must never take stats down. */
+  let cardState = { card: null, origin: "bundled", savedAt: 0 };
+  let cardGetThrows = false;
+  const fakeCardDomain = {
+    global: {
+      get: () => { if (cardGetThrows) throw new Error("storage seam exploded"); return cardState; },
+      set: async (value) => { cardState = value; },
+    },
+    close: async () => {},
+  };
+  const fakeStorageDomain = { open: async (spec) => (spec?.name === "pulse_quota" ? fakeQuotaDomain : spec?.name === "pulse_card" ? fakeCardDomain : fakeDomain) };
 
   const liveValues = {
     pulseUsage: {
@@ -174,6 +193,12 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
       formCalls.push({ op: "update", ns, patch: { ...patch }, rev });
       const row = formRows.find((entry) => entry.ns === ns);
       if (row === undefined) throw new Error("no such entry");
+      // dsh-settings lib/index.js:513-523 的语义对拍：经 forms 落盘的补丁
+      // 里任何不在 VOLATILE_KEYS 的键都被拒——Config 的字段转 volatile 后
+      // 这是 harness 的硬门禁（pricing 入册后此处应放行 pricing 键）。
+      for (const key of Object.keys(patch)) {
+        if (!VOLATILE_KEYS.includes(key)) throw new Error(`Config field "${key}" is not volatile`);
+      }
       if (rev !== undefined && rev !== row.revision) {
         throw Object.assign(new Error("conflict"), { code: "SETTINGS_CONFLICT", expected: rev, actual: row.revision });
       }
@@ -184,6 +209,9 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
       formCalls.push({ op: "replace", ns, section: { ...section }, rev });
       const row = formRows.find((entry) => entry.ns === ns);
       if (row === undefined) throw new Error("no such entry");
+      for (const key of Object.keys(section)) {
+        if (!VOLATILE_KEYS.includes(key)) throw new Error(`Config field "${key}" is not volatile`);
+      }
       if (rev !== undefined && rev !== row.revision) {
         throw Object.assign(new Error("conflict"), { code: "SETTINGS_CONFLICT", expected: rev, actual: row.revision });
       }
@@ -219,14 +247,17 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
       snapshot: (session) => ({ asOfSeq: 5, values: session.id === "live1" ? liveValues : {} }),
     },
     sessionQuery: {
-      listSessions: async () => (emptyCorpus
+      listSessions: async () => {
+        listCalls += 1;
+        return emptyCorpus
         ? []
         : [
           { header: { id: "live1", createdAt: noon(-1), cwd: "D:\\DSH\\demo" }, live: true, persisted: true },
           { header: { id: "cold1", createdAt: noon(-3), cwd: "/home/x/repo", origin: "subagent", isSeeded: true }, live: false, persisted: true },
           { header: { id: "broken1", createdAt: noon(-9), cwd: "D:\\DSH\\x", isSeeded: false }, live: false, persisted: true },
           { header: { id: "cold2", createdAt: noon(-6), cwd: "/home/x/other", isSeeded: false }, live: false, persisted: true },
-        ]),
+        ];
+      },
       readSession: async (id) => {
         if (id === "live1" || id === "cold1") {
           return {
@@ -282,7 +313,7 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
       return null;
     },
     effect: (fn) => { const disposer = fn(); return () => { if (typeof disposer === "function") disposer(); }; },
-    logger: { warn: () => {}, error: (m) => logErrors.push(String(m)) },
+    logger: { warn: () => {}, error: (m) => logErrors.push(String(m)), info: (m) => logInfos.push(String(m)) },
     inject: (deps, callback) => {
       const services = {};
       if (withSettings && Array.isArray(deps) && deps.includes("settings")) {
@@ -310,7 +341,7 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
     },
   };
 
-  function serve(url, { method = "GET", body } = {}) {
+  function serve(url, { method = "GET", body, headers } = {}) {
     return new Promise((resolve) => {
       let status = 0;
       let raw = "";
@@ -319,13 +350,19 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
         end: (chunk) => { raw = chunk === undefined ? "" : String(chunk); resolve({ status, body: raw }); },
       };
       const req = { url, method, socket: { once: () => {} } };
+      // headers attached only when asked: the default request stays
+      // headerless, which is exactly the trusted non-browser posture the
+      // same-origin guard must keep allowing.
+      if (headers !== undefined) req.headers = headers;
       if (body !== undefined) req.body = typeof body === "string" ? body : JSON.stringify(body);
       routes[0].handler(req, res);
     });
   }
 
   return {
-    ctx, routes, commands, coldReads, fastReads, logErrors, serve,
+    ctx, routes, commands, coldReads, fastReads, logErrors, logInfos, serve,
+    listCalls: () => listCalls,
+    liveState: () => liveValues,
     unit: () => registeredUnit,
     registerCount: () => registerCount,
     userSection: () => userSection,
@@ -333,12 +370,20 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
     setLlmSection: (section) => { llmSection = section; },
     setEmptyCorpus: (value) => { emptyCorpus = value === true; },
     listSessionsProbe: () => ctx.sessionQuery.listSessions(),
+    seedCardState: (value) => { cardState = value; },
+    setCardGetThrows: (value) => { cardGetThrows = value === true; },
+    cardState: () => cardState,
     balanceState: () => balanceState,
     seedSnapshots: (snapshots) => { balanceState = { snapshots }; },
     quotaState: () => quotaState,
     seedQuotaSnapshots: (snapshots) => { quotaState = { snapshots }; },
     fetchCalls,
     formCalls,
+    formValue: () => {
+      const row = formRows.find((entry) => entry.ns === "pulse");
+      return row === undefined ? null : { ...row.value };
+    },
+    formUpdateDirect: (ns, patch, rev) => fakeForms.update(ns, patch, rev),
     fireDocumentUpdated: (ns) => { for (const callback of [...docFeeds]) callback(ns); },
   };
 }
@@ -455,6 +500,7 @@ assert.equal(settings.pricing[0].peak.input, 2, "peak rates ride along");
 assert.deepEqual(settings.pricing[0].peakHours, [9, 10, 11, 14, 15, 16, 17], "normalized peak hours ride along");
 assert.equal(settings.pricing[0].weekdaysOnly, true, "the official peak windows are weekdays only");
 assert.deepEqual(settings.fx, { usdToCny: 6.8 }, "default fx served to the editor");
+assert.equal(settings.displayCurrency, "CNY", "default display currency served to the editor");
 assert.equal(settings.official.length, 2, "untouched official baseline served for per-row restore");
 assert.equal(settings.official[0].model, "deepseek-flash");
 assert.equal(settings.catalog.length, 1, "one provider group from the llm service");
@@ -462,29 +508,34 @@ assert.equal(settings.catalog[0].displayName, "DeepSeek");
 assert.equal(settings.catalog[0].models.length, 3);
 assert.equal(settings.catalog[0].models[2].id, "third-party-x");
 
-// saving a user pricing list persists and flips the effective config
+// saving a user pricing list persists and flips the effective config —
+// displayCurrency rides along: the patch mapping once dropped it, so every
+// write "succeeded" while the stored config stayed CNY (faces never flipped)
 const saved = JSON.parse((await env.serve("/pulse/settings", {
   method: "POST",
-  body: { costEnabled: false, usdToCny: 7.05, pricing: [{ model: "my-model", input: 9, output: 18 }] },
+  body: { costEnabled: false, usdToCny: 7.05, displayCurrency: "USD", pricing: [{ model: "my-model", input: 9, output: 18 }] },
 })).body);
 assert.equal(saved.ok, true);
 assert.equal(saved.refold, false, "price-only save predicts no re-fold");
 assert.deepEqual(env.userSection(), {
   costEnabled: false,
   usdToCny: 7.05,
+  displayCurrency: "USD",
   pricing: [{ model: "my-model", input: 9, output: 18 }],
 }, "user layer replaced wholesale");
 const after = JSON.parse((await env.serve("/pulse/settings")).body);
 assert.equal(after.costEnabled, false);
 assert.equal(after.fx.usdToCny, 7.05, "edited fx served back");
+assert.equal(after.displayCurrency, "USD", "the flipped display currency is served back");
 assert.equal(after.pricing.length, 3, "user rule joins the official defaults");
 assert.equal(after.pricing[2].model, "my-model");
 assert.equal(after.pricing[2].input, 9);
 assert.equal(env.registerCount(), 1, "price-only edits never re-register the projection");
 
-// the stats payload reflects the persisted flag (payload cache invalidated)
+// the stats payload reflects the persisted flags (payload cache invalidated)
 const flipped = JSON.parse((await env.serve(`/pulse/stats?from=${daysAgo(4)}&to=${today()}`)).body);
 assert.equal(flipped.costEnabled, false, "disabled flag served after save");
+assert.equal(flipped.displayCurrency, "USD", "display currency reaches the stats payload after save");
 
 // a flat rule without peak keeps working through the editor
 const flat = JSON.parse((await env.serve("/pulse/settings", {
@@ -510,6 +561,13 @@ assert.equal(env.registerCount(), 2, "peak-hours change re-registers the project
 assert.equal(env.unit().stateVersion, 12, "bumped state version invalidates persisted rows");
 await new Promise((resolve) => setTimeout(resolve, 20));
 assert.ok(env.coldReads.length > coldReadsBefore, "background warm-up re-folds the cold corpus");
+// ...and the shared projections died with the old tier split: the next NEW
+// window re-reads the persisted corpus instead of reusing pre-change rows.
+{
+  const readsAfterWarm = env.coldReads.length + env.fastReads.length;
+  JSON.parse((await env.serve(`/pulse/stats?from=${daysAgo(2)}&to=${today()}`)).body);
+  assert.ok(env.coldReads.length + env.fastReads.length > readsAfterWarm, "a projection re-register drops the shared projections");
+}
 
 // an explicitly empty hour set is a legal flat override (not the official default)
 const flatHours = JSON.parse((await env.serve("/pulse/settings", {
@@ -636,6 +694,51 @@ assert.equal(JSON.parse(a.body).schema, 4);
 assert.equal(JSON.parse(b.body).schema, 4);
 assert.ok(env.coldReads.length <= before + 3, "shared flight reads the cold corpus once");
 
+// --- the shared projection pass: a second window within the TTL reuses the
+// persisted reads; live sessions stay fresh; one listing serves key + fold ---
+{
+  const shared = makeCtx({ withSettings: false });
+  apply(shared.ctx, config);
+  const reads = () => shared.coldReads.length + shared.fastReads.length;
+  const narrow = JSON.parse((await shared.serve(`/pulse/stats?from=${daysAgo(1)}&to=${today()}`)).body);
+  assert.deepEqual(narrow.sessions.map((s) => s.id), ["live1"], "window A holds the live session's day only");
+  assert.equal(shared.listCalls(), 1, "ONE listing serves the cache key AND the fold");
+  const paid = reads();
+  assert.equal(paid, 3, "window A pays every persisted read once (1 body + 2 stored rows)");
+  // The live session moves before window B is requested: its in-memory
+  // snapshot must be part of window B — live sessions are never cached.
+  const live = shared.liveState().pulseUsage;
+  live.byDay[daysAgo(2)] = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 };
+  live.modelsByDay[daysAgo(2)] = { "deepseek-v4-flash": { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } };
+  live.firstDay = daysAgo(2);
+  const wide = JSON.parse((await shared.serve(`/pulse/stats?from=${daysAgo(8)}&to=${today()}`)).body);
+  assert.equal(reads(), paid, "window B within the TTL reuses window A's persisted projections");
+  assert.deepEqual(wide.sessions.map((s) => s.id).sort(), ["cold1", "cold2", "live1"], "window B still folds every session");
+  assert.deepEqual(wide.sessions.find((s) => s.id === "live1").byDay[daysAgo(2)], { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+    "a live session is re-read at fold time, never cached");
+  assert.equal(shared.listCalls(), 2, "each request lists the corpus exactly once");
+  // The corpus count is the generation key: a changed corpus re-projects.
+  shared.setEmptyCorpus(true);
+  const empty = JSON.parse((await shared.serve(`/pulse/stats?from=${daysAgo(9)}&to=${today()}`)).body);
+  assert.equal(empty.sessions.length, 0, "the emptied corpus folds to an empty window");
+  assert.equal(reads(), paid, "an empty corpus has nothing to read");
+  shared.setEmptyCorpus(false);
+  JSON.parse((await shared.serve(`/pulse/stats?from=${daysAgo(9)}&to=${today()}`)).body);
+  assert.equal(reads(), paid * 2, "a corpus that changed count re-projects every persisted session");
+}
+// Rapid switching: two different windows folding together share ONE pass.
+{
+  const racing = makeCtx({ withSettings: false });
+  apply(racing.ctx, config);
+  await Promise.all([
+    racing.serve(`/pulse/stats?from=${daysAgo(4)}&to=${today()}`),
+    racing.serve(`/pulse/stats?from=${daysAgo(9)}&to=${today()}`),
+  ]);
+  assert.equal(racing.coldReads.length, 1, "two windows folding together share one body read");
+  assert.equal(racing.fastReads.length, 2, "...and one stored-row pass");
+  assert.equal(racing.listCalls(), 2, "each request still lists once");
+}
+
 // --- an empty fold is never sticky -------------------------------------------
 // A harness that just booted lists no session until its first message commits.
 // That empty window must not be pinned by the payload TTL cache: the very next
@@ -675,8 +778,10 @@ assert.ok(env.coldReads.length <= before + 3, "shared flight reads the cold corp
     assert.equal(checked.ok, true);
     assert.equal(checked.latest, "0.6.0");
     assert.equal(checked.publishedAt, "2026-10-01T00:00:00.000Z");
-    assert.equal(calls.length, 1, "exactly one registry call per request");
-    assert.ok(calls[0].url.includes("dsh-pulse"), `registry lookup names the package: ${calls[0].url}`);
+    const registryCalls = calls.filter((c) => c.url.includes("registry.npmjs.org"));
+    assert.equal(registryCalls.length, 1, "exactly one registry call per request");
+    assert.ok(registryCalls[0].url.includes("dsh-pulse"), `registry lookup names the package: ${registryCalls[0].url}`);
+    assert.ok(calls.length <= 2, "at most one extra best-effort card probe alongside the registry call");
 
     globalThis.fetch = async () => ({ ok: false, status: 503, json: async () => ({}) });
     const failed = JSON.parse((await env.serve("/pulse/update-check")).body);
@@ -688,6 +793,40 @@ assert.ok(env.coldReads.length <= before + 3, "shared flight reads the cold corp
   } finally {
     globalThis.fetch = realFetch;
   }
+}
+
+// --- pricing 转 volatile：forms 代际 POST 一条 pricing 规则，落盘成功且
+// 峰时签名变化时 fold epoch 变化（无需 entry 重启这个旧边界）--------------
+{
+  const env = makeCtx({ withSettings: "forms" });
+  // 模拟 0.1.7+ 的 volatile 接线：entry config 的 pricing 是 live ref，
+  // .get() 读 forms 行的当前值——pricing 入册 VOLATILE_KEYS 后 harness
+  // 正是这样把字段交给 apply 的。
+  const livePricing = { get: () => env.formValue().pricing };
+  apply(env.ctx, { ...config, pricing: livePricing });
+  assert.equal(env.registerCount(), 1, "官方峰时默认 → 一次注册");
+  const saved = JSON.parse((await env.serve("/pulse/settings", {
+    method: "POST",
+    body: { pricing: [{ model: "deepseek-v4-flash", input: 1, output: 4, peakHours: [2, 3] }] },
+  })).body);
+  assert.equal(saved.ok, true, "forms 代际的 pricing POST 落盘成功");
+  assert.equal(saved.refold, true, "峰时变化被 predictRefold 预报");
+  assert.ok(env.formCalls.some((c) => c.op === "update" && "pricing" in c.patch), "patch 里带着 pricing 键（未被 volatile 门禁拒收）");
+  // 非易变键走不到 HTTP 面，直接对拍 dsh-settings 的门禁语义：
+  await assert.rejects(() => env.formUpdateDirect("pulse", { pricingCardSource: "https://x/card.json" }),
+    /Config field "pricingCardSource" is not volatile/, "非 volatile 键被 forms 门禁拒绝");
+  // settings/document-updated → onSettingsChanged：签名变化 → epoch 重折叠
+  env.fireDocumentUpdated("pulse");
+  assert.equal(env.registerCount(), 2, "峰时签名变化 → projection 重注册（fold epoch 变化）");
+  // 纯价格变化（峰时不变）不再触发重折叠
+  const priceOnly = JSON.parse((await env.serve("/pulse/settings", {
+    method: "POST",
+    body: { pricing: [{ model: "deepseek-v4-flash", input: 2, output: 8, peakHours: [2, 3] }] },
+  })).body);
+  assert.equal(priceOnly.ok, true);
+  assert.equal(priceOnly.refold, false, "纯价格变化无需 refold");
+  env.fireDocumentUpdated("pulse");
+  assert.equal(env.registerCount(), 2, "价格-only 编辑不重注册");
 }
 
 // --- settings service mounting after the plugin: routes stay live ------------
@@ -926,6 +1065,243 @@ assert.ok(env.coldReads.length <= before + 3, "shared flight reads the cold corp
   assert.equal(empty.schema, 1);
 }
 
+// --- /pulse/quota/probe + footSource/quotaSpecs settings round-trip ----------
+{
+  const env = makeCtx({ withSettings: "forms", withLlm: true, withCredentials: true, withStorageDomain: true, withQuota: true });
+  apply(env.ctx, { ...config, quotaOff: [] });
+  const realFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url, init) => {
+      env.fetchCalls.push({ url: String(url), init });
+      assert.equal(String(url), "https://probe.example.com/usage", "the probe hits the custom spec's host+path");
+      assert.equal(init.headers.authorization, "zai-test-SECRET-value", "raw scheme: no Bearer prefix");
+      return { ok: true, status: 200, json: async () => ({ pct: 42 }) };
+    };
+    const customSpec = {
+      id: "custom-zai-coding-cn", label: "probe", routes: ["zai-coding-cn"],
+      envKeys: ["ZAI_CODING_CN_API_KEY"],
+      hosts: [{ base: "https://probe.example.com" }], auth: "raw",
+      requests: [{ id: "quota", path: "/usage" }],
+      windows: [{ id: "win", kind: "requests", windowMs: null, source: { request: "quota", path: "", mode: "single" }, pct: { aliases: ["pct"] } }],
+    };
+    const before = env.quotaState().snapshots.length;
+    const probed = JSON.parse((await env.serve("/pulse/quota/probe", { method: "POST", body: { route: "zai-coding-cn", spec: customSpec } })).body);
+    assert.equal(probed.ok, true);
+    assert.equal(probed.windows[0].usedPct, 42, "the probe returns the normalized preview");
+    assert.equal(env.quotaState().snapshots.length, before, "a probe never writes snapshots");
+    assert.equal(JSON.stringify(probed).includes("SECRET"), false, "no credential material in the probe reply");
+    const noSpec = await env.serve("/pulse/quota/probe", { method: "POST", body: { route: "unknown-route" } });
+    assert.equal(noSpec.status, 400, "an uncovered route without a spec is refused");
+    // settings carry the selector + custom specs; invalid specs stay inert
+    const settings = JSON.parse((await env.serve("/pulse/settings")).body);
+    assert.equal(settings.footSource, "");
+    assert.equal(settings.providerSpecs.length, 4, "the built-in specs ride the settings face");
+    const validCustom = { ...customSpec, id: "custom-my-route", routes: ["my-route"] };
+    const post = await env.serve("/pulse/settings", { method: "POST", body: { footSource: "zai-coding-cn", quotaSpecs: { "my-route": validCustom, "bad-route": { nope: true } }, revision: settings.revision } });
+    assert.equal(JSON.parse(post.body).ok, true);
+    const patch = env.formCalls[env.formCalls.length - 1].patch;
+    assert.equal(patch.footSource, "zai-coding-cn");
+    assert.deepEqual(Object.keys(patch.quotaSpecs), ["my-route"], "invalid custom specs are dropped at the boundary");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+// --- same-origin guard: mutation POSTs refuse cross-site browser requests ----
+// readBody never inspects content-type, so a hostile page could drive the
+// credential-bearing probe (and every card write) with a text/plain CORS
+// simple request no preflight would surface. The guard refuses on a
+// mismatched Origin (ports compared), on Sec-Fetch-Site: cross-site, and on
+// an unprovable `Origin: null`; headerless clients (curl, the host's own
+// tools) and true same-origin POSTs pass everywhere.
+{
+  const env = makeCtx({ withSettings: true, withCredentials: true, withStorageDomain: true, withQuota: true });
+  apply(env.ctx, config);
+  const realFetch = globalThis.fetch;
+  let fetchCount = 0;
+  globalThis.fetch = async () => {
+    fetchCount += 1;
+    throw new Error("no outbound request may ride a refused POST");
+  };
+  try {
+    const host = "127.0.0.1:3512";
+    const posts = [
+      ["/pulse/quota/probe", { route: "zai-coding-cn" }],
+      ["/pulse/pricing-card", { card: null }],
+      ["/pulse/pricing-card/validate", { card: null }],
+      ["/pulse/pricing-card/pull", {}],
+      ["/pulse/pricing-card/reset", {}],
+      ["/pulse/settings", { reset: true }],
+    ];
+    for (const [path, body] of posts) {
+      const refused = await env.serve(path, {
+        method: "POST",
+        body,
+        headers: { origin: "https://evil.example", host },
+      });
+      assert.equal(refused.status, 403, `${path}: cross-site Origin refused`);
+      const parsed = JSON.parse(refused.body);
+      assert.equal(parsed.ok, false, `${path}: the {ok:false,error} host contract`);
+      assert.ok(typeof parsed.error === "string" && parsed.error.length > 0, `${path}: error carries a message`);
+    }
+    assert.equal(fetchCount, 0, "a refused probe never resolves a credential nor fetches");
+    // Sec-Fetch-Site is authoritative on its own: refused even when the
+    // Origin itself matches — the pair must both vouch.
+    const site = await env.serve("/pulse/settings", {
+      method: "POST",
+      body: { reset: true },
+      headers: { origin: `http://${host}`, host, "sec-fetch-site": "cross-site" },
+    });
+    assert.equal(site.status, 403, "Sec-Fetch-Site: cross-site refused despite a matching Origin");
+    // Firefox/Chrome attach Origin to same-origin POSTs too — allowed.
+    const same = await env.serve("/pulse/settings", {
+      method: "POST",
+      body: { reset: true },
+      headers: { origin: `http://${host}`, host, "sec-fetch-site": "same-origin" },
+    });
+    assert.equal(same.status, 200, "same-origin POST (Origin and Host agree, ports included) allowed");
+    const otherPort = await env.serve("/pulse/settings", {
+      method: "POST",
+      body: { reset: true },
+      headers: { origin: "http://127.0.0.1:9999", host },
+    });
+    assert.equal(otherPort.status, 403, "matching hostname with a different port is cross-site");
+    const nullOrigin = await env.serve("/pulse/settings", {
+      method: "POST",
+      body: { reset: true },
+      headers: { origin: "null", host },
+    });
+    assert.equal(nullOrigin.status, 403, "Origin: null (sandboxed iframe) cannot prove same-origin");
+    // Headerless clients (curl, the host's internal tools) pass everywhere.
+    const headless = await env.serve("/pulse/settings", { method: "POST", body: { reset: true } });
+    assert.equal(headless.status, 200, "no Origin and no Sec-Fetch-Site → the trusted non-browser posture");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+// --- hostFor variant discipline: rosters refuse, drafts fall back ------------
+// A spec whose hosts are all route-keyed must never aim hosts[0] at an
+// undeclared route variant: the orchestrator resolves the route's live
+// credential BEFORE hostFor picks the base, so the fallback would send that
+// credential to whatever host happens to be listed first. Explicit
+// body.spec draft probes keep the generic fallback (half-written drafts omit
+// the route key); the probe route's same-origin guard is that exposure's
+// backstop.
+{
+  const env = makeCtx({ withSettings: true, withCredentials: true });
+  apply(env.ctx, { ...config, quotaOff: [] });
+  // Unit level, straight on the engine: the exact hit wins; a spec that
+  // DECLARES a route-less default keeps serving undeclared variants through
+  // it (the built-in z.ai pattern), while an all-route-keyed spec refuses.
+  const keyedHost = {
+    id: "custom-keyed-host", label: "keyed", routes: ["keyed-route"], envKeys: ["ZAI_CODING_CN_API_KEY"],
+    hosts: [
+      { route: "keyed-route", base: "https://right.example" },
+      { route: "keyed-other", base: "https://other.example" },
+    ],
+    auth: "bearer",
+    requests: [{ id: "quota", path: "/usage" }],
+    windows: [{ id: "win", kind: "requests", windowMs: null, source: { request: "quota", path: "", mode: "single" }, pct: { aliases: ["pct"] } }],
+  };
+  const strict = specAdapter(keyedHost);
+  assert.equal(strict.hostFor("keyed-route"), "https://right.example", "exact variant still wins");
+  assert.throws(() => strict.hostFor("undeclared"), /no host variant/, "roster adapters refuse an undeclared route variant");
+  assert.equal(specAdapter(keyedHost, { draft: true }).hostFor("undeclared"), "https://right.example",
+    "draft probes keep the generic hosts[0] fallback");
+  const withDefault = specAdapter({
+    ...keyedHost,
+    hosts: [{ route: "keyed-route", base: "https://right.example" }, { base: "https://default.example" }],
+  });
+  assert.equal(withDefault.hostFor("undeclared"), "https://default.example",
+    "a declared route-less default still serves the undeclared variants — no refusal there");
+
+  // Integration level through the probe route: a saved custom spec whose
+  // hosts do NOT cover their own route (valid grammar, semantic booby trap).
+  const booby = {
+    id: "custom-booby", label: "booby", routes: ["booby-route"], envKeys: ["ZAI_CODING_CN_API_KEY"],
+    hosts: [{ route: "booby-other", base: "https://wrong.example" }],
+    auth: "bearer",
+    requests: [{ id: "quota", path: "/usage" }],
+    windows: [{ id: "win", kind: "requests", windowMs: null, source: { request: "quota", path: "", mode: "single" }, pct: { aliases: ["pct"] } }],
+  };
+  const realFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url: String(url), authorization: init.headers.authorization });
+      return { ok: true, status: 200, json: async () => ({ pct: 7 }) };
+    };
+    const settings = JSON.parse((await env.serve("/pulse/settings")).body);
+    const saved = await env.serve("/pulse/settings", {
+      method: "POST",
+      body: { quotaSpecs: { "booby-route": booby }, revision: settings.revision },
+    });
+    assert.equal(JSON.parse(saved.body).ok, true, "the spec validates into the custom roster");
+    // Roster posture (no body.spec): refuse, and fire nothing anywhere.
+    const strictProbe = JSON.parse((await env.serve("/pulse/quota/probe", { method: "POST", body: { route: "booby-route" } })).body);
+    assert.equal(strictProbe.ok, false, "a roster-sourced probe refuses the undeclared variant");
+    assert.ok(/no host variant/.test(String(strictProbe.error)), `the refusal names the discipline: ${strictProbe.error}`);
+    assert.equal(calls.length, 0, "no outbound request for a refused probe");
+    assert.equal(calls.some((c) => c.url.includes("wrong.example")), false, "hosts[0] was never aimed at the refused route");
+    // Draft posture (explicit body.spec): the fallback fetches hosts[0],
+    // still under exactly one Authorization header.
+    const draftProbe = JSON.parse((await env.serve("/pulse/quota/probe", { method: "POST", body: { route: "booby-route", spec: booby } })).body);
+    assert.equal(draftProbe.ok, true, "the draft probe rides the generic fallback");
+    assert.equal(draftProbe.windows[0].usedPct, 7, "and parses the reply into the normalized preview");
+    assert.equal(calls[0]?.url, "https://wrong.example/usage", "the draft's fallback aims hosts[0]");
+    assert.equal(calls[0]?.authorization, "Bearer zai-test-SECRET-value", "still exactly one auth header");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+// --- draft probe: an invalid explicit body.spec is a 400, not a 500 ----------
+// probeSpec validates at its own service boundary; without the route-level
+// gate a garbage draft rode that throw to the route catch and answered a
+// malformed body with 500, where invalid JSON / missing route / missing spec
+// on the same route all answer 400.
+{
+  const env = makeCtx({ withSettings: false });
+  apply(env.ctx, config);
+  for (const garbage of ["garbage", 42, {}, []]) {
+    const bad = await env.serve("/pulse/quota/probe", { method: "POST", body: { route: "some-route", spec: garbage } });
+    assert.equal(bad.status, 400, `invalid draft spec ${JSON.stringify(garbage)} refused with 400`);
+    const parsed = JSON.parse(bad.body);
+    assert.equal(parsed.ok, false, "the {ok:false,error} contract");
+    assert.ok(String(parsed.error).includes("invalid query spec"), `the error names the spec: ${parsed.error}`);
+  }
+  // a null spec never reaches the draft path — the roster lookup misses and
+  // the route's own no-spec 400 already covers it
+  const nullSpec = await env.serve("/pulse/quota/probe", { method: "POST", body: { route: "some-route", spec: null } });
+  assert.equal(nullSpec.status, 400, "a null draft spec is refused by the no-spec gate");
+}
+
+// --- probeSpec's own service boundary: an invalid spec is probe DATA, not a
+// thrown 500. The route pre-gates explicit drafts (above), but roster paths
+// hand the service stale hand-edited specs with no route gate at all — the
+// service owns the {ok:false} contract, so its validation lives inside its
+// own error mapping, never on the caller's stack. ---------------------------
+{
+  const quotaService = createQuotaService({
+    ctx: {}, resolveConfig: () => ({}), llmServiceOf: () => null, llmDescribeOf: () => null,
+  });
+  for (const garbage of [null, 42, "x", {}, { id: "nope" }]) {
+    const reply = await quotaService.probeSpec("some-route", garbage);
+    assert.deepEqual(reply.ok, false, `invalid spec ${JSON.stringify(garbage)} answers ok:false, never throws`);
+    assert.match(String(reply.error), /invalid query spec/);
+  }
+  // a VALID spec keeps the probe's real reply shapes (no regression on the
+  // happy path's credential miss — no credential seam in this stub ctx)
+  const valid = await quotaService.probeSpec("some-route", {
+    id: "custom-probe", label: "probe", routes: ["some-route"], hosts: [{ base: "https://probe.example" }], auth: "bearer",
+    requests: [{ id: "quota", path: "/u" }],
+    windows: [{ id: "win", kind: "requests", windowMs: null, source: { request: "quota", path: "", mode: "single" }, pct: { aliases: ["pct"] } }],
+  });
+  assert.deepEqual(valid, { ok: false, configured: false, error: "no credential resolved" },
+    "a valid spec still walks the normal probe flow");
+}
+
 // --- /pulse/session: event-level timeline (break-analysis source) -------------
 {
   const env = makeCtx({ withSettings: true });
@@ -985,12 +1361,13 @@ assert.ok(env.coldReads.length <= before + 3, "shared flight reads the cold corp
     `real cachedSnapshot arity changed to ${real.cachedSnapshot.length} — the zero-I/O fast path call shape must be updated together with the stub`);
 }
 
-// --- volatile Config fields: display edits never re-fold, pricing does ----------
+// --- volatile Config fields: display AND pricing edits never force a restart --
 {
-  for (const key of ["currency", "topProjects", "projectDepth", "defaultDays", "costEnabled", "usdToCny", "monthlyProviders", "modelColors"]) {
+  for (const key of ["currency", "topProjects", "projectDepth", "defaultDays", "costEnabled", "usdToCny", "monthlyProviders", "modelColors", "pricing"]) {
     assert.equal(Config.dict[key].meta.volatile, true, `${key} is volatile (live edit, no restart)`);
   }
-  assert.notEqual(Config.dict.pricing.meta.volatile, true, "pricing stays ordinary: peak-hour edits must re-fold via restart");
+  // pricing 自 D1 起转 volatile：峰时变化由 syncPeak 的 peakMapKey 签名触发
+  // epoch 重折叠，纯价格变化无需 refold——entry 重启不再是必要边界。
 }
 
 // --- v0.5 model accent colors: sanitization + the wire surfaces ----------------
@@ -1070,6 +1447,171 @@ assert.ok(env.coldReads.length <= before + 3, "shared flight reads the cold corp
   const saved = JSON.parse((await env.serve("/pulse/settings", { method: "POST", body: { usdToCny: 7.4 } })).body);
   assert.equal(saved.ok, true, "classic write lands without a revision");
   assert.equal(env.userSection().usdToCny, 7.4, "the user layer received the patch");
+}
+
+// --- boot stored-card: a corrupted card or a throwing seam fails open ---------
+// The stored-card read used to sit OUTSIDE the try: a storage seam that threw
+// rejected `cardReady` and every /pulse/stats request died with it. Now the
+// whole read is one fail-open unit — an unreadable or invalid stored card
+// falls back to the bundled seed and says so in the host log.
+{
+  const env = makeCtx({ withSettings: false, withStorageDomain: true });
+  const corrupted = structuredClone(SEED_CARD);
+  corrupted.pricing.usdToCny = -1; // fails validateCard's positive gate
+  env.seedCardState({ card: corrupted, origin: "imported", savedAt: 1 });
+  apply(env.ctx, config);
+  const stats = await env.serve(`/pulse/stats?from=${daysAgo(4)}&to=${today()}`);
+  assert.equal(stats.status, 200, "a corrupted stored card fails open — stats still serve");
+  const card = JSON.parse((await env.serve("/pulse/pricing-card")).body);
+  assert.equal(card.ok, true);
+  assert.equal(card.origin, "bundled", "the bundled seed stays authoritative");
+  assert.equal(card.card.version, SEED_CARD.version, "the seed card itself is served");
+  assert.ok(env.logInfos.some((line) => line.includes("stored data card ignored")),
+    "the ignored stored card is visible in the host log");
+}
+// a storage seam that THROWS on read must not reject cardReady either — the
+// old bug surfaced as a 500 on the very first (and every) stats request
+{
+  const env = makeCtx({ withSettings: false, withStorageDomain: true });
+  env.setCardGetThrows(true);
+  apply(env.ctx, config);
+  const stats = await env.serve(`/pulse/stats?from=${daysAgo(4)}&to=${today()}`);
+  assert.equal(stats.status, 200, "a throwing storage seam fails open, not a 500 on every stats read");
+  assert.ok(env.logInfos.some((line) => line.includes("stored data card ignored")),
+    "the seam failure surfaces as the same one-line degradation note");
+}
+// the boot SUCCESS path owes the same symmetry as refreshCard and the reset
+// route: the boot IIFE suspends at the storage open, so the synchronous
+// applyDisplay right after it always derives from the bundled seed's
+// DEFAULT_USD_TO_CNY. A stored card whose fx differs would leave the display
+// realm (TUI strip, usage-query answers) on the seed rate until the next
+// settings event or HTTP card apply — web payloads ride the card and never
+// notice. Runs before the later card blocks; cleans up after itself.
+{
+  const env = makeCtx({ withSettings: false, withStorageDomain: true });
+  const stored = structuredClone(SEED_CARD);
+  stored.pricing.usdToCny = 7.7;
+  stored.version = SEED_CARD.version + 1;
+  env.seedCardState({ card: stored, origin: "imported", savedAt: 1 });
+  apply(env.ctx, { ...config, displayCurrency: "USD" });
+  assert.ok(Math.abs(displayAmount(6.8) - 1) < 1e-9,
+    "boot's synchronous derive still uses the bundled seed rate (the card read suspends at the storage open)");
+  await env.serve(`/pulse/stats?from=${daysAgo(4)}&to=${today()}`); // gates on cardReady
+  const card = JSON.parse((await env.serve("/pulse/pricing-card")).body);
+  assert.equal(card.origin, "imported", "the stored card actually applied at boot");
+  assert.ok(Math.abs(displayAmount(7.7) - 1) < 1e-9,
+    "the stored card's rate becomes the display rate (refreshCard/reset symmetry at boot)");
+  resetCard(); // leave the module-global facts on the seed for any later reader
+}
+
+// --- card validation errors name the field, not a zod issues JSON dump ------
+// A hand-editing user gets one readable "path: reason" line per structural
+// issue; the raw ZodError.message is the issues array serialized as JSON and
+// reads as host vomit. Pinned on the import route (validate and pull share
+// the same formatter).
+{
+  const env = makeCtx({ withSettings: false });
+  apply(env.ctx, config);
+  const broken = await env.serve("/pulse/pricing-card", {
+    method: "POST",
+    body: { card: { schemaVersion: 3, source: "https://example.com/card.json" }, origin: "imported" },
+  });
+  assert.equal(broken.status, 400, "a structurally invalid card is refused");
+  const face = JSON.parse(broken.body).error;
+  assert.ok(typeof face === "string" && !face.startsWith("["), "the error is not the raw issues JSON string");
+  assert.ok(face.includes("version"), `the error names the failing field: ${face}`);
+}
+
+// --- card apply concurrency: a stale `base` is a 409, not a silent overwrite -
+// The client echoes the card its preview was staged against; the host refuses
+// with the machine-readable "card-changed" conflict when the active card moved
+// underneath. Absent base keeps the legacy trusted-caller posture. Runs last:
+// it mutates the module-global active card, and it cleans up after itself.
+{
+  const env = makeCtx({ withSettings: false });
+  apply(env.ctx, config);
+  const changed = structuredClone(SEED_CARD);
+  changed.pricing.usdToCny = 7.7;
+  changed.version = SEED_CARD.version + 1;
+  // no base at all: curl / scripts still apply
+  const noBase = await env.serve("/pulse/pricing-card", { method: "POST", body: { card: changed, origin: "imported" } });
+  assert.equal(noBase.status, 200, "absent base keeps the legacy apply posture");
+  assert.equal(JSON.parse(noBase.body).ok, true);
+  // the preview-time card no longer matches the active one → 409 conflict
+  const stale = await env.serve("/pulse/pricing-card", { method: "POST", body: { card: changed, origin: "imported", base: SEED_CARD } });
+  assert.equal(stale.status, 409, "a stale base is refused");
+  assert.deepEqual(JSON.parse(stale.body), { ok: false, error: "card-changed" },
+    "the conflict face is the {ok:false,error} contract with a stable code");
+  // a base that DOES match the active card (the client's JSON round trip of
+  // the GET reply) applies
+  const current = JSON.parse((await env.serve("/pulse/pricing-card")).body).card;
+  const fresh = await env.serve("/pulse/pricing-card", { method: "POST", body: { card: { ...changed, version: changed.version + 1 }, origin: "imported", base: current } });
+  assert.equal(fresh.status, 200, "a base matching the active card applies");
+  // key order carries no meaning: a reordered echo must still match (this is
+  // the regression that pins a structural compare, not a stringify compare)
+  const current2 = JSON.parse((await env.serve("/pulse/pricing-card")).body).card;
+  const reordered = {};
+  for (const key of Object.keys(current2).reverse()) reordered[key] = current2[key];
+  const reorderedApply = await env.serve("/pulse/pricing-card", { method: "POST", body: { card: { ...changed, version: changed.version + 2 }, origin: "imported", base: reordered } });
+  assert.equal(reorderedApply.status, 200, "a key-reordered base still matches the active card");
+  resetCard(); // leave the module-global facts on the seed for any later reader
+}
+
+// --- card pull: the fetch target is scheme-gated ---------------------------
+// The pull URL is user-reachable config handed straight to node's fetch,
+// which accepts more than http(s) (data: at minimum). The gate limits it to
+// http(s) — http loopback-only for local mirrors, every remote source
+// pinned to https — and every refusal happens BEFORE the fetch.
+{
+  const env = makeCtx({ withSettings: false });
+  apply(env.ctx, config);
+  const realFetch = globalThis.fetch;
+  const fetched = [];
+  globalThis.fetch = async (url) => { fetched.push(String(url)); throw new Error("no network in this test"); };
+  try {
+    for (const bad of ["file:///D:/passwd", "data:application/json,{}", "ftp://x/y/card.json", "not a url"]) {
+      const refused = await env.serve("/pulse/pricing-card/pull", { method: "POST", body: { url: bad } });
+      assert.equal(refused.status, 400, `${bad} refused with 400`);
+      assert.deepEqual(JSON.parse(refused.body).ok, false, "the {ok:false,error} contract");
+    }
+    const remoteHttp = await env.serve("/pulse/pricing-card/pull", { method: "POST", body: { url: "http://cdn.jsdelivr.net/gh/x/y/ratecard.json" } });
+    assert.equal(remoteHttp.status, 400, "a REMOTE http source is pinned to https");
+    const loopHttp = await env.serve("/pulse/pricing-card/pull", { method: "POST", body: { url: "http://127.0.0.1:9/x.json" } });
+    assert.equal(loopHttp.status, 200, "loopback http passes the gate (local mirror posture)");
+    assert.deepEqual(JSON.parse(loopHttp.body).ok, false, "…its fetch failure still answers as data");
+    const httpsSrc = await env.serve("/pulse/pricing-card/pull", { method: "POST", body: { url: "https://127.0.0.1:9/x.json" } });
+    assert.equal(httpsSrc.status, 200, "an https source passes the gate");
+    assert.deepEqual(JSON.parse(httpsSrc.body).ok, false);
+    assert.equal(fetched.length, 2, "exactly the two accepted URLs were fetched; every refusal happened pre-fetch");
+    assert.deepEqual(fetched, ["http://127.0.0.1:9/x.json", "https://127.0.0.1:9/x.json"]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+// --- reset mirrors refreshCard: display rate re-derives, aux retarget refolds
+// refreshCard re-applies the display rate because the card carries the
+// DEFAULT_USD_TO_CNY fallback; the reset route (restoring the seed) must do
+// the same, or a pulled card's rate lingers in the display realm. And
+// auxPriceAs rides the fold's auxTierKey — a card that retargets it changes
+// what the SAME events fold into tiersByDay, so syncPeak must treat it as a
+// fold-semantics change and refold. Runs last: mutates module-global facts.
+{
+  const env = makeCtx({ withSettings: false });
+  apply(env.ctx, { ...config, displayCurrency: "USD" });
+  assert.ok(Math.abs(displayAmount(6.8) - 1) < 1e-9, "the seed rate serves the USD display");
+  const retargeted = structuredClone(SEED_CARD);
+  retargeted.pricing.usdToCny = 7.7;
+  retargeted.pricing.auxPriceAs = "deepseek-v4-pro";
+  retargeted.version = SEED_CARD.version + 1;
+  const applied = await env.serve("/pulse/pricing-card", { method: "POST", body: { card: retargeted, origin: "imported" } });
+  assert.deepEqual(JSON.parse(applied.body), { ok: true, refold: true }, "an auxPriceAs retarget IS a refold (fold-baked tier semantics)");
+  assert.equal(env.registerCount(), 2, "…and the projection re-registers at a bumped stateVersion");
+  assert.ok(Math.abs(displayAmount(7.7) - 1) < 1e-9, "the applied card's rate becomes the display rate (refreshCard symmetry)");
+  const reset = await env.serve("/pulse/pricing-card/reset", { method: "POST" });
+  assert.deepEqual(JSON.parse(reset.body), { ok: true, refold: true }, "reset restores the seed's aux price-as → refold");
+  assert.equal(env.registerCount(), 3, "the reset re-registered the projection too");
+  assert.ok(Math.abs(displayAmount(6.8) - 1) < 1e-9, "reset re-derives the display rate like refreshCard — the pulled rate did not linger");
 }
 
 console.log("host-test: route, windowing, dedupe, settings surface and update check all passed");

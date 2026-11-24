@@ -7,6 +7,8 @@
  * (apply() hands over the full-scene opener — ESM import bindings are
  * read-only, so a plain assignment from scene.js cannot reach here).
  */
+import { setQuickReader } from "../quick-reader.js";
+export { setQuickReader };
 /** Seam: the scene stashes the live session's id each render. */
 export declare function noteCurrentSession(id: any): void;
 /** Seam: apply() hands over the full-scene opener. */

@@ -1,0 +1,17 @@
+{
+  "wire": {
+    "usage": {
+      "rolling": { "used_percent": 62.5, "resetsAt": "2026-10-19T12:00:00.000Z" },
+      "monthly": { "percent": 0, "resetAt": 1792497600 }
+    }
+  },
+  "normalized": {
+    "plan": { "name": "OpenCode Go", "level": null, "cycle": null, "renewsAt": null },
+    "fee": { "amount": 10, "currency": "USD", "cycle": "monthly" },
+    "windows": [
+      { "id": "5h", "kind": "usd", "used": null, "total": null, "usedPct": 62.5, "resetsAt": 1792411200000, "windowMs": 18000000 },
+      { "id": "month", "kind": "usd", "used": null, "total": null, "usedPct": 0, "resetsAt": 1792497600000, "windowMs": 2592000000 }
+    ],
+    "extras": []
+  }
+}

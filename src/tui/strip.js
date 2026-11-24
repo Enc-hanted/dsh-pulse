@@ -10,6 +10,13 @@
 
 import { collect, foldCache, makePricing, miniCardModel, todayDay } from "./data.js";
 import { displayWidth, fitDisplay, fmtTokens, money, sparkTrend } from "./draw.js";
+import { FOOT_WARN_PCT, pickFootSource } from "../view.js";
+import { quickReaderOf, setQuickReader } from "../quick-reader.js";
+
+// 快显 reader 的中立注册表住在 ../quick-reader.js（TUI 半区与 web 半区在
+// cordis.patch.yml 里互斥，模块级状态不能归属任何一半）；这里只 re-export
+// 既有 seam，test/tui-test.mjs 的从 strip.js 导入保持不变。
+export { setQuickReader };
 
 let lastSeenSessionId = null;
 let pulseOpenRef = null;
@@ -40,7 +47,11 @@ export const stripStore = {
 		if (force) foldCache.clear();
 		try {
 			const data = await collect(ctx, entryConfig);
-			this.snap = { status: "ok", data, pricing: makePricing(data.config ?? {}) };
+			let quick = null;
+			if (quickReaderOf() !== null) {
+				try { quick = await quickReaderOf()(); } catch { quick = null; }
+			}
+			this.snap = { status: "ok", data, pricing: makePricing(data.config ?? {}), quick };
 		} catch (error) {
 			this.snap = { status: "error", message: error?.message ?? String(error) };
 		}
@@ -85,6 +96,18 @@ function makeStripComponent() {
 			const m = mini.month;
 			// Priority-ordered segments; greedy packing against innerW.
 			const wanted = [];
+			// The quick-display source leads — same selection the web footer
+			// shows (config footSource, shared reader seam).
+			const quick = snap.quick ?? null;
+			const footSrc = quick !== null ? pickFootSource(quick.footSource ?? "", quick.balance ?? null, quick.quota?.providers) : null;
+			if (footSrc !== null && footSrc.kind === "official" && footSrc.balance?.ok === true) {
+				wanted.push({ text: `余 ${money(footSrc.balance.total, false)}` });
+			} else if (footSrc !== null && footSrc.kind === "quota" && footSrc.entry !== null && footSrc.entry !== undefined) {
+				const pct = footSrc.entry.windows?.[0]?.usedPct;
+				if (pct !== null && pct !== undefined) {
+					wanted.push({ text: `${footSrc.entry.plan?.name ?? footSrc.entry.label ?? footSrc.route} ${Math.round(pct)}%`, color: pct >= FOOT_WARN_PCT ? "warning" : undefined });
+				}
+			}
 			wanted.push({ text: t.all.count === 0
 				? "今日 — 无用量"
 				: `今日 ${fmtTokens(t.all.tok)} tok ${money(t.all.cost, t.all.estimated)} · ${t.all.count} 会话` });
@@ -181,4 +204,5 @@ export function _resetStripForTests() {
 	stripStore.listeners.clear();
 	lastSeenSessionId = null;
 	pulseOpenRef = null;
+	setQuickReader(null);
 }

@@ -339,7 +339,7 @@ export function usageQueryTool({
 		isConcurrencySafe: () => true,
 		async execute(args) {
 			const folded = usageQueryInput(args ?? {}, { localDay, validDay, now });
-			const payload = await buildStats(ctx, resolveConfig, folded.input);
+			const payload = await buildStats(ctx, resolveConfig, folded.input, undefined, now());
 			return summarizeUsage(payload, folded, { costOf, recordTokens, sessionModelRows });
 		},
 	};

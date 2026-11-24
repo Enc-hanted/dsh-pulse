@@ -107,6 +107,14 @@ export {
   strictRulesWith,
 } from "./view/official-pricing.js";
 export {
+  FOOT_WARN_PCT,
+  footHintShow,
+  footShareOf,
+  footTodaySplitTokens,
+  footTodayTokens,
+  pickFootSource,
+} from "./view/foot-display.js";
+export {
   ACCENT_MIN_DISTANCE,
   accentEntryOf,
   accentFillOf,
@@ -138,18 +146,63 @@ export function fmtCost(total) {
   return String(Number(v.toPrecision(3)));
 }
 
-/** ONE money notation for every face — symbol for CNY, code otherwise,
- *  never both. The hero renders `unit` as its own quiet span; quotaMoney
- *  joins the parts back into one string for table cells. */
-export function moneyParts(total, currency) {
-  return currency === "CNY" || currency === null || currency === undefined
-    ? { text: `¥${fmtCost(total)}`, unit: "" }
-    : { text: fmtCost(total), unit: currency };
+import { DEFAULT_USD_TO_CNY } from "./pricing-facts.js";
+
+/** DISPLAY CURRENCY — totals are always computed in CNY (recon-grade); the
+ *  personal displayCurrency setting converts at this single money exit.
+ *  Realms apply it via applyDisplay (host from config, client from the
+ *  payload); tests never call it and therefore see plain CNY. */
+let moneyDisplay = "CNY";
+let moneyDisplayRate = DEFAULT_USD_TO_CNY;
+export function applyDisplay(currency, rate) {
+  moneyDisplay = currency === "USD" ? "USD" : "CNY";
+  const r = Number(rate);
+  moneyDisplayRate = Number.isFinite(r) && r > 0 ? r : DEFAULT_USD_TO_CNY;
 }
 
-/** The CNY face of moneyParts for call sites that print the symbol inline. */
+/** ONE numeric exit for the display currency: a CNY amount in, the
+ *  display-currency number out (unformatted — CSV cells and other numeric
+ *  consumers). The ÷rate lives here and nowhere else; moneyParts rides it,
+ *  so a second conversion point cannot appear and the printed face can
+ *  never disagree with an exported number. */
+export function displayAmount(cny) {
+  const v = Number(cny) || 0;
+  return moneyDisplay === "USD" ? v / moneyDisplayRate : v;
+}
+
+/** The active display currency's code — the ONE reader for faces that must
+ *  NAME the currency (CSV title/header) rather than print an amount.
+ *  applyDisplay stays the single writer. Named activeCurrency (not
+ *  displayCurrency) because the payloads already carry a displayCurrency
+ *  FIELD — a same-named export would make every `data.displayCurrency`
+ *  read as a missing import. */
+export function activeCurrency() {
+  return moneyDisplay;
+}
+
+/** ONE money notation for every face — symbol for CNY, code otherwise,
+ *  never both. The hero renders `unit` as its own quiet span; quotaMoney
+ *  joins the parts back into one string for table cells. CNY amounts honor
+ *  the display currency (converted via displayAmount, nowhere else);
+ *  non-CNY sources print as-is. */
+export function moneyParts(total, currency) {
+  let c = currency;
+  let v = Number(total) || 0;
+  if ((c === "CNY" || c === null || c === undefined) && moneyDisplay === "USD") {
+    v = displayAmount(v);
+    c = "USD";
+  }
+  return c === "CNY" || c === null || c === undefined
+    ? { text: `¥${fmtCost(v)}`, unit: "" }
+    : { text: fmtCost(v), unit: c };
+}
+
+/** The CNY face of moneyParts for call sites that print the symbol inline.
+ *  quotaMoney semantics so the unit survives: CNY mode reads `¥6.80`, USD
+ *  display mode reads `2.00 USD` — a bare number beside token counts is
+ *  exactly the ambiguity the unit contract forbids. */
 export function moneyCny(total) {
-  return moneyParts(total, "CNY").text;
+  return quotaMoney(total, "CNY");
 }
 
 /** Money with an explicit unit tail: `¥12.34` for CNY, `12.34 USD` otherwise
@@ -169,12 +222,17 @@ export function clockOf(ms) {
 
 /** Token-count formatting: 1.2k / 3.4M / 5.6B — the ONE abbreviation for
  *  both faces (the two ladders had already split: 1.5B here printed as
- *  1500.0M on the TUI). */
+ *  1500.0M on the TUI). A whole number prints bare — 689k, never 689.0k;
+ *  the lone decimal is kept only when it says something (830.4k). */
 export function fmtTokens(n) {
 	const v = Number(n) || 0;
-	if (v >= 1e9) return `${(v / 1e9).toFixed(1)}B`;
-	if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
-	if (v >= 1e3) return `${(v / 1e3).toFixed(1)}k`;
+	const compact = (x) => {
+		const s = x.toFixed(1);
+		return s.endsWith(".0") ? s.slice(0, -2) : s;
+	};
+	if (v >= 1e9) return `${compact(v / 1e9)}B`;
+	if (v >= 1e6) return `${compact(v / 1e6)}M`;
+	if (v >= 1e3) return `${compact(v / 1e3)}k`;
 	return String(Math.round(v));
 }
 

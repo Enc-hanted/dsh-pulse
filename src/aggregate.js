@@ -20,7 +20,7 @@
  */
 
 import { z } from "zod";
-import { AUX_PRICE_AS, BEIJING_OFFSET_MS, DEFAULT_USD_TO_CNY, PEAK_HOURS } from "./pricing-facts.js";
+import { AUX_PRICE_AS, BEIJING_OFFSET_MS, DEFAULT_USD_TO_CNY, PEAK_HOURS, activeCard } from "./pricing-facts.js";
 import { dayStart, localDay, modelKey } from "./view/keys.js";
 
 // Calendar primitives live in view/keys.js — their single home — and are
@@ -221,12 +221,13 @@ function hourKey(timeMs) {
 // and are re-exported here so existing aggregate imports keep working.
 export { BEIJING_OFFSET_MS, PEAK_HOURS };
 
-/** The composite model key auxiliary calls bill under — derived from the ONE
- *  constant the pricing side uses (`AUX_PRICE_AS`), so the tier classification
- *  and the pricing lookup can never disagree about which model an aux request
- *  rides. Title requests whose event carries a concrete route classify under
- *  that route's own tier spec instead. */
-const AUX_TIER_KEY = modelKey("", AUX_PRICE_AS);
+/** The composite model key auxiliary calls bill under — derived live from
+ *  the ONE constant the pricing side uses (`AUX_PRICE_AS`), so the tier
+ *  classification and the pricing lookup can never disagree about which
+ *  model an aux request rides, even across a runtime card apply. Title
+ *  requests whose event carries a concrete route classify under that
+ *  route's own tier spec instead. */
+const auxTierKey = () => modelKey("", AUX_PRICE_AS);
 
 /** Title outputs are a visible title plus nothing else (the DeepSeek adapter
  *  disables thinking for the session-title purpose), so the billed output is
@@ -582,7 +583,7 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 11 } = 
         next.auxByDay = { ...state.auxByDay };
         const dayAux = { ...(state.auxByDay[day] ?? {}) };
         if (type === "web/deepseek-search-llm-request") {
-          const tierSpec = hoursOf(AUX_TIER_KEY);
+          const tierSpec = hoursOf(auxTierKey());
           const tier = tierAt(event.time, { hours: tierSpec.hours, weekdaysOnly: tierSpec.weekdaysOnly });
           const kindAux = { ...(dayAux.search ?? { peak: 0, offpeak: 0 }) };
           kindAux[tier] = (kindAux[tier] ?? 0) + 1;
@@ -592,7 +593,7 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = 11 } = 
           const titleKey = typeof route?.model === "string" && route.model !== ""
             ? modelKey(typeof route?.provider === "string" ? route.provider : "", route.model)
             : null;
-          const tierSpec = hoursOf(titleKey ?? AUX_TIER_KEY);
+          const tierSpec = hoursOf(titleKey ?? auxTierKey());
           const tier = tierAt(event.time, { hours: tierSpec.hours, weekdaysOnly: tierSpec.weekdaysOnly });
           const counts = { ...(dayAux.title ?? { peak: 0, offpeak: 0 }) };
           counts[tier] = (counts[tier] ?? 0) + 1;
@@ -900,13 +901,15 @@ function compactUsage(event) {
  *   array alone cannot express (and which a freshly booted harness hits
  *   before its first message commits).
  * @param {number} [options.now] - clock override for tests.
+ * @param {string} [options.displayCurrency] - personal display currency echoed
+ *   to the client (accounting stays CNY; the money exit converts).
  * @returns {{schema: number, generatedAt: number, today: string, fromDay: string, toDay: string,
  *   pricing: Array<any>, monthly: string[], topProjects: number, costEnabled: boolean,
- *   fx: {usdToCny: number}, corpusSessions: number, sessions: Array<WindowedRecord>,
+ *   fx: {usdToCny: number}, card: any, cardOrigin: string, displayCurrency: string, corpusSessions: number, sessions: Array<WindowedRecord>,
  *   anomalies?: any, balanceSeries?: Array<any>, modelColors?: any, auxShape?: any}}
  *   the JSON payload (the host may pin the optional overlay fields on top).
  */
-export function buildPayload({ records, fromDay, toDay, pricing = [], topProjects = 8, costEnabled = true, fx = {}, monthly = [], corpusSessions, now = Date.now() }) {
+export function buildPayload({ records, fromDay, toDay, pricing = [], topProjects = 8, costEnabled = true, fx = {}, monthly = [], corpusSessions, displayCurrency = "CNY", now = Date.now() }) {
   const today = localDay(now);
   const window = resolveWindow(
     { from: validDay(fromDay) ? fromDay : undefined, to: validDay(toDay) ? toDay : undefined },
@@ -932,6 +935,9 @@ export function buildPayload({ records, fromDay, toDay, pricing = [], topProject
     topProjects: Number.isFinite(top) && top > 0 ? Math.floor(top) : 8,
     costEnabled: costEnabled !== false,
     fx: { usdToCny: Number.isFinite(rate) && rate > 0 ? rate : DEFAULT_USD_TO_CNY },
+    card: activeCard().card,
+    cardOrigin: activeCard().origin,
+    displayCurrency: displayCurrency === "USD" ? "USD" : "CNY",
     corpusSessions: Number.isFinite(corpus) && corpus >= 0 ? Math.floor(corpus) : sessions.length,
     sessions,
   };

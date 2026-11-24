@@ -1,6 +1,11 @@
 /**
- * The quota-adapter SPI — the contract src/quota-service.js orchestrates
- * and every src/quota-adapters/<provider>.js module implements.
+ * The quota-adapter SPI — the contract src/quota-service.js orchestrates.
+ * SPI v2: the built-ins are DECLARATIVE SPECS in the data card
+ * (ratecard.json `providers`), parsed by ./spec-engine.js into exactly this
+ * contract (`specAdapter`); user custom specs from settings (`quotaSpecs`)
+ * join the same roster. A hand-written code adapter object shaped like the
+ * one below remains the escape hatch for wire shapes the spec grammar
+ * cannot express — the orchestrator treats both identically.
  *
  * An adapter is a plain object shaped like this:
  *
@@ -28,11 +33,10 @@
  *   schema drift: an unparsable reply stays unparsable. It MUST NOT touch
  *   the store; persistence (the pulse_quota snapshots) is the
  *   orchestrator's.
- * - The parse half of every built-in adapter is a pure exported function
- *   (`parse<Provider>Quota`) so the conformance suite
- *   (test/quota-adapters-test.mjs + test/fixtures/quota/) can replay
- *   recorded wire shapes against pinned normalized outputs without any
- *   network.
+ * - The parse half of every built-in spec is the spec engine's pure
+ *   `parseSpec` so the conformance suite (test/quota-adapters-test.mjs +
+ *   test/fixtures/quota/) can replay recorded wire shapes against pinned
+ *   normalized outputs without any network.
  *
  * Privacy law (invariant, same as the balance): the credential lives only
  * in the single outbound Authorization header fetchQuota() sends — never
@@ -67,7 +71,8 @@ export type QuotaWindow = {
      */
     id: string;
     /**
-     * - "tokens" or "requests" (the unit family).
+     * - "tokens", "requests" or "usd" (the unit family;
+     * usd windows carry true absolute USD-value quotas, e.g. microCents).
      */
     kind: string;
     /**
@@ -197,7 +202,8 @@ export type QuotaAdapter = {
  *
  * @typedef {object} QuotaWindow
  * @property {string} id - window identity ("5h", "7d", "month", ...).
- * @property {string} kind - "tokens" or "requests" (the unit family).
+ * @property {string} kind - "tokens", "requests" or "usd" (the unit family;
+ *   usd windows carry true absolute USD-value quotas, e.g. microCents).
  * @property {number|null} used - absolute used count; null unless the
  *   provider states a true absolute quota.
  * @property {number|null} total - absolute quota size; same rule as `used`.
@@ -272,4 +278,4 @@ export type QuotaAdapter = {
  * The SPI version these typedefs describe. Bump when the contract changes
  * shape in a way an external adapter must follow.
  */
-export declare const QUOTA_ADAPTER_SPI_VERSION = 1;
+export declare const QUOTA_ADAPTER_SPI_VERSION = 2;

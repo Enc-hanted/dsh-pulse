@@ -5,8 +5,11 @@ import {
   officialEstimateRulesFor, providerLabelOf, rangeKeys, reconDrift, reconcileSeries, rollupKeyOf, rollupModelFamilies,
   sessionGroups, sessionModelRows, shiftDay, statsFingerprint, weekStart,
   quotaBurn, quotaCalibrate, quotaCoverage, quotaFeeShare, quotaMonthlyFee, quotaProjectAttribution, quotaWindowTokens,
+  footHintShow, footShareOf, footTodaySplitTokens, footTodayTokens, localDay, pickFootSource,
 } from "../src/view.js";
 import { burnRateSpikes, loopFingerprints, detectAnomalies } from "../src/view/anomaly.js";
+import { effectivePricing } from "../src/host/pricing-config.js";
+import { activeCurrency, applyDisplay, displayAmount, moneyParts, moneyCny } from "../src/view.js";
 
 const D = "2026-08-14"; // a Friday
 assert.equal(weekStart(D), "2026-08-10", "Monday-start week");
@@ -1066,6 +1069,43 @@ assert.equal(sameIdAmbiguous[0].sessions[0].cost.configured, true, "official wil
   });
   assert.ok(Math.abs(recon[0].aux - post.cost.total) < 1e-9, "the aux side includes the per-call fee");
   assert.ok(Math.abs(recon[0].gap) < 1e-9, "an exact-shape day reconciles to gap 0 with the fee modeled");
+  // Crossing the window end between two same-tier (weekend) days drops
+  // exactly the fee from the window total.
+  const lastFee = buildView([feeRecord("2026-11-14")], { granularity: "day", from: "2026-11-14", to: "2026-11-14", pricing: [] });
+  const afterFee = buildView([feeRecord("2026-11-21")], { granularity: "day", from: "2026-11-21", to: "2026-11-21", pricing: [] });
+  assert.ok(Math.abs(lastFee.cost.total - afterFee.cost.total - 0.01) < 1e-9, "crossing the window end drops exactly 2 × ¥0.005");
+}
+
+// --- currency: official rows keep published currency; config rows ride the global one
+{
+  const usd = effectivePricing({ currency: "USD", usdToCny: 6.8, pricing: [] });
+  const flash = usd.find((r) => r.model === "deepseek-flash");
+  assert.equal(flash.currency, "CNY", "official rules keep their published currency under a USD config");
+  assert.equal(flash.input, 1, "official CNY numbers are not relabeled as USD");
+  const custom = effectivePricing({ currency: "USD", usdToCny: 6.8, pricing: [{ model: "third-party-m", input: 2, output: 6 }] });
+  assert.equal(custom.find((r) => r.model === "third-party-m").currency, "USD", "config rows ride the global currency");
+  const rec = {
+    id: "cur", project: "p", subagent: false, day: "2026-11-14",
+    byDay: { "2026-11-14": { input: 1e6, output: 0, cacheRead: 0, cacheWrite: 0 } },
+    modelsByDay: { "2026-11-14": { "deepseek-flash": { input: 1e6, output: 0, cacheRead: 0, cacheWrite: 0 } } },
+    turnsByDay: {}, toolCallsByDay: {},
+  };
+  const view = buildView([rec], { granularity: "day", from: "2026-11-14", to: "2026-11-14", pricing: usd });
+  assert.ok(Math.abs(view.cost.total - 1) < 1e-9, "1M flash input under a USD config still costs ¥1, not ¥6.8");
+}
+
+// --- display currency converts at the single money exit --------------------
+{
+  applyDisplay("USD", 6.8);
+  assert.deepEqual(moneyParts(6.8, "CNY"), { text: "1.00", unit: "USD" }, "CNY totals convert at the money exit");
+  assert.equal(moneyCny(13.6), "2.00 USD", "moneyCny rides quotaMoney's tail — the unit is never dropped");
+  assert.deepEqual(moneyParts(5, "USD"), { text: "5.00", unit: "USD" }, "non-CNY sources print as-is");
+  assert.equal(displayAmount(13.6), 2, "displayAmount is the numeric exit (CSV money columns ride it)");
+  assert.equal(activeCurrency(), "USD", "activeCurrency names the active face for unit-aware labels");
+  applyDisplay("CNY");
+  assert.equal(moneyCny(6.8), "¥6.80", "reset restores the CNY face");
+  assert.equal(displayAmount(6.8), 6.8, "CNY mode passes the number through untouched");
+  assert.equal(activeCurrency(), "CNY", "…and the named currency resets with it");
 }
 
 // --- v0.6 session badge counts + hourly multi-select ---------------------------
@@ -1553,6 +1593,44 @@ assert.equal(sameIdAmbiguous[0].sessions[0].cost.configured, true, "official wil
   // missing histogram (records folded before stateVersion 11) never errors
   assert.deepEqual(detectAnomalies([{ id: "s5", byDay: daysOf([[0, 50000]]) }]), { burnRate: [], loops: [] },
     "records without a histogram yield empty anomalies, never errors");
+}
+
+// --- quick-display source selection, share audit, hint hysteresis -----------
+{
+  const now = Date.now();
+  const today = localDay(now);
+  const yesterday = shiftDay(today, -1);
+  const sep = String.fromCharCode(0);
+  const sessions = [{
+    byDay: { [today]: { input: 300, output: 100, cacheRead: 0, cacheWrite: 0 } },
+    modelsByDay: {
+      [today]: { [`deepseek-official${sep}deepseek-flash`]: { input: 300, output: 100, cacheRead: 0, cacheWrite: 0 } },
+      [yesterday]: { [`zai-coding-cn${sep}glm-5`]: { input: 100, output: 0, cacheRead: 0, cacheWrite: 0 } },
+    },
+  }];
+  assert.equal(footTodayTokens(sessions, now), 400, "today's global tokens sum every project");
+  assert.deepEqual(footTodaySplitTokens(sessions, now), { in: 300, out: 100 },
+    "today's split: in = input+cacheRead+cacheWrite, out = output");
+  const cacheHeavy = [{ byDay: { [today]: { input: 10, output: 4, cacheRead: 50, cacheWrite: 6 } } }];
+  assert.deepEqual(footTodaySplitTokens(cacheHeavy, now), { in: 66, out: 4 },
+    "cache reads/writes count as in-side tokens");
+  assert.deepEqual(footTodaySplitTokens([], now), { in: 0, out: 0 }, "no sessions → a zero split, never NaN");
+  const officialShare = footShareOf(sessions, "official", undefined, now);
+  assert.ok(Math.abs(officialShare.share - 0.8) < 1e-9, "official share counts account-billed routes");
+  const zaiShare = footShareOf(sessions, "quota", "zai-coding-cn", now);
+  assert.ok(Math.abs(zaiShare.share - 0.2) < 1e-9, "a subscription counts exactly its route");
+  assert.equal(footShareOf([], "official", undefined, now), null, "a share of nothing is not evidence");
+  const okBalance = { configured: true, ok: true, total: 5 };
+  const okProviders = [{ ok: true, provider: "zai-coding-cn" }];
+  assert.equal(pickFootSource("", okBalance, okProviders).kind, "official", "auto prefers the answering balance");
+  assert.equal(pickFootSource("", null, okProviders).route, "zai-coding-cn", "auto falls back to the first answered subscription");
+  assert.equal(pickFootSource("zai-coding-cn", okBalance, okProviders).kind, "quota", "the manual choice wins over auto");
+  assert.equal(pickFootSource("official", null, []).balance, null, "an explicit official keeps its kind when unanswered");
+  assert.equal(pickFootSource("", null, []), null, "nothing answering → no source");
+  assert.equal(footHintShow(0.2, null).show, true, "below 50% suggests once");
+  assert.equal(footHintShow(0.2, { dismissed: true }).show, false, "a dismissal sticks");
+  assert.deepEqual(footHintShow(0.65, { dismissed: true }).next, { dismissed: false }, "recovery to ≥60% rearms the hint");
+  assert.equal(footHintShow(null, null).show, false, "no share, no suggestion");
 }
 
 console.log("view-test: all assertions passed");

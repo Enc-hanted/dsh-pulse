@@ -1,20 +1,21 @@
 import z from "@deepseek-ai/schemastery";
 import {
 	Config, pricingRuleSchema, VOLATILE_KEYS, unwrapVolatile, liveConfig,
-	sanitizeModelColors, sanitizeMonthlyFee, sanitizeSearchShape,
+	sanitizeModelColors, sanitizeMonthlyFee, sanitizeSearchShape, sanitizeQuotaSpecs,
 	effectiveAuxShape, settingsPatchOf,
 } from "./host/config-schema.js";
 import {
-	OFFICIAL_PRICING, LEGACY_MODEL_ALIASES,
-	mergePricingRows, effectivePricing, peakMapOf, peakMapKey, effectiveUsdToCny,
+	mergePricingRows, effectivePricing, peakMapOf, peakMapKey, effectiveUsdToCny, effectiveCardSource,
 } from "./host/pricing-config.js";
+import { methodNotAllowed, assertCardSourceUrl, refuseCrossSitePost } from "./http-helpers.js";
+import { setQuickReader } from "./quick-reader.js";
 export { Config };
 
 /**
  * The shared aggregation entry (`/pulse/stats` and any embedded consumer —
  * the optional usage_query tool package — fold the corpus through this one
  * function, so embedded answers can never drift from the dashboard).
- * Signature: `(ctx, resolveConfig, input, snapshotsOf?) → Promise<payload>`.
+ * Signature: `(ctx, resolveConfig, input, snapshotsOf?, now?) → Promise<payload>`.
  *
  * @function buildStats
  */
@@ -24,8 +25,13 @@ import {
   pulseProjectionDefinition, resolveWindow, sliceRecord, timelineEvents, PEAK_HOURS,
 } from "./aggregate.js";
 import { detectAnomalies } from "./view/anomaly.js";
-import { AUX_SHAPE, DEFAULT_USD_TO_CNY, modelKey, OFFICIAL_PRICE_SCHEDULES, splitModelKey } from "./view.js";
-import { RATECARD, RATECARD_VERSION } from "./pricing-facts.js";
+import { AUX_SHAPE, AUX_PRICE_AS, DEFAULT_USD_TO_CNY, modelKey, OFFICIAL_PRICE_SCHEDULES, splitModelKey, applyDisplay } from "./view.js";
+import { RATECARD, RATECARD_VERSION, SEED_CARD, applyCard, resetCard, activeCard, PROVIDER_SPECS } from "./pricing-facts.js";
+import { cardIssueLines, validateCard, validateProviderSpec } from "./pricing/card-schema.js";
+import { DEFAULT_CARD_SOURCE, jsonEqual } from "./pricing/card.js";
+import { openRollingGlobalDomain } from "./rolling-domain.js";
+import { defineDomain } from "@deepseek-ai/dsh-storage-domain";
+import { z as zv } from "zod";
 import { createBalanceService } from "./balance-service.js";
 import { createQuotaService } from "./quota-service.js";
 import { json } from "./http-helpers.js";
@@ -112,11 +118,72 @@ export const inject = [
  * @param {{from?: string, to?: string, days?: number|string}} input - request window.
  * @param {() => Promise<Array<{t: number, total: number}|null>>} [snapshotsOf] - balance
  *   snapshot accessor; when present the payload carries `balanceSeries`.
+ * @param {number} [now] - clock override for tests (window resolution); defaults
+ *   to the real clock.
  * @returns {Promise<any>} the `/pulse/stats` payload.
  */
 const PAYLOAD_TTL_MS = 15000;
 const inflight = new Map();
 const lastServed = new Map();
+/** Persisted-session projections shared across windows for one TTL. The
+ *  expensive half of a fold — every persisted session's stored-row read or
+ *  body read + cold fold — is window-independent (only `sliceRecord` and
+ *  `buildPayload` look at the dates), so before this cache every range
+ *  switch rescanned the whole corpus and the user waited a full fold per
+ *  window. Same invalidation contract as the payload cache: host context +
+ *  corpus count + serveEpoch + PAYLOAD_TTL_MS. Live sessions are NEVER
+ *  cached — the fold reads their in-memory snapshot every time, so 「今日」
+ *  stays exactly as fresh as before. A failed or unreadable session is
+ *  remembered as null for the TTL (it was skipped on every fold anyway). */
+/** @type {{ctx: any|null, corpus: number, epoch: number, at: number, values: Map<string, any>|null}} */
+let projections = { ctx: null, corpus: -1, epoch: -1, at: 0, values: null };
+/** @type {{ctx: any, corpus: number, epoch: number, promise: Promise<Map<string, any>>|null}|null} */
+let projectionFlight = null;
+/** Drop the shared projections (settings/card change, projection
+ *  re-register, loader restart): rows folded under the old tier split must
+ *  never be reused. */
+function resetProjections() {
+  projections = { ctx: null, corpus: -1, epoch: -1, at: 0, values: null };
+}
+/** The window-independent half of a fold: id → pulseUsage for every
+ *  persisted session in `sessions`. Concurrent folds of one generation
+ *  (rapid range switching) share the same pass instead of racing each
+ *  other for the store. */
+async function projectedPersisted(ctx, sessions, epoch) {
+  const corpus = sessions.length;
+  if (projections.values !== null && projections.ctx === ctx && projections.corpus === corpus
+      && projections.epoch === epoch && Date.now() - projections.at < PAYLOAD_TTL_MS) {
+    return projections.values;
+  }
+  if (projectionFlight !== null && projectionFlight.ctx === ctx && projectionFlight.corpus === corpus
+      && projectionFlight.epoch === epoch) {
+    return projectionFlight.promise;
+  }
+  /** @type {{ctx: any, corpus: number, epoch: number, promise: Promise<Map<string, any>>|null}} */
+  const flight = { ctx, corpus, epoch, promise: null };
+  flight.promise = (async () => {
+    const values = new Map();
+    for (const entry of sessions) {
+      if (entry.live) continue;
+      try {
+        const projected = await projectionValuesOf(ctx, entry);
+        values.set(entry.header.id, projected === undefined ? null : projected.pulseUsage ?? null);
+      } catch {
+        values.set(entry.header.id, null);
+      }
+    }
+    return values;
+  })().finally(() => { if (projectionFlight === flight) projectionFlight = null; });
+  projectionFlight = flight;
+  const values = await flight.promise;
+  // A pass that started before a settings change must not land its
+  // now-stale tiers in the cache (the payload cache's epoch rule).
+  if (epoch === serveEpoch) projections = { ctx, corpus, epoch, at: Date.now(), values };
+  return values;
+}
+/** Boot-time stored-card apply; buildStats awaits it so the first cold
+ *  request never prices against the seed by race. Reassigned per apply(). */
+let cardReady = Promise.resolve();
 
 /**
  * One session's `pulseUsage` projection values.
@@ -171,17 +238,21 @@ function isCachable(payload) {
   return Array.isArray(payload?.sessions) && payload.sessions.length > 0;
 }
 
-async function buildStats(ctx, resolveConfig, input, snapshotsOf) {
+async function buildStats(ctx, resolveConfig, input, snapshotsOf, now = Date.now()) {
+  await cardReady;
   const config = resolveConfig();
-  const { fromDay, toDay } = resolveWindow(input, config.defaultDays);
+  const { fromDay, toDay } = resolveWindow(input, config.defaultDays, now);
   // The served window is stable under the TTL, but the corpus behind it is
   // not: a session created or written between two reads changes what the same
   // window contains. The corpus count is therefore part of the cache key, so a
   // payload folded before that write can never be served as if it were after.
   // Only the newest count is remembered — the cache is a warm-read shortcut,
-  // not a history of windows.
+  // not a history of windows. ONE listing serves both the key and the fold
+  // (they used to be two listings, so the key and the folded corpus could
+  // diverge by a write in between).
   const base = `${fromDay}:${toDay}`;
-  let corpus = (await listCorpus(ctx)).length;
+  const sessions = await listCorpus(ctx);
+  let corpus = sessions.length;
   const fresh = lastServed.get(base);
   if (fresh !== undefined && fresh.corpus === corpus && Date.now() - fresh.at < PAYLOAD_TTL_MS) return fresh.payload;
   const epochAtStart = serveEpoch;
@@ -192,7 +263,7 @@ async function buildStats(ctx, resolveConfig, input, snapshotsOf) {
   const existing = inflight.get(base);
   const flight = existing !== undefined
     ? existing
-    : aggregate(ctx, config, fromDay, toDay, snapshotsOf, corpus).finally(() => inflight.delete(base));
+    : aggregate(ctx, config, fromDay, toDay, snapshotsOf, sessions, epochAtStart).finally(() => inflight.delete(base));
   inflight.set(base, flight);
   const payload = await flight;
   // A fold that started before a settings change must never land its now-stale
@@ -224,15 +295,23 @@ async function listCorpus(ctx) {
   }
 }
 
-async function aggregate(ctx, config, fromDay, toDay, snapshotsOf, corpusSessions) {
+async function aggregate(ctx, config, fromDay, toDay, snapshotsOf, sessions, epoch) {
   const pricing = effectivePricing(config);
-  const sessions = Array.isArray(corpusSessions) ? corpusSessions : await listCorpus(ctx);
+  const persisted = await projectedPersisted(ctx, sessions, epoch);
   const records = [];
   for (const entry of sessions) {
     try {
       const header = entry.header;
-      const values = await projectionValuesOf(ctx, entry);
-      const pulse = values === undefined ? undefined : values.pulseUsage;
+      // A live session is read at fold time — its in-memory snapshot moves
+      // with every commit — and so is any persisted session the shared pass
+      // does not know (a corpus that changed shape without changing count).
+      let pulse;
+      if (entry.live) {
+        pulse = (await projectionValuesOf(ctx, entry))?.pulseUsage;
+      } else {
+        const shared = persisted.get(header.id);
+        pulse = shared !== undefined ? (shared ?? undefined) : (await projectionValuesOf(ctx, entry))?.pulseUsage;
+      }
       const record = sliceRecord({
         id: header.id,
         createdAt: header.createdAt,
@@ -264,6 +343,7 @@ async function aggregate(ctx, config, fromDay, toDay, snapshotsOf, corpusSession
     pricing,
     topProjects: config.topProjects,
     costEnabled: config.costEnabled !== false,
+    displayCurrency: config.displayCurrency,
     fx: { usdToCny: effectiveUsdToCny(config) },
     monthly: Array.isArray(config.monthlyProviders) ? config.monthlyProviders : [],
     corpusSessions: sessions.length,
@@ -405,8 +485,7 @@ export function apply(ctx, config) {
   /** Tier scope for a composite fold key (`provider\u0000model`), falling back
    *  to a provider-less (wildcard) rule's spec and then the official default
    *  (the official hours, weekdays only). */
-  const OFFICIAL_TIER = { hours: PEAK_HOURS, weekdaysOnly: true };
-  const peakHoursFor = (model) => peakMap.get(model) ?? peakMap.get(splitModelKey(model).model) ?? OFFICIAL_TIER;
+  const peakHoursFor = (model) => peakMap.get(model) ?? peakMap.get(splitModelKey(model).model) ?? { hours: PEAK_HOURS, weekdaysOnly: true };
   let disposeProjection = ctx.sessionProjections.register(
     pulseProjectionDefinition({ peakHoursFor, stateVersion: 11 + epoch }),
   );
@@ -437,11 +516,61 @@ export function apply(ctx, config) {
   };
   const reRegisterProjection = () => {
     epoch += 1;
+    // Persisted rows folded under the old definition no longer match — the
+    // shared projections must not survive the re-register either.
+    resetProjections();
     disposeProjection();
     disposeProjection = ctx.sessionProjections.register(
       pulseProjectionDefinition({ peakHoursFor, stateVersion: 11 + epoch }),
     );
     void warmUpRefolds();
+  };
+
+  /** The stored data-card override (import/pull), opened once per fiber;
+   *  an absent storage facility degrades to the bundled seed. */
+  const openCardDomain = openRollingGlobalDomain(ctx, defineDomain({
+    name: "pulse_card",
+    version: 0,
+    tables: {},
+    global: {
+      // zod v4 (this package) vs the storage-domain seam's zod v3 types: the
+      // schema is plain data to the seam (it validates at the durable
+      // boundary), so the cross-version assignment is asserted away.
+      schema: /** @type {any} */ (zv.object({
+        card: zv.unknown().nullable(),
+        origin: zv.string(),
+        savedAt: zv.number(),
+      })),
+      initial: { card: null, origin: "bundled", savedAt: 0 },
+    },
+  }), "dsh-pulse: card domain");
+  /** Re-derive the fold's tier map after a config edit OR a card apply;
+   *  re-register (and warm refolds) only when the tier scope moved. The
+   *  signature includes the LIVE official peak hours: official rows are
+   *  always `inherited`, so a card peak-hours change leaves peakMap empty
+   *  yet still invalidates every persisted tier split. It also includes the
+   *  aux price-as model: the fold bakes aux-call tiers under `auxTierKey()`
+   *  (aggregate.js), so a card that retargets AUX_PRICE_AS changes what the
+   *  SAME events fold into tiersByDay — tier semantics, not a display knob. */
+  let peakSignature = `${peakMapKey(peakMap)}|${PEAK_HOURS.join()}|${AUX_PRICE_AS}`;
+  const syncPeak = () => {
+    const next = peakMapOf(resolveConfig());
+    const sig = `${peakMapKey(next)}|${PEAK_HOURS.join()}|${AUX_PRICE_AS}`;
+    if (sig !== peakSignature) {
+      peakSignature = sig;
+      peakMap = next;
+      reRegisterProjection();
+      return true;
+    }
+    return false;
+  };
+  /** Store + apply a validated card, drop served payloads and the session
+   *  cache, and refold when the tier scope moved. Returns the refold flag. */
+  const refreshCard = async (card, origin) => {
+    applyCard(card, origin);
+    const domain = await openCardDomain();
+    if (domain !== null) await domain.global.set({ card, origin, savedAt: Date.now() });
+    return afterCardChange();
   };
 
   /** Track the `llm` service when present, for the settings editor's model
@@ -468,18 +597,55 @@ export function apply(ctx, config) {
   let resolveConfig = () => liveConfig(config);
   let settingsSeam = null;
   let settingsProvider = null;
-  const invalidatePayload = () => { lastServed.clear(); serveEpoch += 1; };
+  const invalidatePayload = () => { lastServed.clear(); resetProjections(); serveEpoch += 1; };
+  /** 卡变更后的同一串收尾（refreshCard / boot / onSettingsChanged / reset
+   *  四处曾各自手抄）：丢掉已服务的 payload 与会话缓存、按新卡重推显示
+   *  汇率，再让 syncPeak 决定是否重折叠。返回 syncPeak() 的结果（refold
+   *  标志），调用方照旧拿它作响应字段。 */
+  const afterCardChange = () => {
+    invalidatePayload();
+    sessionCache.clear();
+    applyDisplay(resolveConfig().displayCurrency, effectiveUsdToCny(resolveConfig()));
+    return syncPeak();
+  };
   // The module-level TTL cache outlives a loader restart (only the fiber is
   // recycled), so every (re)application starts from a clean payload slate.
   invalidatePayload();
-  const onSettingsChanged = () => {
-    invalidatePayload();
-    const next = peakMapOf(resolveConfig());
-    if (peakMapKey(next) !== peakMapKey(peakMap)) {
-      peakMap = next;
-      reRegisterProjection();
+  /** Boot applies the stored card before the first fold; buildStats awaits
+   *  this so a cold first request never prices against the seed by race. */
+  cardReady = (async () => {
+    try {
+      const domain = await openCardDomain();
+      if (domain === null) return;
+      const stored = domain.global.get();
+      if (stored !== null && typeof stored === "object" && stored.card) {
+        applyCard(validateCard(stored.card), stored.origin === "pulled" ? "pulled" : "imported");
+        // Same symmetry as refreshCard and the reset route: applyCard republished
+        // the card-derived DEFAULT_USD_TO_CNY, but this continuation always runs
+        // AFTER the synchronous applyDisplay below — the IIFE suspends at the
+        // storage read, so that first derive saw the bundled seed. A host whose
+        // config.usdToCny is not a usable positive number would otherwise keep
+        // the seed rate in the display realm (TUI strip, usage-query answers)
+        // until the next settings event or HTTP card apply.
+        afterCardChange();
+      }
+    } catch {
+      // One fail-open unit, read included: a throwing storage seam used to
+      // reject cardReady here and take every /pulse/stats request down with
+      // it. An unreadable or invalid stored card falls back to the bundled
+      // seed instead — and says so in the host log, because a silently
+      // ignored override is exactly the version skew that must be visible.
+      // resetCard is real work on a re-apply: module facts outlive the fiber,
+      // so a prior fiber may have left a now-undiscoverable card live.
+      resetCard();
+      ctx.logger?.info?.("dsh-pulse: stored data card ignored (unreadable or invalid) — the bundled seed stays authoritative");
     }
-  };
+  })();
+  // apply() 时的一次性显示初始化经由 onSettingsChanged（内部走 afterCardChange
+  // 的 helper 版 applyDisplay）：此前 569 行的裸 applyDisplay 与 572 行的重复
+  // 调用是同一配置的连打，现在只保留 helper 里那一次。
+  const onSettingsChanged = () => afterCardChange();
+  onSettingsChanged();
   if (typeof ctx.inject === "function") {
     ctx.inject(["settings"], (sctx) => {
       const forms = sctx.settings;
@@ -605,6 +771,21 @@ export function apply(ctx, config) {
 
   });
 
+  // The TUI strip's quick-display source reads the same cached cores the
+  // web faces poll — one selection (config footSource), two faces.
+  // 注册走 ctx.effect 并带 disposer：fiber 重建时不留下指向旧闭包的 reader。
+  // 注：TUI 半区与 web 半区在 cordis.patch.yml 里互斥（同一入口只挂其一），
+  // 目前 TUI 进程里没有这段接线，reader 为 null、快显段不渲染——接线留待
+  // 后续版本；seam 本体已迁往中立的 src/quick-reader.js。
+  ctx.effect(() => {
+    setQuickReader(async () => ({
+      balance: await balance.getBalance(false),
+      quota: await quota.getQuota(false),
+      footSource: resolveConfig().footSource ?? "",
+    }));
+    return () => setQuickReader(null);
+  });
+
 
   /** Predict, at POST time and independent of watch timing, whether the
    *  submitted section changes any model's tier scope — the editor shows a
@@ -661,8 +842,131 @@ export function apply(ctx, config) {
           await quota.serveQuota(req, res, url);
           return;
         }
+        if (pathname === "/pulse/quota/probe") {
+          if (req.method !== "POST") {
+            methodNotAllowed(res, "POST");
+            return;
+          }
+          if (refuseCrossSitePost(req, res)) return;
+          let body = {};
+          try { body = JSON.parse((await readBody(req)) || "{}"); } catch { json(res, 400, { ok: false, error: "invalid JSON body" }); return; }
+          const route = typeof body?.route === "string" ? body.route : "";
+          if (route === "" || route.length > 120) { json(res, 400, { ok: false, error: "route required" }); return; }
+          const spec = body?.spec ?? PROVIDER_SPECS.find((s) => s.routes.includes(route))
+            ?? sanitizeQuotaSpecs(unwrapVolatile(resolveConfig().quotaSpecs) ?? {})[route];
+          if (spec === undefined || spec === null) { json(res, 400, { ok: false, error: "no query spec for this route" }); return; }
+          // Draft posture only for the explicit body.spec probe; a
+          // card/custom roster spec keeps the strict hostFor that refuses an
+          // undeclared route variant instead of falling back to hosts[0].
+          const draft = body?.spec !== undefined && body?.spec !== null;
+          if (draft) {
+            // An invalid draft is a bad request body, like invalid JSON or a
+            // missing route. probeSpec keeps its own validation as the
+            // service boundary, but letting that throw ride to the route
+            // catch would answer a malformed body with 500 where every
+            // sibling invalid-body case answers 400.
+            try { validateProviderSpec(spec); } catch (error) {
+              json(res, 400, { ok: false, error: `invalid query spec: ${String(error?.message ?? error)}` });
+              return;
+            }
+          }
+          json(res, 200, await quota.probeSpec(route, spec, { draft }));
+          return;
+        }
         if (pathname === "/pulse/update-check") {
-          await serveUpdateCheck(req, res);
+          await serveUpdateCheck(req, res, effectiveCardSource(resolveConfig()));
+          return;
+        }
+        if (pathname === "/pulse/pricing-card") {
+          if (req.method === "GET" || req.method === "HEAD") {
+            const a = activeCard();
+            json(res, 200, { ok: true, card: a.card, origin: a.origin, seedVersion: SEED_CARD.version, source: effectiveCardSource(resolveConfig()) });
+            return;
+          }
+          if (req.method !== "POST") {
+            methodNotAllowed(res, "GET, HEAD, POST");
+            return;
+          }
+          if (refuseCrossSitePost(req, res)) return;
+          let parsed;
+          try { parsed = JSON.parse(await readBody(req)); } catch { json(res, 400, { ok: false, error: "invalid JSON body" }); return; }
+          let card;
+          // A structural violation answers as readable per-field lines
+          // ("pricing.usdToCny: …") — the raw ZodError.message is an issues
+          // JSON string, hostile to a user hand-editing a card.
+          try { card = validateCard(parsed?.card); } catch (error) { json(res, 400, { ok: false, error: cardIssueLines(error) ?? String(error?.message ?? error) }); return; }
+          // Concurrency guard: the client echoes the card its preview was
+          // staged against (`base`). A mismatch means the active card moved
+          // under the preview — refusing beats silently overwriting a card
+          // the user never saw. The comparison is the SAME structural
+          // equality the preview diff renders (card.js jsonEqual): what the
+          // preview called "no change" must be exactly what this guard calls
+          // "safe to overwrite". Absent `base` keeps the legacy
+          // trusted-caller posture (curl, scripts); a base that never matches
+          // fails closed.
+          if (parsed?.base !== undefined && !jsonEqual(parsed.base, activeCard().card)) {
+            json(res, 409, { ok: false, error: "card-changed" });
+            return;
+          }
+          const refold = await refreshCard(card, parsed?.origin === "pulled" ? "pulled" : "imported");
+          json(res, 200, { ok: true, refold });
+          return;
+        }
+        if (pathname === "/pulse/pricing-card/validate") {
+          if (req.method !== "POST") {
+            methodNotAllowed(res, "POST");
+            return;
+          }
+          if (refuseCrossSitePost(req, res)) return;
+          let parsed;
+          try { parsed = JSON.parse(await readBody(req)); } catch { json(res, 400, { ok: false, error: "invalid JSON body" }); return; }
+          try { json(res, 200, { ok: true, card: validateCard(parsed?.card) }); } catch (error) { json(res, 400, { ok: false, error: cardIssueLines(error) ?? String(error?.message ?? error) }); }
+          return;
+        }
+        if (pathname === "/pulse/pricing-card/pull") {
+          if (req.method !== "POST") {
+            methodNotAllowed(res, "POST");
+            return;
+          }
+          if (refuseCrossSitePost(req, res)) return;
+          let body = {};
+          try { body = JSON.parse((await readBody(req)) || "{}"); } catch { json(res, 400, { ok: false, error: "invalid JSON body" }); return; }
+          const rawSource = typeof body?.url === "string" && body.url !== "" ? body.url : effectiveCardSource(resolveConfig());
+          // The fetch target is scheme-gated through the shared
+          // assertCardSourceUrl (update-check probes the same gate): node's
+          // fetch accepts more than http(s) (data: at minimum), and a pull
+          // URL is user-reachable config — it must never become a
+          // file:/data: side channel. http stays loopback-only (a local
+          // mirror is a legitimate dev setup); every remote source is
+          // pinned to https.
+          try { assertCardSourceUrl(rawSource); } catch (error) {
+            json(res, 400, { ok: false, error: String(error?.message ?? error) });
+            return;
+          }
+          try {
+            const response = await fetch(rawSource, { headers: { accept: "application/json" }, redirect: "error", signal: AbortSignal.timeout(8000) });
+            if (!response.ok) throw new Error(`card source HTTP ${response.status}`);
+            const card = validateCard(await response.json());
+            json(res, 200, { ok: true, card, source: rawSource });
+          } catch (error) {
+            json(res, 200, { ok: false, error: cardIssueLines(error) ?? String(error?.message ?? error) });
+          }
+          return;
+        }
+        if (pathname === "/pulse/pricing-card/reset") {
+          if (req.method !== "POST") {
+            methodNotAllowed(res, "POST");
+            return;
+          }
+          if (refuseCrossSitePost(req, res)) return;
+          resetCard();
+          const domain = await openCardDomain();
+          if (domain !== null) await domain.global.set({ card: null, origin: "bundled", savedAt: Date.now() });
+          // Same symmetry as refreshCard: the seed restores the card-derived
+          // DEFAULT_USD_TO_CNY, so the display rate must re-derive too (a
+          // pulled card's rate would otherwise linger after the reset).
+          const refold = afterCardChange();
+          json(res, 200, { ok: true, refold });
           return;
         }
         const wantsJson = pathname === "/pulse" || pathname === "/pulse/stats";
@@ -705,10 +1009,9 @@ export function apply(ctx, config) {
  * @param {any} req - node request.
  * @param {any} res - node response.
  */
-async function serveUpdateCheck(req, res) {
+async function serveUpdateCheck(req, res, cardSource) {
   if (req.method !== "GET" && req.method !== "HEAD") {
-    res.writeHead(405, { "content-type": "text/plain; charset=utf-8", allow: "GET, HEAD" });
-    res.end("method not allowed");
+    methodNotAllowed(res, "GET, HEAD");
     return;
   }
   try {
@@ -720,6 +1023,26 @@ async function serveUpdateCheck(req, res) {
     const meta = await response.json();
     const latest = typeof meta?.["dist-tags"]?.latest === "string" ? meta["dist-tags"].latest : null;
     if (latest === null) throw new Error("npm registry reports no dist-tags.latest for dsh-pulse");
+    // Best-effort remote card probe so the settings page can say a newer
+    // CARD exists without a plugin release; unreachable is data, not error.
+    // 卡源先过同一个 assertCardSourceUrl 门禁（它是可选探测，配置坏了不能
+    // 把整个检查打成 500）：门禁失败回退 DEFAULT_CARD_SOURCE 照常走。
+    let remoteCard = null;
+    try {
+      let probeSource = cardSource;
+      try { assertCardSourceUrl(probeSource); } catch { probeSource = DEFAULT_CARD_SOURCE; }
+      const cr = await fetch(probeSource, {
+        headers: { accept: "application/json" },
+        redirect: "error",
+        signal: AbortSignal.timeout(4000),
+      });
+      if (cr.ok) {
+        const card = await cr.json();
+        if (card !== null && typeof card === "object" && Number.isFinite(card.version)) {
+          remoteCard = { version: card.version, checkedAt: typeof card.checkedAt === "string" ? card.checkedAt : null };
+        }
+      }
+    } catch { /* remote card unreachable: the panel omits the hint */ }
     json(res, 200, {
       ok: true,
       latest,
@@ -729,6 +1052,7 @@ async function serveUpdateCheck(req, res) {
       // "newer plugin"; reporting its revision lets the settings page say
       // WHICH numbers changed without another outbound call.
       ratecard: { version: RATECARD_VERSION, checkedAt: RATECARD.checkedAt },
+      remoteCard,
     });
   } catch (error) {
     json(res, 200, { ok: false, error: String(error?.message ?? error), checkedAt: Date.now() });
@@ -785,7 +1109,7 @@ async function serveSession(ctx, url, req, res) {
   }
   try {
     const loaded = await ctx.sessionQuery.readSession(id);
-    const value = timelineEvents(loaded.events, { id, header: loaded.session });
+    const value = { ...timelineEvents(loaded.events, { id, header: loaded.session }), card: activeCard().card, cardOrigin: activeCard().origin };
     sessionCache.delete(id);
     sessionCache.set(id, { at: Date.now(), value });
     while (sessionCache.size > SESSION_CACHE_MAX) sessionCache.delete(sessionCache.keys().next().value);
@@ -816,15 +1140,22 @@ function serveSettings(ctx, resolveConfig, getSettings, getLlm, invalidate, pred
       const seam = getSettings();
       const body = {
         currency: config.currency === "USD" ? "USD" : "CNY",
+        displayCurrency: config.displayCurrency === "USD" ? "USD" : "CNY",
         costEnabled: config.costEnabled !== false,
         pricing: effectivePricing(config),
         monthly: Array.isArray(config.monthlyProviders) ? config.monthlyProviders : [],
         monthlyFee: sanitizeMonthlyFee(unwrapVolatile(config.monthlyFee) ?? {}),
         quotaOff: Array.isArray(config.quotaOff) ? config.quotaOff : [],
+        footSource: typeof config.footSource === "string" ? config.footSource : "",
+        quotaSpecs: sanitizeQuotaSpecs(unwrapVolatile(config.quotaSpecs) ?? {}),
+        providerSpecs: PROVIDER_SPECS,
         modelColors: sanitizeModelColors(unwrapVolatile(config.modelColors) ?? {}),
         searchShape: sanitizeSearchShape(unwrapVolatile(config.searchShape) ?? {}),
         fx: { usdToCny: effectiveUsdToCny(config) },
-        official: OFFICIAL_PRICING,
+        official: OFFICIAL_PRICE_SCHEDULES[0].rules,
+        card: activeCard().card,
+        cardOrigin: activeCard().origin,
+        cardSource: effectiveCardSource(config),
         catalog,
         writable: seam !== null && typeof seam.writable === "function" && seam.writable() === true,
       };
@@ -836,9 +1167,12 @@ function serveSettings(ctx, resolveConfig, getSettings, getLlm, invalidate, pred
     });
   }
   if (req.method !== "POST") {
-    json(res, 405, { ok: false, error: "method not allowed" });
+    methodNotAllowed(res, "GET, HEAD, POST");
     return Promise.resolve();
   }
+  // Same mutation posture as the card/probe writes: a settings write is
+  // profile state, so a cross-site simple request must never reach the seam.
+  if (refuseCrossSitePost(req, res)) return Promise.resolve();
   return readBody(req).then((text) => {
     let parsed;
     try {
@@ -856,9 +1190,12 @@ function serveSettings(ctx, resolveConfig, getSettings, getLlm, invalidate, pred
       usdToCny: z.number(),
       pricing: z.array(pricingRuleSchema),
       currency: z.union(["CNY", "USD"]),
+      displayCurrency: z.union(["CNY", "USD"]),
       monthly: z.array(z.string()),
       monthlyFee: z.dict(z.number()),
       quotaOff: z.array(z.string()),
+      footSource: z.string(),
+      quotaSpecs: z.dict(z.any()),
       searchShape: z.dict(z.number()),
       reset: z.boolean(),
       revision: z.number(),

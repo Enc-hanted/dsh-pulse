@@ -4,20 +4,19 @@
  * the fold shares.
  */
 
-import { AUX_CALL_FEE, AUX_PRICE_AS } from "../pricing-facts.js";
+import { AUX_CALL_FEE, AUX_PRICE_AS, AUX_SHAPE } from "../pricing-facts.js";
 
-export { AUX_CALL_FEE, AUX_PRICE_AS };
+export { AUX_CALL_FEE, AUX_PRICE_AS, AUX_SHAPE };
 
 /** The auxiliary-call pseudo model (official `web_search` / title LLM).
  *  Locally only the request count exists — no usage event — so its tokens
  *  are shape-derived ESTIMATES (single-call shape measured against the
  *  official bill, 2026-09-29: miss 8k / hit 1.5k / output 1k) and every
- *  surface labels the row as 估算. The shape is the SEED of the view's
- *  self-calibration ({@link auxCalibration}); a deployment's learned or
- *  manually configured shape replaces it through `buildView`'s `auxShape`. */
+ *  surface labels the row as 估算. The shape seed lives in the data card
+ *  ({@link AUX_SHAPE}); it is the SEED of the view's self-calibration
+ *  ({@link auxCalibration}); a deployment's learned or manually configured
+ *  shape replaces it through `buildView`'s `auxShape`. */
 export const AUX_MODEL_KEY = "web-search";
-
-export const AUX_SHAPE = { miss: 8000, hit: 1500, out: 1000 };
 
 /** Defensive copy/validate of an aux shape: finite non-negative amounts with
  *  sane bounds, `null` when unusable (the seed then applies). */
@@ -65,9 +64,11 @@ export function addDayModel(row, tokens, tier) {
  * source every cost surface shares ({@link buildView}, {@link costSeries},
  * {@link reconcileSeries}): search counts × the (calibrated) call shape,
  * title through its fold-time text-derived token estimates. `day` (a
- * `YYYY-MM-DD` usage day) gates the official per-request search fee —
- * `searchFee` carries the flat ¥0.005/call total for days from
- * {@link AUX_CALL_FEE.from} and stays 0 otherwise (also without a day, the
+ * `YYYY-MM-DD` usage day) gates the official per-request search fee WINDOW
+ * [from, untilDay): `searchFee` carries the flat ¥0.005/call total inside
+ * the window and stays 0 outside it — the boundary day (2026-11-18, fee
+ * ends 12:00) is conservatively free at day granularity, event-level
+ * surfaces gate to the minute via `untilMs`. Also 0 without a day (the
  * conservative default for day-less callers). Returns `null` when the day
  * carried no auxiliary calls.
  */
@@ -84,7 +85,7 @@ export function auxDayUsage(aux, shape, day = null) {
    *  above: every money surface adds `searchFee` alongside the shape-derived
    *  token cost, which keeps the reconciliation gap a pure token-shape
    *  signal (the calibration must not absorb a per-call fee). */
-  if (searchCalls > 0 && typeof day === "string" && day >= AUX_CALL_FEE.from) {
+  if (searchCalls > 0 && typeof day === "string" && day >= AUX_CALL_FEE.from && day < AUX_CALL_FEE.untilDay) {
     out.searchFee = searchCalls * AUX_CALL_FEE.cnyPerCall;
   }
   if (searchCalls > 0) {

@@ -23,10 +23,10 @@ import { z as zv } from "zod";
 
 import { openRollingGlobalDomain } from "./rolling-domain.js";
 import { json } from "./http-helpers.js";
-import { kimiAdapter } from "./quota-adapters/kimi.js";
-import { minimaxAdapter } from "./quota-adapters/minimax.js";
+import { PROVIDER_SPECS } from "./pricing-facts.js";
+import { validateProviderSpec } from "./pricing/card-schema.js";
 import { qclampPct, qstr } from "./quota-adapters/shared.js";
-import { zaiAdapter } from "./quota-adapters/zai.js";
+import { specAdapter } from "./quota-adapters/spec-engine.js";
 
 const QUOTA_CACHE_MS = 60000;
 const QUOTA_SNAPSHOT_ROLL_MS = 30 * 24 * 3600 * 1000;
@@ -57,13 +57,38 @@ const quotaDomainSpec = defineDomain({
   },
 });
 
-/** Built-in subscription adapters (src/quota-adapters/*.js), in claim
- *  priority order — the first match() to claim a provider id wins. `label`
- *  is the display face every provider entry echoes (the plan name
+/** Adapter roster, rebuilt per query so a runtime card update reaches the
+ *  wire without a restart: the card's declarative provider specs first
+ *  (src/pricing/ratecard.json `providers`, parsed by the spec engine), then
+ *  user custom specs from settings (`quotaSpecs`, route → spec) for routes
+ *  no card spec claims. Claim sets stay disjoint — a custom spec that
+ *  collides with a card id or route is skipped, never double-claimed.
+ *  `label` is the display face every provider entry echoes (the plan name
  *  supersedes it once a query succeeded); `envKeys` are the well-known
  *  ambient names tried after the deployment's own refs. The general quota
- *  norm lives in src/quota-adapters/types.js. */
-const QUOTA_ADAPTERS = [zaiAdapter, kimiAdapter, minimaxAdapter];
+ *  norm lives in src/quota-adapters/types.js; a hand-written code adapter
+ *  honoring the same contract remains the escape hatch. */
+function adaptersOf(resolveConfig) {
+  const cardAdapters = PROVIDER_SPECS.map(specAdapter);
+  const claimedRoutes = new Set(cardAdapters.flatMap((a) => a.routes ?? []));
+  const claimedIds = new Set(cardAdapters.map((a) => a.id));
+  const custom = [];
+  const raw = resolveConfig().quotaSpecs;
+  if (raw !== null && typeof raw === "object") {
+    for (const value of Object.values(raw)) {
+      try {
+        const spec = validateProviderSpec(value);
+        if (claimedIds.has(spec.id) || spec.routes.some((r) => claimedRoutes.has(r))) continue;
+        custom.push(specAdapter(spec));
+        claimedIds.add(spec.id);
+        for (const r of spec.routes) claimedRoutes.add(r);
+      } catch {
+        // A hand-edited invalid spec stays inert, never breaks the roster.
+      }
+    }
+  }
+  return [...cardAdapters, ...custom];
+}
 
 /**
  * Create the quota service.
@@ -170,17 +195,15 @@ export function createQuotaService({ ctx, resolveConfig, llmServiceOf, llmDescri
   };
 
   const quotaCache = { at: 0, result: null };
-  const serveQuota = async (req, res, url) => {
-    if (req.method !== "GET" && req.method !== "HEAD") {
-      json.err(res, 405, "method not allowed");
-      return;
-    }
-    const refresh = url.searchParams.get("refresh") === "1";
+  /** The query core, shared by the HTTP face and the TUI quick-display
+   *  reader: cached 60 s, `refresh` forces. Disabled/unconfigured routes
+   *  report themselves without a fetch; real failures stay uncached. */
+  const getQuota = async (refresh) => {
     if (!refresh && quotaCache.result !== null && Date.now() - quotaCache.at < QUOTA_CACHE_MS) {
-      json(res, 200, { ...quotaCache.result, cached: true });
-      return;
+      return { ...quotaCache.result, cached: true };
     }
     const off = new Set(Array.isArray(resolveConfig().quotaOff) ? resolveConfig().quotaOff : []);
+    const adapters = adaptersOf(resolveConfig);
     const providers = [];
     const targets = [];
     const llmService = llmServiceOf();
@@ -188,13 +211,13 @@ export function createQuotaService({ ctx, resolveConfig, llmServiceOf, llmDescri
       for (const provider of llmService.listProviders()) {
         const route = typeof provider?.id === "string" ? provider.id : "";
         if (route === "") continue;
-        const adapter = QUOTA_ADAPTERS.find((candidate) => candidate.match(route));
+        const adapter = adapters.find((candidate) => candidate.match(route));
         if (adapter === undefined) continue;
         const displayName = typeof provider.name === "string" && provider.name !== "" ? provider.name : route;
         if (off.has(route)) {
           // Switched-off routes still report themselves (never fetched), so
           // the settings page can offer to switch them back on.
-          providers.push({ provider: route, adapter: adapter.id, label: adapter.label, displayName, ok: false, configured: true, disabled: true, error: "disabled in settings" });
+          providers.push({ provider: route, adapter: adapter.id, label: adapter.label, short: adapter.short ?? null, displayName, ok: false, configured: true, disabled: true, error: "disabled in settings" });
           continue;
         }
         targets.push({ adapter, route, displayName });
@@ -203,7 +226,7 @@ export function createQuotaService({ ctx, resolveConfig, llmServiceOf, llmDescri
     providers.push(...await Promise.all(targets.map(async ({ adapter, route, displayName }) => {
       const credential = await quotaCredentialFor(adapter, route);
       if (credential === null) {
-        return { provider: route, adapter: adapter.id, label: adapter.label, displayName, ok: false, configured: false, error: "no credential resolved" };
+        return { provider: route, adapter: adapter.id, label: adapter.label, short: adapter.short ?? null, displayName, ok: false, configured: false, error: "no credential resolved" };
       }
       try {
         // The route-scoped credential thunk the SPI hands the adapter — the
@@ -221,7 +244,7 @@ export function createQuotaService({ ctx, resolveConfig, llmServiceOf, llmDescri
           fetchedAt: Date.now(),
         };
       } catch (error) {
-        return { provider: route, adapter: adapter.id, label: adapter.label, displayName, ok: false, configured: true, error: String(error?.message ?? "request failed") };
+        return { provider: route, adapter: adapter.id, label: adapter.label, short: adapter.short ?? null, displayName, ok: false, configured: true, error: String(error?.message ?? "request failed") };
       }
     })));
     const series = await quotaSeriesOf();
@@ -233,7 +256,45 @@ export function createQuotaService({ ctx, resolveConfig, llmServiceOf, llmDescri
       quotaCache.at = Date.now();
       quotaCache.result = result;
     }
-    json(res, 200, result);
+    return result;
   };
-  return { serveQuota };
+  const serveQuota = async (req, res, url) => {
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      json.err(res, 405, "method not allowed");
+      return;
+    }
+    json(res, 200, await getQuota(url.searchParams.get("refresh") === "1"));
+  };
+  /** Settings probe: one trial fetch of a (custom or built-in) spec against
+   *  a route's resolved credential, returning the NORMALIZED preview only —
+   *  no snapshot write, no cache, no raw payload. The credential lives only
+   *  in the probe's single outbound Authorization header. `draft` marks the
+   *  settings page's explicit-body.spec probe: its adapter keeps spec-engine's
+   *  generic hosts[0] fallback for half-written drafts (the probe route's
+   *  same-origin guard is the backstop); card/custom roster specs stay
+   *  strict and refuse an undeclared route variant. */
+  const probeSpec = async (route, spec, { draft = false } = {}) => {
+    // The spec grammar is this service's own boundary: an invalid spec must
+    // answer as probe DATA ({ok:false}), never ride a throw to the route's
+    // 500. The route pre-gates explicit drafts with a 400, but roster specs
+    // (a stale hand-edited quotaSpecs entry, a card spec) reach here
+    // unvalidated — the service owns the contract, not the caller.
+    let validated;
+    try {
+      validated = validateProviderSpec(spec);
+    } catch (error) {
+      return { ok: false, error: `invalid query spec: ${String(error?.message ?? error)}` };
+    }
+    const adapter = specAdapter(validated, { draft });
+    const credential = await quotaCredentialFor(adapter, route);
+    if (credential === null) return { ok: false, configured: false, error: "no credential resolved" };
+    try {
+      const resolveCredential = async () => credential;
+      const result = await adapter.fetchQuota({ route, host: adapter.hostFor(route), resolveCredential });
+      return { ok: true, configured: true, credentialSource: credential.source, plan: result.plan ?? null, fee: result.fee ?? null, windows: result.windows, extras: result.extras };
+    } catch (error) {
+      return { ok: false, configured: true, error: String(error?.message ?? "request failed") };
+    }
+  };
+  return { serveQuota, getQuota, probeSpec };
 }

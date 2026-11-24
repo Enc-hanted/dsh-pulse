@@ -15,7 +15,8 @@
  * adapter's settings namespace value (or undefined on hosts without one).
  *
  * @returns {{snapshotsOf: () => Promise<Array<{t: number, total: number}>|null>,
- *   serveBalance: (req: object, res: object, url: URL) => Promise<void>}}
+ *   serveBalance: (req: object, res: object, url: URL) => Promise<void>,
+ *   getBalance: (refresh?: boolean) => Promise<object>}}
  */
 export declare function createBalanceService({ ctx, deepseekSection }: {
     ctx: any;
@@ -26,4 +27,5 @@ export declare function createBalanceService({ ctx, deepseekSection }: {
         total: number;
     }> | null>;
     serveBalance: (req: object, res: object, url: URL) => Promise<void>;
+    getBalance: (refresh?: boolean) => Promise<object>;
 };

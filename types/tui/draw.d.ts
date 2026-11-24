@@ -27,7 +27,10 @@ export declare function truncateDisplay(text: any, width: any): string;
 export declare function wrapDisplay(text: any, width: any): any[];
 /** Unified money label: ¥ never omitted, ≈ marks estimate-layer money.
  *  Bare numbers ("3.94" beside "138.5M tok") read as ambiguity — every
- *  amount in the scene goes through this. Exported for test/tui-test.mjs. */
+ *  amount in the scene goes through this, and the zero/invalid placeholder
+ *  carries the unit too (USD display mode reads "— USD"; CNY keeps "¥—"),
+ *  so the dash never names a currency the numbers don't use.
+ *  Exported for test/tui-test.mjs. */
 export declare function money(cost: any, estimated: any): string;
 /** Mix two #rrggbb colors; t=0 → a, t=1 → b. */
 export declare function hexMix(a: any, b: any, t: any): any;

@@ -58,11 +58,11 @@ export declare function pricingLabelOf(row: any, day: any, pricing: any): "估�
  * current TUI project only — the web face remains the all-projects view.
  */
 export declare function collect(ctx: any, entryConfig: any): Promise<{
-    cwd?: undefined;
     empty: boolean;
     config: any;
     loadedAt: number;
     project?: undefined;
+    cwd?: undefined;
     record?: undefined;
     sessions?: undefined;
 } | {

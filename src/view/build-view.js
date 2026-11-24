@@ -297,8 +297,9 @@ export function buildView(sessions, { granularity = "day", from, to, project = "
           for (const part of parts) {
             addDayCost(idx, day, AUX_MODEL_KEY, part.tokens, part.tier, part.priceAs);
           }
-          /** Official per-request search fee (2026-11-01, AUX_CALL_FEE): a
-           *  flat per-call amount addDayCost's token pricing cannot express.
+          /** Official per-request search fee (window [2026-11-01,
+           *  2026-11-18 12:00), AUX_CALL_FEE): a flat per-call amount
+           *  addDayCost's token pricing cannot express.
            *  It lands in the window total and the day bucket's off-peak side
            *  (the fee has no peak/off-peak nature, but day totals and the
            *  cost trend's web-search drill row must include it), keeping the

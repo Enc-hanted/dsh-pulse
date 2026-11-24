@@ -27,6 +27,7 @@ export { RECON_ABS_FLOOR, auxCalibration, reconDrift, reconcileSeries, rollupMod
 export { buildView, heatmapCells, heatmapLevel, hourlyCostSeries, hourlySeries, statsFingerprint, tierAtMs, } from "./view/build-view.js";
 export { quotaBurn, quotaCalibrate, quotaCoverage, quotaDayStart, quotaEmpty, quotaFeeShare, quotaMonthlyFee, quotaProjectAttribution, quotaWindowTokens, } from "./view/quota-estimates.js";
 export { fullRulesWith, isOffPeakDay, OFFICIAL_PRICE_SCHEDULES, officialEstimateRulesFor, officialRulesFor, strictRulesWith, } from "./view/official-pricing.js";
+export { FOOT_WARN_PCT, footHintShow, footShareOf, footTodaySplitTokens, footTodayTokens, pickFootSource, } from "./view/foot-display.js";
 export { ACCENT_MIN_DISTANCE, accentEntryOf, accentFillOf, accentHash, accentHueGap, accentLabDistance, modelAccentMap, vendorAccentOf, } from "./view/accents.js";
 /** Axis maximum rounded to a 1/2/5×10^k ceiling so gridlines read clean. */
 export declare function niceMax(value: any): number;
@@ -35,14 +36,33 @@ export declare function niceMax(value: any): number;
  * three significant digits (so `0.000278` stays readable instead of raw).
  */
 export declare function fmtCost(total: any): string;
+export declare function applyDisplay(currency: any, rate: any): void;
+/** ONE numeric exit for the display currency: a CNY amount in, the
+ *  display-currency number out (unformatted — CSV cells and other numeric
+ *  consumers). The ÷rate lives here and nowhere else; moneyParts rides it,
+ *  so a second conversion point cannot appear and the printed face can
+ *  never disagree with an exported number. */
+export declare function displayAmount(cny: any): number;
+/** The active display currency's code — the ONE reader for faces that must
+ *  NAME the currency (CSV title/header) rather than print an amount.
+ *  applyDisplay stays the single writer. Named activeCurrency (not
+ *  displayCurrency) because the payloads already carry a displayCurrency
+ *  FIELD — a same-named export would make every `data.displayCurrency`
+ *  read as a missing import. */
+export declare function activeCurrency(): string;
 /** ONE money notation for every face — symbol for CNY, code otherwise,
  *  never both. The hero renders `unit` as its own quiet span; quotaMoney
- *  joins the parts back into one string for table cells. */
+ *  joins the parts back into one string for table cells. CNY amounts honor
+ *  the display currency (converted via displayAmount, nowhere else);
+ *  non-CNY sources print as-is. */
 export declare function moneyParts(total: any, currency: any): {
     text: string;
     unit: any;
 };
-/** The CNY face of moneyParts for call sites that print the symbol inline. */
+/** The CNY face of moneyParts for call sites that print the symbol inline.
+ *  quotaMoney semantics so the unit survives: CNY mode reads `¥6.80`, USD
+ *  display mode reads `2.00 USD` — a bare number beside token counts is
+ *  exactly the ambiguity the unit contract forbids. */
 export declare function moneyCny(total: any): string;
 /** Money with an explicit unit tail: `¥12.34` for CNY, `12.34 USD` otherwise
  *  — the single face for table cells and in-sentence amounts. */

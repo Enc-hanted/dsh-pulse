@@ -90,8 +90,9 @@ export function reconcileSeries(sessions, { from, to, pricing = [], fx = {}, mon
       if (usage === null) continue;
       days[idx].auxCalls += usage.searchCalls + usage.titleCalls;
       if (usage.searchTokens !== null) priceInto(day, idx, usage.searchTokens, usage.searchTier, AUX_PRICE_AS, "aux");
-      // Official per-request search fee (2026-11-01, AUX_CALL_FEE): a flat
-      // non-token term straight into the aux sink, so the gap stays PURE
+      // Official per-request search fee (window [2026-11-01, 2026-11-18
+      // 12:00), AUX_CALL_FEE): a flat non-token term straight into the aux
+      // sink, so the gap stays PURE
       // token-shape signal and the self-calibration keeps learning only
       // token drift instead of absorbing the per-call fee into the shape.
       days[idx].aux += usage.searchFee;

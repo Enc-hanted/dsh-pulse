@@ -21,7 +21,8 @@ import {
 	noteCurrentSession, pulseStripToggle, stripStore, _resetStripForTests,
 } from "../src/tui.js";
 import { collect, foldCache } from "../src/tui/data.js";
-import { DEFAULT_USD_TO_CNY, MODEL_SEP, costOf } from "../src/view.js";
+import { setQuickReader } from "../src/tui/strip.js";
+import { DEFAULT_USD_TO_CNY, MODEL_SEP, applyDisplay, costOf } from "../src/view.js";
 
 /** v4 prices (per-million, CNY) — same shape as the built-in schedules. */
 const V4_RATES = {
@@ -219,6 +220,20 @@ test("money: ¥ never omitted, ≈ rides the estimate flag, zero reads ¥—", (
 	assert.equal(money(0.0389, false), "¥0.0389");
 });
 
+test("money: USD display mode keeps the unit on every face, dash included", () => {
+	// draw.js's own contract — ¥ (the unit) is never omitted — extends to
+	// USD display mode: the tail rides moneyCny's quotaMoney semantics and
+	// the zero placeholder names the currency the numbers would have used.
+	applyDisplay("USD", 6.8);
+	assert.equal(money(13.6, false), "2.00 USD");
+	assert.equal(money(13.6, true), "≈2.00 USD");
+	assert.equal(money(0, false), "— USD");
+	assert.equal(money(-2, true), "— USD");
+	applyDisplay("CNY");
+	assert.equal(money(0, false), "¥—", "reset restores the CNY dash");
+	assert.equal(money(13.6, false), "¥13.60", "…and the CNY face");
+});
+
 test("wrapDisplay: display-width lines, no line opens with closing punctuation", () => {
 	const text = "≈部分金额为估算：计费生效日前的用量按已发布价目计（历史价格留存）";
 	const lines = wrapDisplay(text, 20);
@@ -246,6 +261,19 @@ test("modelLayout: the row ladder never exceeds the column budget", () => {
 			step.name + (step.bar > 0 ? step.bar + 1 : 0) + (step.pct ? 4 : 0) + step.tokPad + 1 + 3 + (step.cost ? 10 : 0) <= inner,
 			`layout for ${w} cols must fit its inner budget`);
 	}
+});
+
+test("modelLayout: USD display mode reserves the wider ` USD` tail", () => {
+	// money()'s USD face ("≈1234.56 USD") runs ~4 columns wider than the ¥
+	// face the ladder's 10-col budget modeled — the budget widens with the
+	// display currency, or a narrow terminal wraps the model row mid-cost.
+	applyDisplay("USD", 6.8);
+	assert.equal(modelLayout(65).bar, 8, "65 cols no longer fits the full bar once the tail rides");
+	assert.equal(modelLayout(59).bar, 6, "59 cols steps further down than the CNY ladder");
+	assert.equal(modelLayout(26).bar, 0, "the narrow end still drops the bar");
+	assert.equal(modelLayout(26).cost, false, "and still drops the money column");
+	applyDisplay("CNY");
+	assert.equal(modelLayout(65).bar, 12, "reset restores the CNY ladder exactly");
 });
 
 test("compactTokensTight drops decimals, sparkTrend log-scales heavy tails", () => {
@@ -552,9 +580,97 @@ test("pulseStripToggle: show / repeat / refusal / teardown, no leaked poll", () 
 	_resetStripForTests();
 });
 
+test("strip quick segment: official balance, pct band (≥80% warns), no-source fallback", async () => {
+	_resetStripForTests();
+	const createdAt = DAY_TS - 3_600_000;
+	const header = { version: 1, id: "sess-strip", createdAt, cwd: "D:/proj" };
+	const tuiCtx = (register) => ({
+		get(name) {
+			if (name === "sessionQuery") {
+				return {
+					listSessions: async () => [{ header: structuredClone(header), live: false, persisted: true }],
+					readSession: async () => ({
+						session: structuredClone(header), inheritedEventCount: 0,
+						events: [messageEvent(DAY_TS, 1000)],
+					}),
+				};
+			}
+			if (name === "tuiStatus") return { registerView: register };
+			return undefined;
+		},
+	});
+	// Minimal React/ui: one synchronous render pass, elements kept as plain
+	// records so the test can walk them. Text leaves collect into cells
+	// ({text, color}) in draw order — exactly the segment list the strip packs.
+	const stripUi = { Box: Symbol("box"), Text: Symbol("text"), useTerminalSize: () => ({ columns: 160 }) };
+	const stripReact = {
+		createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
+		useSyncExternalStore: (_subscribe, get) => get(),
+	};
+	const cellsOf = (el) => {
+		const cells = [];
+		const walk = (node) => {
+			if (node === null || node === undefined || typeof node !== "object") return;
+			if (Array.isArray(node)) { for (const child of node) walk(child); return; }
+			if (node.type === stripUi.Text) {
+				cells.push({ text: String([node.children].flat().join("")), color: node.props.color });
+				return;
+			}
+			walk(node.children);
+		};
+		walk(el);
+		return cells;
+	};
+	let component = null;
+	stripStore.ctx = tuiCtx((view) => { component = view.component; return () => {}; });
+	stripStore.entryConfig = {};
+	assert.equal(typeof setQuickReader, "function", "the shared reader seam is the stub point");
+
+	// 1) auto selection, answering official balance → the 余额 segment leads
+	setQuickReader(async () => ({
+		balance: { configured: true, ok: true, total: 12.5, granted: 5, topped: 0, currency: "CNY" },
+		quota: { providers: [] },
+		footSource: "",
+	}));
+	await stripStore.refresh(false);
+	assert.equal(pulseStripToggle(true), true, "the strip registers (component captured)");
+	assert.equal(typeof component, "function");
+	let cells = cellsOf(component({ React: stripReact, ui: stripUi }));
+	assert.equal(cells[0].text, "余 ¥12.50", "the official balance segment leads (money rides the TUI money face)");
+	assert.equal(cells[0].color, undefined, "…without a warning tint");
+
+	// 2) a manual subscription source renders pct; ≥80% carries the warning
+	const kimiAt = (pct) => ({
+		balance: { configured: false, ok: false },
+		quota: { providers: [{ provider: "kimi", ok: true, label: "Kimi For Coding", windows: [{ id: "7d", usedPct: pct }] }] },
+		footSource: "kimi",
+	});
+	setQuickReader(async () => kimiAt(85));
+	await stripStore.refresh(false);
+	cells = cellsOf(component({ React: stripReact, ui: stripUi }));
+	assert.equal(cells[0].text, "Kimi For Coding 85%", "the quota segment names the entry and rounds pct");
+	assert.equal(cells[0].color, "warning", "≥80% rides the warning color");
+	setQuickReader(async () => kimiAt(40));
+	await stripStore.refresh(false);
+	cells = cellsOf(component({ React: stripReact, ui: stripUi }));
+	assert.equal(cells[0].text, "Kimi For Coding 40%");
+	assert.equal(cells[0].color, undefined, "below the band threshold there is no warning");
+
+	// 3) nothing answers → the quick segment degrades entirely; the fold's
+	// own today segment leads instead of a fabricated zero/placeholder
+	setQuickReader(async () => ({ balance: { configured: false, ok: false }, quota: { providers: [] }, footSource: "" }));
+	await stripStore.refresh(false);
+	cells = cellsOf(component({ React: stripReact, ui: stripUi }));
+	assert.ok(!cells.some((c) => c.text.startsWith("余 ") || /\d+%$/.test(c.text)), "no quick segment when no source answers");
+	assert.ok(cells[0].text.startsWith("今日"), "the fold's today segment leads instead");
+	_resetStripForTests();
+});
+
 test("fmtTokens: one abbreviation for both faces, B tier included", () => {
 	assert.equal(fmtTokens(1.5e9), "1.5B");
 	assert.equal(fmtTokens(830_400), "830.4k");
+	assert.equal(fmtTokens(2_000), "2k", "a whole thousand prints bare — no meaningless .0");
+	assert.equal(fmtTokens(1_000_000), "1M", "a whole million prints bare");
 	assert.equal(fmtTokens(0), "0");
 	// the tight variant keeps its M-capped compact face for squeezed rows
 	assert.equal(compactTokensTight(1.5e9), "1500M");

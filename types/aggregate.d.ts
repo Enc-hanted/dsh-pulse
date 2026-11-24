@@ -536,13 +536,15 @@ export declare function timelineEvents(events: Array<{
  *   array alone cannot express (and which a freshly booted harness hits
  *   before its first message commits).
  * @param {number} [options.now] - clock override for tests.
+ * @param {string} [options.displayCurrency] - personal display currency echoed
+ *   to the client (accounting stays CNY; the money exit converts).
  * @returns {{schema: number, generatedAt: number, today: string, fromDay: string, toDay: string,
  *   pricing: Array<any>, monthly: string[], topProjects: number, costEnabled: boolean,
- *   fx: {usdToCny: number}, corpusSessions: number, sessions: Array<WindowedRecord>,
+ *   fx: {usdToCny: number}, card: any, cardOrigin: string, displayCurrency: string, corpusSessions: number, sessions: Array<WindowedRecord>,
  *   anomalies?: any, balanceSeries?: Array<any>, modelColors?: any, auxShape?: any}}
  *   the JSON payload (the host may pin the optional overlay fields on top).
  */
-export declare function buildPayload({ records, fromDay, toDay, pricing, topProjects, costEnabled, fx, monthly, corpusSessions, now }: {
+export declare function buildPayload({ records, fromDay, toDay, pricing, topProjects, costEnabled, fx, monthly, corpusSessions, displayCurrency, now }: {
     records?: Array<WindowedRecord>;
     fromDay?: string;
     toDay?: string;
@@ -555,6 +557,7 @@ export declare function buildPayload({ records, fromDay, toDay, pricing, topProj
     monthly?: string[];
     corpusSessions?: number;
     now?: number;
+    displayCurrency?: string;
 }): {
     schema: number;
     generatedAt: number;
@@ -568,6 +571,9 @@ export declare function buildPayload({ records, fromDay, toDay, pricing, topProj
     fx: {
         usdToCny: number;
     };
+    card: any;
+    cardOrigin: string;
+    displayCurrency: string;
     corpusSessions: number;
     sessions: Array<WindowedRecord>;
     anomalies?: any;

@@ -4,7 +4,7 @@ export { Config };
  * The shared aggregation entry (`/pulse/stats` and any embedded consumer —
  * the optional usage_query tool package — fold the corpus through this one
  * function, so embedded answers can never drift from the dashboard).
- * Signature: `(ctx, resolveConfig, input, snapshotsOf?) → Promise<payload>`.
+ * Signature: `(ctx, resolveConfig, input, snapshotsOf?, now?) → Promise<payload>`.
  *
  * @function buildStats
  */
@@ -94,11 +94,11 @@ export type HostCtx = {
  * web bundle) the fiber stays pending.
  */
 export declare const inject: string[];
-declare function buildStats(ctx: any, resolveConfig: any, input: any, snapshotsOf: any): Promise<any>;
+declare function buildStats(ctx: any, resolveConfig: any, input: any, snapshotsOf: any, now?: number): Promise<any>;
 /**
  * Register the `pulseUsage` projection unit, the `pulse` settings namespace
- * (user-editable pricing and cost display), the `/pulse` command and the
- * `/pulse` HTTP routes. Every registration is an effect on this fiber, so
+ * (user-editable pricing and cost display) and the `/pulse` HTTP routes.
+ * Every registration is an effect on this fiber, so
  * unloading the plugin removes all of them.
  *
  * The projection unit is registered with the peak-hour map derived from the

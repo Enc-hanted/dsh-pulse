@@ -34,4 +34,35 @@ export declare function createQuotaService({ ctx, resolveConfig, llmServiceOf, l
     llmDescribeOf: () => any;
 }): {
     serveQuota: (req: any, res: any, url: any) => Promise<void>;
+    getQuota: (refresh: any) => Promise<any>;
+    probeSpec: (route: any, spec: any, { draft }?: {
+        draft?: boolean;
+    }) => Promise<{
+        extras?: undefined;
+        fee?: undefined;
+        credentialSource?: undefined;
+        plan?: undefined;
+        windows?: undefined;
+        ok: boolean;
+        error: string;
+        configured?: undefined;
+    } | {
+        extras?: undefined;
+        fee?: undefined;
+        credentialSource?: undefined;
+        plan?: undefined;
+        windows?: undefined;
+        ok: boolean;
+        configured: boolean;
+        error: string;
+    } | {
+        error?: undefined;
+        ok: boolean;
+        configured: boolean;
+        credentialSource: any;
+        plan: any;
+        fee: any;
+        windows: any[];
+        extras: any[];
+    }>;
 };

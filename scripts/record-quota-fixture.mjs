@@ -34,25 +34,32 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { kimiAdapter, parseKimiUsages } from "../src/quota-adapters/kimi.js";
-import { minimaxAdapter, parseMinimaxRemains } from "../src/quota-adapters/minimax.js";
+import { PROVIDER_SPECS } from "../src/pricing-facts.js";
 import { fetchJson } from "../src/quota-adapters/shared.js";
-import { zaiAdapter, parseZaiQuota } from "../src/quota-adapters/zai.js";
+import { parseSpec, specAdapter } from "../src/quota-adapters/spec-engine.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** Recordable endpoints: adapter + the route whose host to query + the
- *  endpoint path + how the (redacted) body feeds the parse half. */
+/** Recordable endpoints: the card spec + the route whose host to query +
+ *  the request id + how the (redacted) body feeds the spec engine's parse. */
+const specOf = (id) => PROVIDER_SPECS.find((s) => s.id === id);
+const makeEndpoint = (id, requestId, route, bodiesOf) => {
+  const spec = specOf(id);
+  return { adapter: specAdapter(spec), spec, route, path: spec.requests.find((r) => r.id === requestId).path, normalize: (body) => parseSpec(spec, bodiesOf(body)) };
+};
 const ENDPOINTS = {
   zai: {
-    quota: { adapter: zaiAdapter, route: "zai-coding-cn", path: "/api/monitor/usage/quota/limit", normalize: (body) => parseZaiQuota(body, null) },
-    subscription: { adapter: zaiAdapter, route: "zai-coding-cn", path: "/api/biz/subscription/list", normalize: (body) => parseZaiQuota(null, body) },
+    quota: makeEndpoint("zai-coding", "quota", "zai-coding-cn", (body) => ({ quota: body, sub: null })),
+    subscription: makeEndpoint("zai-coding", "sub", "zai-coding-cn", (body) => ({ quota: null, sub: body })),
   },
   kimi: {
-    usage: { adapter: kimiAdapter, route: "kimi-coding", path: "/coding/v1/usages", normalize: parseKimiUsages },
+    usage: makeEndpoint("kimi-coding", "quota", "kimi-coding", (body) => ({ quota: body })),
   },
   minimax: {
-    remains: { adapter: minimaxAdapter, route: "minimax", path: "/v1/token_plan/remains", normalize: parseMinimaxRemains },
+    remains: makeEndpoint("minimax", "quota", "minimax", (body) => ({ quota: body })),
+  },
+  opencode: {
+    usage: makeEndpoint("opencode-go", "quota", "opencode-go", (body) => ({ quota: body })),
   },
 };
 
@@ -85,7 +92,7 @@ if (provider === undefined || endpoint === undefined || ENDPOINTS[provider]?.[en
   console.error("usage: node scripts/record-quota-fixture.mjs --provider=<p> --endpoint=<e> [--out=<file>] [--write]\n  endpoints:\n  " + known);
   process.exit(1);
 }
-const spec = ENDPOINTS[provider][endpoint];
+const ep = ENDPOINTS[provider][endpoint];
 
 /** The credential: first of the adapter's well-known env names that is
  *  set. Only the NAME ever prints. */
@@ -128,17 +135,17 @@ const redactWire = (value, path, report) => {
   return value;
 };
 
-const credential = credentialOf(spec.adapter);
+const credential = credentialOf(ep.adapter);
 if (credential === null) {
-  console.error(`no credential: set one of [${spec.adapter.envKeys.join(", ")}] first (the value is never printed)`);
+  console.error(`no credential: set one of [${ep.adapter.envKeys.join(", ")}] first (the value is never printed)`);
   process.exit(1);
 }
 
-const url = `${spec.adapter.hostFor(spec.route)}${spec.path}`;
+const url = `${ep.adapter.hostFor(ep.route)}${ep.path}`;
 console.log(`recording ${provider}/${endpoint}: GET ${url}`);
 console.log(`credential: ${credential.envName} (value never printed)`);
 
-const wire = await fetchJson(url, { authorization: `Bearer ${credential.value}`, accept: "application/json" });
+const wire = await fetchJson(url, { authorization: ep.spec.auth === "raw" ? credential.value : `Bearer ${credential.value}`, accept: "application/json" });
 const report = { redacted: [], flagged: [], fields: [] };
 const redacted = redactWire(wire, "", report);
 
@@ -151,7 +158,7 @@ console.log("all leaf field paths (eyeball for account identifiers the patterns 
 console.log(report.fields.length === 0 ? "  (none)" : report.fields.map((p) => `  - ${p}`).join("\n"));
 console.log("normalized below is computed from the REDACTED wire — recheck by hand if any path above is load-bearing.");
 
-const normalized = spec.normalize(redacted);
+const normalized = ep.normalize(redacted);
 const target = outPath ?? join(root, "test", "fixtures", "quota", provider, `${endpoint}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
 const fixture = {
   wire: redacted,

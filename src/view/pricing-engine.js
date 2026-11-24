@@ -231,9 +231,10 @@ export function costSeries(sessions, { from, to, project = "", model = "", model
         days[idx].offpeak += priceTier(tierSide(part.tier, "offpeak"), rates, "offpeak") * conv;
       }
     }
-    /** Official per-request search fee (2026-11-01, AUX_CALL_FEE): not
-     *  token-shaped, so it rides the day's off-peak side — the day sum must
-     *  match buildView's epoch window cost and the trend's drill row. */
+    /** Official per-request search fee (window [2026-11-01, 2026-11-18
+     *  12:00), AUX_CALL_FEE): not token-shaped, so it rides the day's
+     *  off-peak side — the day sum must match buildView's epoch window
+     *  cost and the trend's drill row. */
     if (usage.searchFee > 0) days[idx].offpeak += usage.searchFee;
   };
   for (const record of Array.isArray(sessions) ? sessions : []) {

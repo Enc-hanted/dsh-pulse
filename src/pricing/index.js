@@ -15,10 +15,13 @@
  * frozen `fromMs` gates, no UI. Money is always derived, never stored.
  */
 export {
-  RATECARD, RATECARD_VERSION,
+  RATECARD, RATECARD_VERSION, SEED_CARD,
   PEAK_HOURS, BEIJING_OFFSET_MS, DEFAULT_USD_TO_CNY,
   AUX_PRICE_AS, AUX_CALL_FEE,
+  applyCard, resetCard, activeCard,
 } from "../pricing-facts.js";
+export { validateCard } from "../pricing/card-schema.js";
+export { cardDiff, DEFAULT_CARD_SOURCE } from "../pricing/card.js";
 export {
   costOf, costSeries, cacheHitRateOf, fxRateOf, monthlySetOf,
   priceTier, resolveRates, ruleFor, ruleMaps, tierSide, epochRulesOn,

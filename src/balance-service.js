@@ -53,7 +53,8 @@ global: {
  * adapter's settings namespace value (or undefined on hosts without one).
  *
  * @returns {{snapshotsOf: () => Promise<Array<{t: number, total: number}>|null>,
- *   serveBalance: (req: object, res: object, url: URL) => Promise<void>}}
+ *   serveBalance: (req: object, res: object, url: URL) => Promise<void>,
+ *   getBalance: (refresh?: boolean) => Promise<object>}}
  */
 export function createBalanceService({ ctx, deepseekSection }) {
   const openBalanceDomain = openRollingGlobalDomain(ctx, balanceDomainSpec, "dsh-pulse: balance domain");
@@ -159,22 +160,25 @@ export function createBalanceService({ ctx, deepseekSection }) {
     }
   };
   const balanceCache = { at: 0, result: null };
-  const serveBalance = async (req, res, url) => {
-    if (req.method !== "GET" && req.method !== "HEAD") {
-      json.err(res, 405, "method not allowed");
-      return;
-    }
-    const refresh = url.searchParams.get("refresh") === "1";
+  /** The query core, shared by the HTTP face and the TUI quick-display
+   *  reader: cached 60 s, `refresh` forces. */
+  const getBalance = async (refresh) => {
     if (!refresh && balanceCache.result !== null && Date.now() - balanceCache.at < BALANCE_CACHE_MS) {
-      json(res, 200, { ...balanceCache.result, cached: true });
-      return;
+      return { ...balanceCache.result, cached: true };
     }
     const result = await fetchBalance();
     if (result.ok === true) {
       balanceCache.at = Date.now();
       balanceCache.result = result;
     }
-    json(res, 200, result);
+    return result;
   };
-  return { snapshotsOf, serveBalance };
+  const serveBalance = async (req, res, url) => {
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      json.err(res, 405, "method not allowed");
+      return;
+    }
+    json(res, 200, await getBalance(url.searchParams.get("refresh") === "1"));
+  };
+  return { snapshotsOf, serveBalance, getBalance };
 }

@@ -105,6 +105,7 @@ The settings page's **data-card panel** manages the versioned card `src/pricing/
 - Peak-hour changes refold all history; price-only changes never do.
 - A corrupted stored card falls back to the bundled card at boot; without a storage facility the override applies for the session only.
 - A card that changes a provider's `routes` / `hosts` / `auth` / `envKeys` changes which credential is read or where it is sent: the preview lists those rows apart and Apply stays disabled until the acknowledgement is ticked; the host answers 422 to an apply that carries none.
+- The pull source is the trust root: the default is this repository's `main` card. Before pointing `pricingCardSource` elsewhere or importing a file someone handed you, confirm where it came from.
 
 The card's field semantics, structure and validation constraints: [Data card format](./RATECARD.md). **The most common hand-editing mistake**: rate units are per million tokens; pasting per-1k rates is a 1000× error that still passes validation.
 

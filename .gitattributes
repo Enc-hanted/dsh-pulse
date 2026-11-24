@@ -4,3 +4,10 @@
 # with CRLF blobs committed wholesale; `git add --renormalize .` after this
 # file landed converted the whole tree once, so future diffs are content-only.
 * text=auto
+
+# Generated artifacts. lib/client.js (esbuild) and types/ (tsc from JSDoc) are
+# rebuilt from src/ and committed because the package ships no build step at
+# install time. Mark them generated so GitHub collapses their diffs by default
+# and leaves them out of the language statistics.
+lib/client.js linguist-generated=true
+types/** linguist-generated=true

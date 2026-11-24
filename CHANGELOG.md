@@ -10,6 +10,7 @@ Releases are cut by git tag; this file lists the notable changes per release. Th
 - **Display currency**: `displayCurrency` converts all displayed amounts at a single point, and CSV export follows. Official rules keep their published currency.
 - **Declarative quota specs (SPI v2)**: the zai / kimi / minimax adapters are now card specs parsed by `spec-engine.js`, plus a new OpenCode Go spec. The settings page probes routes (`POST /pulse/quota/probe`) and accepts custom specs (`quotaSpecs`); quota windows gain a `usd` unit family.
 - **Quick display redo**: one source selector (`footSource`) and two footer styles. Classic is the 0.6.1 face (still the default, no data traffic). Data adds a utilization ring / peak sun-moon icon, the source name (full or brand `short` by row width), unitless today tokens, a hover tip with windows, reset countdowns and fees, a <50%-share suggestion, and a self-drawn float for hosts without the official Float.
+- **Reconciliation script**: `scripts/reconcile.mjs` refolds the stored session logs with the plugin's own fold (the highest log generation per session, fork cut honored) and lists tokens by day, model and session, for when the dashboard and the provider's usage page disagree.
 
 ### Changed
 

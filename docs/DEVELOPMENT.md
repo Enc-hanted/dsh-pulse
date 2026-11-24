@@ -19,7 +19,7 @@ Node ≥ 22.19。
 
 ```bash
 npm ci              # lockfile 已提交，复现审计过的依赖树
-npm test            # 先 build，再串跑 11 个套件
+npm test            # 先 build，再串跑 12 个套件
 npm run typecheck   # CI 门槛的 checkJs（noEmit）
 npm run build       # esbuild 重建 lib/client.js（入口 src/client/main.js）
 npm run build:types # tsc 从 JSDoc 生成 types/（仅声明）
@@ -27,12 +27,15 @@ npm run build:types # tsc 从 JSDoc 生成 types/（仅声明）
 
 `npm test` 先跑 `npm run build`，所以测试绿时已提交的 `lib/client.js` 不会落后于 `src/client/`。bundle 必须提交：包在安装时不带构建步骤，客户端侧有改动就重建并提交。
 
+仪表盘数字存疑时对账：`node scripts/reconcile.mjs --day <日期>`。它按宿主的规则解码会话日志（每个会话目录只取版本最高的代际文件），用插件自己的折叠重算，按日、模型、会话列出 token。只读、离线；读不了的日志单独点名，不猜。
+
 ## 测试地图
 
 | 套件 | 守护内容 |
 | --- | --- |
-| `test/host-test.mjs` | 宿主注册、设置代际、投影接缝桩 + 护栏 B、HTTP 路由、检查更新 |
-| `test/aggregate-test.mjs` | 会话折叠与 state schema、逐日工具直方图、窗口切片 |
+| `test/host-test.mjs` | 宿主注册、设置代际、投影接缝桩 + 护栏 B 与 D（D 走真实注册表验证分叉切点）、HTTP 路由、检查更新 |
+| `test/aggregate-test.mjs` | 会话折叠与 state schema、分叉继承前缀、逐日工具直方图、窗口切片 |
+| `test/reconcile-test.mjs` | `scripts/reconcile.mjs`：会话目录取最高代际文件、分叉切点、zstd 帧容器、对账折叠与报告 |
 | `test/view-test.mjs` | 派生视图：分桶、模型/项目分解、定价、对账、额度估算、异常 fixture |
 | `test/card-test.mjs` | 数据卡契约：seed 校验、变更预览逐叶 diff、运行时应用重定价与事实重发布、恢复内置 |
 | `test/quota-adapters-test.mjs` | 额度 SPI 与卡片声明式 spec 的录制 fixture/replay（`test/fixtures/quota/`） |
@@ -66,7 +69,7 @@ types-shims/          少数 Node/peer 模块的类型补齐
 locale/               zh/en 文案字典（en.json / zh.json）
 test/                 套件与 fixture
 packages/             可选 usage_query 配套包
-scripts/              build-client.mjs、record-quota-fixture.mjs
+scripts/              build-client.mjs、record-quota-fixture.mjs、reconcile.mjs
 ```
 
 数据卡的字段语义与约束见 [RATECARD](./RATECARD.md)。

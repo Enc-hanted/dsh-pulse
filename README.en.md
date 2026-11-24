@@ -101,7 +101,7 @@ Degradations, diagnostics and the 0.1.x generation history: [Compatibility notes
 
 ```bash
 npm ci
-npm test          # 11 suites: host, aggregate, view, card, quota adapters, package shape, client smoke, TUI, golden, style, manifest
+npm test          # 12 suites: host, aggregate, reconcile, view, card, quota adapters, package shape, client smoke, TUI, golden, style, manifest
 npm run typecheck
 npm run build     # rebuild lib/client.js from src/
 ```

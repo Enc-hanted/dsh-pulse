@@ -64,7 +64,7 @@
     "build": "node scripts/build-client.mjs",
     "build:types": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.check.json",
-    "test": "npm run build && node test/host-test.mjs && node test/aggregate-test.mjs && node test/view-test.mjs && node test/card-test.mjs && node test/quota-adapters-test.mjs && node packages/dsh-pulse-usage-query/test/shape-test.mjs && node test/client-smoke-test.mjs && node test/tui-test.mjs && node test/golden-test.mjs && node test/style-test.mjs && node test/manifest-test.mjs"
+    "test": "npm run build && node test/host-test.mjs && node test/aggregate-test.mjs && node test/reconcile-test.mjs && node test/view-test.mjs && node test/card-test.mjs && node test/quota-adapters-test.mjs && node packages/dsh-pulse-usage-query/test/shape-test.mjs && node test/client-smoke-test.mjs && node test/tui-test.mjs && node test/golden-test.mjs && node test/style-test.mjs && node test/manifest-test.mjs"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.4",

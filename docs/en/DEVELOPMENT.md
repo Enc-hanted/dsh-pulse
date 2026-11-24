@@ -19,7 +19,7 @@ Node ≥ 22.19.
 
 ```bash
 npm ci              # lockfile is tracked; reproduces the audited tree
-npm test            # build first, then all eleven suites in series
+npm test            # build first, then all twelve suites in series
 npm run typecheck   # the checkJs pass CI gates on (noEmit)
 npm run build       # esbuild rebuilds lib/client.js (entry src/client/main.js)
 npm run build:types # tsc generates types/ from JSDoc (declaration-only)
@@ -27,12 +27,15 @@ npm run build:types # tsc generates types/ from JSDoc (declaration-only)
 
 `npm test` runs `npm run build` first, so a committed `lib/client.js` is never stale relative to `src/client/` after a green run. The bundle must be committed: the package ships no build step at install time, so rebuild and commit it whenever the client side changes.
 
+When a dashboard number looks wrong, reconcile: `node scripts/reconcile.mjs --day <date>`. It decodes the session logs by the harness's rules (the highest generation per session directory), refolds them with the plugin's own fold, and lists tokens by day, model and session. Read-only and offline; a log it cannot read is named rather than guessed.
+
 ## Test map
 
 | suite | guards |
 | --- | --- |
-| `test/host-test.mjs` | host registration, settings generations, projection seam stub + guardrail B, HTTP routes, update-check |
-| `test/aggregate-test.mjs` | the session fold and its state schema, per-day tool histogram, window slicing |
+| `test/host-test.mjs` | host registration, settings generations, projection seam stub + guardrails B and D (D drives the fork cut through the real registry), HTTP routes, update-check |
+| `test/aggregate-test.mjs` | the session fold and its state schema, the fork's inherited prefix, per-day tool histogram, window slicing |
+| `test/reconcile-test.mjs` | `scripts/reconcile.mjs`: highest log generation per session directory, fork cut, zstd frame container, reconciliation fold and report |
 | `test/view-test.mjs` | derived view: buckets, model/project breakdown, pricing, reconciliation, quota estimates, anomaly fixtures |
 | `test/card-test.mjs` | the data-card contract: seed validation, the change preview's leaf diff, runtime apply repricing and fact republish, restore-to-seed |
 | `test/quota-adapters-test.mjs` | quota SPI and the card's declarative specs: recorded fixture/replay (`test/fixtures/quota/`) |
@@ -66,7 +69,7 @@ types-shims/          type shims for the few Node/peer modules off the dependenc
 locale/               zh/en copy dictionaries (en.json / zh.json)
 test/                 suites and fixtures
 packages/             the optional usage_query companion package
-scripts/              build-client.mjs, record-quota-fixture.mjs
+scripts/              build-client.mjs, record-quota-fixture.mjs, reconcile.mjs
 ```
 
 The data card's field semantics and constraints: [RATECARD](./RATECARD.md).

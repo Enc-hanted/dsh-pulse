@@ -1,5 +1,5 @@
 /**
- * Shape test for the optional `usage_query` tool (ROADMAP P3-2 / #9).
+ * Shape test for the optional `usage_query` tool.
  *
  * Run from the repository root:
  *   node packages/dsh-pulse-usage-query/test/shape-test.mjs

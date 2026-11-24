@@ -1,6 +1,6 @@
 # Seam notes — how a plugin exposes a tool to the model
 
-Research record for ROADMAP P3-2 (#9). Verified against the host snapshot
+Research record for the optional `usage_query` tool. Verified against the host snapshot
 `@deepseek-ai` **0.2.1-alpha.5** at
 `C:\Users\Enc\AppData\Local\npm-cache\_npx\ebf017b61addb8bd\node_modules\@deepseek-ai\`
 (≈270 packages; the runtime the user actually runs). Paths below are relative
@@ -185,7 +185,7 @@ ladder). `dsh-pulse` must be mounted for those projections to exist. The
 `import ... from "dsh-pulse"` in `src/index.js` resolves in a host through
 the loader's linked-root interception of `peerDependencies` names
 (`dsh-app-boot/lib/index.js:1676-1704`, `readPeerNames` at L1684 — the same
-mechanism ROADMAP D0 pinned for dsh-credentials/dsh-storage-domain).
+mechanism behind dsh-pulse's peer seams, dsh-credentials and dsh-storage-domain).
 
 ## Why no runtime dependency on `@deepseek-ai/dsh-tools`
 

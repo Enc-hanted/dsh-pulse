@@ -1,45 +1,61 @@
 # Changelog
 
-Releases are cut by git tag. This file lists notable changes per release; the user-facing overview lives in the [README](README.md), and host-generation history in [Compatibility notes](docs/en/COMPATIBILITY.md).
+Releases are cut by git tag; this file lists the notable changes per release. The user-facing overview is in the [README](README.md); host-generation notes are in [Compatibility](docs/en/COMPATIBILITY.md).
+
+## v0.6.2 — 2026-11-24
+
+### Added
+
+- **Data card override**: export, import or pull the official price card (schema 3: effective-dated prices, holidays, peak hours, per-call fee windows, declarative provider query specs). The settings panel previews every change; apply is always manual. Pull source defaults to jsDelivr (`pricingCardSource`).
+- **Display currency**: `displayCurrency` converts all displayed amounts at a single point, and CSV export follows. Official rules keep their published currency.
+- **Declarative quota specs (SPI v2)**: the zai / kimi / minimax adapters are now card specs parsed by `spec-engine.js`, plus a new OpenCode Go spec. The settings page probes routes (`POST /pulse/quota/probe`) and accepts custom specs (`quotaSpecs`); quota windows gain a `usd` unit family.
+- **Quick display redo**: one source selector (`footSource`) and two footer styles. Classic is the 0.6.1 face (still the default, no data traffic). Data adds a utilization ring / peak sun-moon icon, the source name (full or brand `short` by row width), unitless today tokens, a hover tip with windows, reset countdowns and fees, a <50%-share suggestion, and a self-drawn float for hosts without the official Float.
+
+### Changed
+
+- **Stats refresh on every surface**: `/pulse/stats` polls on the balance cadence (visible tab, refetch on re-visible) through one landing path; subagent sessions count like any other.
+- **Range switches use stale-while-revalidate**: the old window dims under a “Loading…” status bar (failures get Retry) while the toolbar stays interactive; the blank skeleton is for the first mount only.
+- **Range folds reuse projections**: `/pulse/stats` lists the corpus once and shares persisted projections across windows for the payload TTL; the first range pays the fold, the next ones within 15 s are near-instant.
+- **Settings overlay shows the full section**: back, pricing and compare are reachable; × resets the remembered view only on the overlay.
+- **`/pulse` hand-off keeps its window**: auto-focus announces itself with a one-click “See all”; an invoked session the remembered window cannot see falls back to the default 7 days.
+- **Footer shows today's tokens as figures**: today's tokens drop the unit (“Today 689k”), and `fmtTokens` folds a meaningless `.0` (689k / 2M; 830.4k keeps its decimal).
+- **Hardened writes and outbound requests**: settings / probe / card-write POSTs share one same-origin guard; pulls and update checks refuse redirects; provider specs refuse clear-text non-loopback http; card applies take a `base` concurrency guard (409 `card-changed`); validation errors name the field; previews diff provider specs leaf by leaf.
+- **`pricing` marked volatile**: pricing saves no longer bounce off the 0.2.x settings seam.
+- **Settings page uses one UI language**: write-through currency block, Tag badges, noun titles with one-line hints, one “Saved” toast.
+- **Search fee window**: ¥0.005/call applies 2026-11-01 → 11-18 12:00 Beijing only; server-side search bills tokens afterwards (official announcement).
+- **Single card-change entry path**: one `afterCardChange` sequence replaces four hand copies; shared guards live in `http-helpers.js`; the TUI quick-reader moved to a neutral module.
+
+### Fixed
+
+- **Remounted `/pulse` card hijacked the stats window**: a remounted transcript card now reads through the footer's window hook and never touches the store.
+- **Range switches showed the previous window under the new label**: the stale-payload guard tested `schema === 3` against schema-4 payloads and never fired.
+- **Pricing page saved against a stale revision**: any other panel's write made the next save bounce 409; writes now read the live revision and retry once.
+- **USD config inflated official estimates**: the global currency re-labelled CNY rates without converting.
 
 ## v0.6.1 — 2026-10-19
 
 ### Added
 
-- **Anomaly watch panel** — strictly observational signals derived on the fly from the records the fold already produces: daily burn-rate spikes (a day above 3× the P95 of the previous 7 days, with a 20k-token floor) and loop fingerprints (one tool called ≥25 times in a day while that day burns ≥4× the session's median day). The stats payload gains an `anomalies` block; no new storage, no timers. UI copy is locked to numbers and identifiers by the style suite.
-- **Versioned rate card and a UI-free pricing service** — official peak/off-peak rates moved into `src/pricing/ratecard.json` (version 1) behind `src/pricing/`, so a price change is a versioned data change rather than an edit buried in the UI. The manual update-check response reports the rate-card version.
-- **Subscription-quota adapter SPI** — `src/quota-adapters/` separates provider detection, request building and response parsing (zai / kimi / minimax) from the query orchestration. Recorded fixture/replay cases and a sanitizing manual recorder (`scripts/record-quota-fixture.mjs`) make parser changes testable without live accounts.
-- **Optional `dsh-pulse-usage-query` package** — one read-only, model-visible `usage_query` tool over the same aggregates. It is not mounted by default and the main package still registers zero tools; see [its README](https://github.com/Enc-hanted/dsh-pulse/blob/main/packages/dsh-pulse-usage-query/README.md).
-- **Display metadata** — `locale/en.json` / `locale/zh.json` (`meta.title` / `meta.description`) and the `./icon` export, so the plugin manager shows a localized name and description instead of the English package copy, and a blue icon instead of a black glyph.
-- **Type declarations** — `.d.ts` generated from JSDoc, with `npm run typecheck` as a CI gate.
-- **Startup seam log** — `dsh-pulse <version> on seams dsh-credentials <version> / dsh-storage-domain <version>`, making a host/plugin version skew visible in the boot log.
-- **Guardrails B and C** — a startup shape assertion (mismatch is logged and `/pulse/stats` returns 503 instead of a silently empty dashboard) and a test against the real `SessionProjectionCache` prototype.
+- **Anomaly watch**: observational burn-spike and tool-loop fingerprints in the payload (`anomalies`); no new storage, no timers.
+- **Versioned rate card**: official prices moved to `src/pricing/ratecard.json`; the manual update check reports its version.
+- **Quota adapter SPI**: provider detection / request building / parsing separated, with recorded fixture replay and a sanitizing recorder.
+- **Optional `dsh-pulse-usage-query`**: one read-only `usage_query` tool; not mounted by default.
+- **Manager metadata, type declarations, seam log, guardrails**: localized title/description and a brand icon; `.d.ts` with typecheck as a CI gate; the boot line prints seam versions; a seam-shape mismatch turns `/pulse/stats` into a 503.
 
 ### Changed
 
-- **The host floor is the 0.2.x family** — `engines.dsh` and both seam peers are `>=0.2.0-rc.2 <0.3` (prerelease-inclusive). The previous single-point floor made the dsh-tui kernel reject the whole bundle: web and dsh-tui are separate kernels, so the floor has to describe the family. See [Compatibility](docs/en/COMPATIBILITY.md).
-- **Seam packages are peers** — `@deepseek-ai/dsh-credentials` and `@deepseek-ai/dsh-storage-domain` moved from `dependencies` to `peerDependencies`, so the host's resolver serves its own copies. The projection path registers one supported shape (0.1.7+) instead of arity duck-typing; the per-day tool histogram raises the projection state schema to 11, and older caches refold automatically.
-- **Documentation split from the README** — configuration, compatibility and development references moved to `docs/`; the README is now the user-facing overview. Root cleanup: the obsolete `dsh-plugin.json` (last shipped in 0.6.0, unused by any supported mounting path) and the root `screenshots.json` are gone (the screenshot index moved under `assets/shots/`).
-- **Release hygiene** — the published `files` list is trimmed to what the plugin requires, `docs/` and `assets/shots/` included for README rendering, the lockfile is committed, CI runs `npm ci` on ubuntu + windows, typecheck runs before the suite, and `manifest-test` enforces the seam-peer rule, the locale/icon contract and "no tests in the published package".
+- **Host floor is the 0.2.x family**: `>=0.2.0-rc.2 <0.3` (prerelease-inclusive); 0.1.x retired. See [Compatibility](docs/en/COMPATIBILITY.md).
+- **Seam packages are peers**: the host serves its own copies; one projection shape registered instead of arity duck-typing.
+- **Docs split from the README**; release hygiene: trimmed `files`, committed lockfile, CI on ubuntu + windows.
 
 ### Fixed
 
-- **`/pulse` command family on dsh-tui** — the `pulse-tui` row now injects `commands`. The C-070 fallback (`commands.register`) needs the service explicitly injected; without it all six commands silently failed to register.
-- **Wide-terminal crash** — `renderCalendar` referenced `leftW` outside its destructuring scope (regression since v0.6.0); wide terminals crashed. Fixed and covered by a stub-kit regression test.
-- **Plugin manager metadata** — locale files now carry the `meta` wrapper the harness reads; the manager icon uses fixed brand blue (`#4D6BFE`) because a data-URL `<img>` cannot resolve `currentColor` (the old strokes rendered black in dark themes).
-
-### Engineering
-
-- The test chain now runs ten suites: host, aggregate, view, quota adapters, package shape, client smoke, TUI, golden, style and manifest. New suites cover the quota SPI, the guardrail-B seam stub, the real projection-cache prototype, the anomaly fixtures, and the `pulse-tui` patch injection.
-- `.github/workflows/test.yml` is the release gate: `npm ci` → `npm run typecheck` → `npm test`, on ubuntu-latest and windows-latest.
+- dsh-tui command injection (all six commands silently failed), the wide-terminal `renderCalendar` crash, and the plugin-manager `meta` metadata wrapper.
 
 ### Upgrading from 0.6.0
 
-- Install `0.6.1` into each profile you use (`dsh plugin --profile <name> add -w dsh-pulse@latest`, or re-run your tarball/link `add`) and restart the host. A source-link install shows as `link:` in `dsh plugin list`.
-- No data migration: settings keep their location, usage history refolds from session logs, and the shapes of the two private snapshot files are unchanged.
-- dsh-tui users: the kernel must be on the 0.2.x family; the same package mounts as the terminal face. One `C-070 … unattributed` line in the boot log is expected — see [Compatibility](docs/en/COMPATIBILITY.md).
-- dsh 0.1.x remains unsupported (since 0.6.0).
+- Re-add the plugin per profile and restart; no data migration. dsh-tui kernels must be 0.2.x; 0.1.x unsupported.
 
 ## Earlier releases
 
-Release notes for v0.6.0 and earlier are available from the git tags. The host-generation adaptation notes that used to live here are in [docs/en/COMPATIBILITY.md](docs/en/COMPATIBILITY.md#historical-generation-notes).
+Release notes for v0.6.0 and earlier live in the git tags; host-generation adaptation notes are in [docs/en/COMPATIBILITY.md](docs/en/COMPATIBILITY.md#historical-generation-notes).

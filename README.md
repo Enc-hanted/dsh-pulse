@@ -7,7 +7,7 @@
 
 # dsh-pulse
 
-[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的会话用量与费用观测台。它把每个会话——无论活跃还是已持久化、来自哪种前端——折算成 token 走势，按 DeepSeek 官方费率计价，并把平台余额与订阅额度放在估算旁边。纯界面：没有模型可见的工具，插件不消耗 token，数据不离开本机。
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的会话用量与费用观测台。它把每个会话（活跃或已持久化、来自任何前端）折算成 token 走势，按 DeepSeek 官方费率计价，并把平台余额与订阅额度放在估算旁边。纯界面：没有模型可见的工具，不消耗 token，数据不离开本机。
 
 **简体中文** · [English](./README.en.md) · [文档](./docs/) · [更新日志](./CHANGELOG.md)
 
@@ -17,9 +17,9 @@
 
 - **用量走势**：不超过 30 天的任意窗口，提供小时 / 每日 / 90 天与 1 年热力图；点进某一天可下钻到逐模型以及输入 / 缓存 / 输出的拆分，模型占比与项目排行就在走势旁边。
 - **费用估算与对账**：按官方峰谷费率计价，逐模型、逐供应商定价，未定价用量单独列出而不并入总额；展开卡片可看月度预算与本地估算、官方扣费的逐日对账表。
-- **余额与订阅**：估算旁边就是 DeepSeek 平台余额，另有月付 Coding 套餐（GLM Coding Plan、Kimi For Coding、MiniMax Coding Plan），带 5 小时 / 每周窗口、重置时刻、燃速预估与分项目消耗。
+- **余额与订阅**：估算旁边就是 DeepSeek 平台余额，另有月付 Coding 套餐（GLM Coding Plan、Kimi For Coding、MiniMax Coding Plan、OpenCode Go），带 5 小时 / 每周窗口、重置时刻、燃速预估与分项目消耗。
 - **会话明细**：会话按项目分组并带子代理小计；在会话的累计消耗曲线上放最多三个断点，即可读出每一段的 token 与费用。
-- **异常观察**：单日消耗达到前 7 日 P95 的 3 倍以上，以及一天内把同一工具调用重复几十次的会话。只给数字与标识，不告诉你该怎么做。
+- **异常观察**：单日消耗达到前 7 日 P95 的 3 倍以上，以及一天内把同一工具调用重复几十次的会话。只给数字与标识，不给处置建议。
 - **贴合工作流**：从 `/` 菜单打开、限定于当前会话的精简浮层，共享的项目 / 模型过滤器，四套主题，CSV 导出，面板宽度可拖拽。
 
 订阅额度与对账的展开图：
@@ -42,7 +42,7 @@ dsh plugin --profile web add -w dsh-pulse@latest
 dsh plugin --profile web remove -w dsh-pulse
 ```
 
-其他来源用同样的命令安装——用你需要的 tarball、git URL 或 `link:` 检出重新 `add` 一次：
+其他来源用同样的命令安装：用所需的 tarball、git URL 或 `link:` 检出重新 `add` 一次。
 
 ```bash
 dsh plugin --profile web add -w /abs/path/to/dsh-pulse-<version>.tgz
@@ -54,9 +54,9 @@ dsh plugin --profile web add -w link:/abs/path/to/dsh-pulse
 ## 隐私与数据
 
 - **事实来源是 dsh 自己的会话日志。** 插件没有私有的用量历史：每个数字都在请求时折出。卸载、重装，甚至删掉投影缓存，完整历史都会重新折出。
-- **两个插件自有的快照文件**，都是可选的，也都可以删：余额快照（只存金额，滚动 30 天）与额度快照（每个窗口一个百分比，滚动 30 天）。它们只用于对账线和燃速预估。
+- **三个插件自有的快照文件**，都是可选的，也都可以删：余额快照（只存金额，滚动 30 天）、额度快照（每个窗口一个百分比，滚动 30 天）与数据卡快照（导入/拉取的数据卡；删除即回落内置卡）。前两者只用于对账线和燃速预估。
 - **凭据从不落盘。** API key 只留在宿主进程内，每次请求只出现在一个出站 `Authorization` 头里。
-- **出站请求只有三类**：官方余额、订阅额度，以及「关于」面板（插件「设置」标签页底部）上的手动检查更新——绝不自动发起，没有遥测。
+- **出站请求只有四类**：官方余额、订阅额度、手动检查更新（「关于」面板，插件「设置」标签页底部），以及数据包面板上的手动「拉取」（默认源是 jsDelivr 上的仓库数据卡，可用 `pricingCardSource` 改）。余额与额度只在界面可见时按 60 秒节奏轮询；检查更新与拉取只由按钮触发。没有遥测。
 - **默认没有任何模型可见的接口。** 主包不注册任何工具。可选的配套包 `dsh-pulse-usage-query` 增加一个只读工具，[只有你自己挂载才会生效](https://github.com/Enc-hanted/dsh-pulse/blob/main/packages/dsh-pulse-usage-query/README.md)。
 
 完整存储表：[配置 → 数据与存储](./docs/CONFIGURATION.md#数据与存储)。
@@ -90,9 +90,9 @@ dsh plugin --profile web add -w link:/abs/path/to/dsh-pulse
 
 ## FAQ
 
-- **面板没有数据？** 刚装完没有可折的历史——先跑一个会话；同时确认插件装在活跃 profile 中，且 `dsh web` 已重启。
+- **面板没有数据？** 刚装完没有可折叠的历史，先跑一个会话；同时确认插件装在活跃 profile 中，且 `dsh web` 已重启。
 - **没有余额块？** 宿主需要配置 DeepSeek API key（`DEEPSEEK_API_KEY` 或客户端登录）；没有时该块自动隐藏。
-- **估算与官方扣费不一致？** 官方数字是那把 key 的总扣费——共用同一把 key 的其他工具也会算进来；辅助调用是估算，会自我校准，偏差持续时会触发告警。
+- **估算与官方扣费不一致？** 官方数字是该 key 的总扣费，共用同一把 key 的其他工具也会算进来；辅助调用是估算，会自我校准，偏差持续时会触发告警。
 - **订阅百分比看起来偏低？** 套餐只上报百分比；总额由本机流量反推，共用 key 时读数会偏低。按趋势看即可。
 - **保存返回 409？** 与其他窗口的保存撞车了；编辑器已自动刷新，重试即可。
 - **dsh-tui 里没有 `/pulse`？** 确认插件也装在 `dsh-tui` profile 中并重启；启动日志里出现一行 `C-070 … unattributed` 属预期。
@@ -101,7 +101,7 @@ dsh plugin --profile web add -w link:/abs/path/to/dsh-pulse
 
 ```bash
 npm ci
-npm test          # 10 suites: host, aggregate, view, quota adapters, package shape, client smoke, TUI, golden, style, manifest
+npm test          # 11 suites: host, aggregate, view, card, quota adapters, package shape, client smoke, TUI, golden, style, manifest
 npm run typecheck
 npm run build     # rebuild lib/client.js from src/
 ```
@@ -111,3 +111,5 @@ npm run build     # rebuild lib/client.js from src/
 特别致谢 [Linux Do](https://linux.do/) 社区。
 
 MIT — 见 [LICENSE](./LICENSE)。
+
+[![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)

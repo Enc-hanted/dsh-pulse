@@ -7,7 +7,7 @@
 
 # dsh-pulse
 
-A usage and cost observatory for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) sessions. It folds every session — live or persisted, from any frontend — into token trends, prices them at the official DeepSeek rates, and puts the platform balance and subscription quotas next to the estimate. Pure UI: no model-visible tools, no tokens spent by the plugin, and usage data never leaves this machine.
+A usage and cost observatory for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) sessions. It folds every session (live or persisted, from any frontend) into token trends, prices them at the official DeepSeek rates, and puts the platform balance and subscription quotas next to the estimate. Pure UI: no model-visible tools, no tokens spent by the plugin, and usage data never leaves this machine.
 
 [简体中文](./README.md) · **English** · [Documentation](./docs/en/) · [Changelog](./CHANGELOG.md)
 
@@ -15,12 +15,12 @@ A usage and cost observatory for [DeepSeek Harness](https://github.com/deepseek-
 
 ## What you get
 
-- **Usage trends** — hourly / daily / 90-day and 1-year heatmaps for any window up to 30 days; click through a day into per-model and input/cache/output splits, with model share and project ranking beside the trend.
-- **Cost estimate with a reality check** — official peak/off-peak rates, per-model and per-provider pricing, unpriced usage called out instead of folded into the total; expand the card for the monthly budget and a daily reconciliation table between local estimate and official spend.
-- **Balance and subscriptions** — the DeepSeek platform balance beside the estimate, plus monthly coding plans (GLM Coding Plan, Kimi For Coding, MiniMax Coding Plan) with 5-hour / weekly windows, reset times, burn-rate forecast and per-project burn.
-- **Session detail** — sessions grouped by project with subagent subtotals; place up to three breaks on a session's cumulative-consumption curve to read each segment's tokens and cost.
-- **Anomaly watch** — days burning ≥3× the 7-day P95, and sessions repeating one tool call dozens of times in a day. Numbers and identifiers only; it never tells you what to do.
-- **Fits the workflow** — a compact overlay from the `/` menu scoped to the current session, shared project/model filters, four themes, CSV export, and a draggable panel width.
+- **Usage trends**: hourly / daily / 90-day and 1-year heatmaps for any window up to 30 days; click through a day into per-model and input/cache/output splits, with model share and project ranking beside the trend.
+- **Cost estimate with a reality check**: official peak/off-peak rates, per-model and per-provider pricing, unpriced usage called out instead of folded into the total; expand the card for the monthly budget and a daily reconciliation table between local estimate and official spend.
+- **Balance and subscriptions**: the DeepSeek platform balance beside the estimate, plus monthly coding plans (GLM Coding Plan, Kimi For Coding, MiniMax Coding Plan, OpenCode Go) with 5-hour / weekly windows, reset times, burn-rate forecast and per-project burn.
+- **Session detail**: sessions grouped by project with subagent subtotals; place up to three breaks on a session's cumulative-consumption curve to read each segment's tokens and cost.
+- **Anomaly watch**: days burning ≥3× the 7-day P95, and sessions repeating one tool call dozens of times in a day. Numbers and identifiers only; no advice.
+- **Fits the workflow**: a compact overlay from the `/` menu scoped to the current session, shared project/model filters, four themes, CSV export, and a draggable panel width.
 
 Subscription-quota and reconciliation expansions:
 
@@ -34,7 +34,7 @@ Subscription-quota and reconciliation expansions:
 dsh plugin --profile web add -w dsh-pulse
 ```
 
-Restart `dsh web` — the host half registers at plugin load — then open **Settings → Usage Pulse**. Three ways in: the button at the sidebar's foot, the settings page, and the **pulse** row in any conversation's `/` menu, which opens an overlay scoped to that session's workspace. All of them share one data source, `GET /pulse/stats`; the panel's left edge drags to resize.
+Restart `dsh web` — the host side registers at plugin load — then open **Settings → Usage Pulse**. Three ways in: the button at the sidebar's foot, the settings page, and the **pulse** row in any conversation's `/` menu, which opens an overlay scoped to that session's workspace. All of them share one data source, `GET /pulse/stats`; the panel's left edge drags to resize.
 
 ```bash
 # update / remove
@@ -54,9 +54,9 @@ If a `DEEPSEEK_API_KEY` is already configured, the balance and reconciliation li
 ## Privacy and data
 
 - **The source of truth is dsh's own session logs.** There is no plugin-private usage history: every number is folded at request time. Uninstall, reinstall, even delete the projection cache — the full history comes back.
-- **Two plugin-owned snapshot files**, both optional and both deletable: balance snapshots (amounts only, rolling 30 days) and quota snapshots (one percentage per window, rolling 30 days). They only feed the reconciliation line and the burn forecast.
+- **Three plugin-owned snapshot files**, all optional and all deletable: balance snapshots (amounts only, rolling 30 days), quota snapshots (one percentage per window, rolling 30 days), and the data-card snapshot (the imported/pulled data card; deleting it falls back to the bundled card). The first two only feed the reconciliation line and the burn forecast.
 - **Credentials never persist.** The API key stays in the host process and appears in exactly one outbound `Authorization` header per request.
-- **Exactly three kinds of outbound requests**: official balance, subscription quota, and the manual update check on the About panel (bottom of the plugin's Settings tab) — never automatic, no telemetry.
+- **Exactly four kinds of outbound requests**: official balance, subscription quota, the manual update check on the About panel (bottom of the plugin's Settings tab), and the manual **pull** on the data-card panel (the default source is the repo's data card over jsDelivr, configurable via `pricingCardSource`). Balance and quota poll every 60 seconds only while their surface is visible; the update check and the pull are button-triggered only. There is no telemetry.
 - **Zero model-visible surface by default.** The main package registers no tools. The optional companion package `dsh-pulse-usage-query` adds one read-only tool and is [not mounted unless you mount it yourself](https://github.com/Enc-hanted/dsh-pulse/blob/main/packages/dsh-pulse-usage-query/README.md).
 
 Full storage table: [Configuration → Data & storage](./docs/en/CONFIGURATION.md#data--storage).
@@ -101,7 +101,7 @@ Degradations, diagnostics and the 0.1.x generation history: [Compatibility notes
 
 ```bash
 npm ci
-npm test          # 10 suites: host, aggregate, view, quota adapters, package shape, client smoke, TUI, golden, style, manifest
+npm test          # 11 suites: host, aggregate, view, card, quota adapters, package shape, client smoke, TUI, golden, style, manifest
 npm run typecheck
 npm run build     # rebuild lib/client.js from src/
 ```
@@ -111,3 +111,5 @@ Build setup, test map, extension slots for plugin authors and the release checkl
 Special thanks to the [Linux Do](https://linux.do/) community.
 
 MIT — see [LICENSE](./LICENSE).
+
+[![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)

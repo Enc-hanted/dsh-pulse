@@ -1,6 +1,6 @@
 /** The bundled seed, frozen — the offline fallback and the test baseline. */
 export declare const SEED_CARD: Readonly<{
-    schemaVersion: number;
+    cardSchema: number;
     version: number;
     checkedAt: string;
     source: string;
@@ -359,7 +359,7 @@ export declare const SEED_CARD: Readonly<{
 /** Fixed UTC+8 offset for peak-tier classification (Asia/Shanghai has no DST). */
 export declare const BEIJING_OFFSET_MS: number;
 export declare let RATECARD: Readonly<{
-    schemaVersion: number;
+    cardSchema: number;
     version: number;
     checkedAt: string;
     source: string;
@@ -752,7 +752,7 @@ export declare function resetCard(): void;
 /** The active card plus its provenance, for payloads and the card panel. */
 export declare function activeCard(): {
     card: Readonly<{
-        schemaVersion: number;
+        cardSchema: number;
         version: number;
         checkedAt: string;
         source: string;

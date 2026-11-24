@@ -13,7 +13,7 @@ The data card is the versioned source of official pricing facts and subscription
 
 | field | type | meaning |
 | --- | --- | --- |
-| `schemaVersion` | literal `3` | the grammar anchor; adding any field requires bumping it |
+| `cardSchema` | literal `3` | the grammar anchor; adding any field requires bumping it |
 | `version` | positive integer | the content version; bump on price changes, the panel shows its checked-at date |
 | `checkedAt` | `YYYY-MM-DD` | the date the official rates were checked |
 | `source` | string | the official price source URL |

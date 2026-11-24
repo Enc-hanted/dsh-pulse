@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 3,
+  "cardSchema": 3,
   "version": 3,
   "checkedAt": "2026-11-18",
   "source": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",

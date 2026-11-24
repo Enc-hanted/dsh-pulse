@@ -9,7 +9,7 @@ import { auxDayUsage } from "../src/view/aux-calls.js";
 
 // --- validation: the seed passes; malformed cards fail at the boundary ----
 assert.doesNotThrow(() => validateCard(SEED_CARD));
-assert.throws(() => validateCard({ ...SEED_CARD, schemaVersion: 1 }));
+assert.throws(() => validateCard({ ...SEED_CARD, cardSchema: 1 }));
 assert.throws(() => validateCard({ ...SEED_CARD, pricing: { ...SEED_CARD.pricing, usdToCny: -1 } }));
 const unsorted = structuredClone(SEED_CARD);
 unsorted.pricing.schedules.reverse();

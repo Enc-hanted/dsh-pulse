@@ -1514,7 +1514,7 @@ assert.ok(env.coldReads.length <= before + 3, "shared flight reads the cold corp
   apply(env.ctx, config);
   const broken = await env.serve("/pulse/pricing-card", {
     method: "POST",
-    body: { card: { schemaVersion: 3, source: "https://example.com/card.json" }, origin: "imported" },
+    body: { card: { cardSchema: 3, source: "https://example.com/card.json" }, origin: "imported" },
   });
   assert.equal(broken.status, 400, "a structurally invalid card is refused");
   const face = JSON.parse(broken.body).error;

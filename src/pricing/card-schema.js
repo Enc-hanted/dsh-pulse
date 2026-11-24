@@ -158,8 +158,8 @@ export function validateProviderSpec(value) {
   return spec;
 }
 
-const cardSchema = z.object({
-  schemaVersion: z.literal(3),
+const cardRootSchema = z.object({
+  cardSchema: z.literal(3),
   version: z.number().int().positive(),
   checkedAt: z.string().regex(DAY),
   source: z.string().min(1),
@@ -191,7 +191,7 @@ const OFFSETTED_INSTANT = /(?:[zZ]|[+-]\d{2}:?\d{2})$/;
 /** Validate an untrusted card; throws on any schema or semantic violation.
  *  Returns the parsed card so callers never reuse the raw input. */
 export function validateCard(value) {
-  const card = cardSchema.parse(value);
+  const card = cardRootSchema.parse(value);
   // Exactly ONE server-side-search window: pricing-facts' derive() reads the
   // first match with `.find`, so a second (overlapping era) window would be
   // silently ignored — an ambiguity a trust anchor cannot carry. Other

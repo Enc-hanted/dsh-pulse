@@ -114,7 +114,7 @@ export declare function validateProviderSpec(value: any): {
 /** Validate an untrusted card; throws on any schema or semantic violation.
  *  Returns the parsed card so callers never reuse the raw input. */
 export declare function validateCard(value: any): {
-    schemaVersion: 3;
+    cardSchema: 3;
     version: number;
     checkedAt: string;
     source: string;

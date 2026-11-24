@@ -344,7 +344,7 @@ try {
 
 	// --- phase 4: the echoed-card gate — version skew degrades to "ignore" ---
 	// applyEchoedCard is the ONE door every payload-echoed card walks through:
-	// only schemaVersion 3 applies, and a card the bundle cannot derive
+	// only cardSchema 3 applies, and a card the bundle cannot derive
 	// (throwing inside applyCard's derive) must never reject the fetch that
 	// carried good stats data — the dashboard would blank over numbers it
 	// already holds. A skewed echo therefore degrades to keeping the current
@@ -364,7 +364,7 @@ try {
 	const gate = require(gatePath);
 	{
 		const okCard = {
-			schemaVersion: 3, version: 99, checkedAt: "2026-11-18", source: "test",
+			cardSchema: 3, version: 99, checkedAt: "2026-11-18", source: "test",
 			pricing: {
 				usdToCny: 6.8, peakHours: [9], auxPriceAs: "deepseek-flash",
 				auxShape: { miss: 1, hit: 1, out: 1 }, modelAliases: {},
@@ -375,13 +375,13 @@ try {
 		};
 		gate.applyEchoedCard(okCard, "imported");
 		assert.equal(gate.activeCard().card.version, 99, "a schema-3 card applies through the gate");
-		gate.applyEchoedCard({ ...okCard, schemaVersion: 4, version: 100 }, "imported");
+		gate.applyEchoedCard({ ...okCard, cardSchema: 4, version: 100 }, "imported");
 		assert.equal(gate.activeCard().card.version, 99, "a schema-4 (skewed) echo is ignored");
 		gate.applyEchoedCard(null, "imported");
 		gate.applyEchoedCard("junk", "imported");
 		gate.applyEchoedCard(undefined, undefined);
 		assert.equal(gate.activeCard().card.version, 99, "non-object echoes no-op");
-		assert.doesNotThrow(() => gate.applyEchoedCard({ schemaVersion: 3, version: 101 }, "imported"),
+		assert.doesNotThrow(() => gate.applyEchoedCard({ cardSchema: 3, version: 101 }, "imported"),
 			"a schema-3 card the derive cannot read degrades inside the gate, never throws");
 		assert.equal(gate.activeCard().card.version, 99, "…and the facts stay on the last good card");
 	}
@@ -534,7 +534,7 @@ try {
 			if (url === "/pulse/pricing-card") {
 				// `fullCard` swaps the mini card for the real seed once the
 				// credential-routing case needs a diffable base.
-				return { ok: true, status: 200, json: async () => ({ ok: true, card: fullCard ? SEED_CARD : { schemaVersion: 3, version: 3, checkedAt: "2026-11-18" }, origin: "imported", seedVersion: 3, source: "https://x/ratecard.json" }) };
+				return { ok: true, status: 200, json: async () => ({ ok: true, card: fullCard ? SEED_CARD : { cardSchema: 3, version: 3, checkedAt: "2026-11-18" }, origin: "imported", seedVersion: 3, source: "https://x/ratecard.json" }) };
 			}
 			if (url === "/pulse/pricing-card/pull") {
 				const retargeted = structuredClone(SEED_CARD);

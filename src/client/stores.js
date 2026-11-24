@@ -101,7 +101,7 @@ import { createSnapshotStore } from "./adapter.js";
 		export { clockOf as fmtClock } from "../view.js";
 		/** The payload-echoed card's ONE application gate (loadStats' fresh
 		 *  reply, its payload cache, and the shared settings cache all ride
-		 *  it): a card applies only when its own `schemaVersion` matches the
+		 *  it): a card applies only when its own `cardSchema` matches the
 		 *  grammar this bundle was built against (3), and always inside
 		 *  try/catch. The host validated the card host-side, but version skew
 		 *  is not validation skew — a NEWER host may echo a card this bundle
@@ -111,7 +111,7 @@ import { createSnapshotStore } from "./adapter.js";
 		 *  hold. Version-skew degradation is deliberately "ignore the card,
 		 *  keep the current facts" — never a white screen. */
 		export function applyEchoedCard(card, origin) {
-			if (card === null || typeof card !== "object" || card.schemaVersion !== 3) return;
+			if (card === null || typeof card !== "object" || card.cardSchema !== 3) return;
 			try { applyCard(card, typeof origin === "string" && origin !== "" ? origin : "imported"); } catch { /* skewed card: keep the current facts */ }
 		}
 		/** Replace `{key}` placeholders in a copy string. */

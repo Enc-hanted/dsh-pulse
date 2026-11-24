@@ -59,6 +59,7 @@ export declare function specAdapter(spec: any, { draft }?: {
 }): {
     id: any;
     label: any;
+    short: any;
     routes: any;
     envKeys: any;
     match: (providerId: any, _describeRow: any) => any;

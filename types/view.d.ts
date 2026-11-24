@@ -72,7 +72,8 @@ export declare function quotaMoney(total: any, currency: any): string;
 export declare function clockOf(ms: any): string;
 /** Token-count formatting: 1.2k / 3.4M / 5.6B — the ONE abbreviation for
  *  both faces (the two ladders had already split: 1.5B here printed as
- *  1500.0M on the TUI). */
+ *  1500.0M on the TUI). A whole number prints bare — 689k, never 689.0k;
+ *  the lone decimal is kept only when it says something (830.4k). */
 export declare function fmtTokens(n: any): string;
 /** `MM-DD HH:MM:SS` short stamp for an epoch-ms value (break ruler labels). */
 export declare function fmtClockMs(timeMs: any): string;

@@ -46,6 +46,7 @@ export declare const SEED_CARD: Readonly<{
     providers: ({
         id: string;
         label: string;
+        short: string;
         routes: string[];
         envKeys: string[];
         hosts: ({
@@ -165,6 +166,7 @@ export declare const SEED_CARD: Readonly<{
         extras?: undefined;
         id: string;
         label: string;
+        short: string;
         routes: string[];
         envKeys: string[];
         hosts: {
@@ -239,6 +241,7 @@ export declare const SEED_CARD: Readonly<{
         extras?: undefined;
         id: string;
         label: string;
+        short: string;
         routes: string[];
         envKeys: string[];
         hosts: {
@@ -294,6 +297,7 @@ export declare const SEED_CARD: Readonly<{
         errorGate?: undefined;
         id: string;
         label: string;
+        short: string;
         routes: string[];
         envKeys: string[];
         hosts: {
@@ -401,6 +405,7 @@ export declare let RATECARD: Readonly<{
     providers: ({
         id: string;
         label: string;
+        short: string;
         routes: string[];
         envKeys: string[];
         hosts: ({
@@ -520,6 +525,7 @@ export declare let RATECARD: Readonly<{
         extras?: undefined;
         id: string;
         label: string;
+        short: string;
         routes: string[];
         envKeys: string[];
         hosts: {
@@ -594,6 +600,7 @@ export declare let RATECARD: Readonly<{
         extras?: undefined;
         id: string;
         label: string;
+        short: string;
         routes: string[];
         envKeys: string[];
         hosts: {
@@ -649,6 +656,7 @@ export declare let RATECARD: Readonly<{
         errorGate?: undefined;
         id: string;
         label: string;
+        short: string;
         routes: string[];
         envKeys: string[];
         hosts: {
@@ -790,6 +798,7 @@ export declare function activeCard(): {
         providers: ({
             id: string;
             label: string;
+            short: string;
             routes: string[];
             envKeys: string[];
             hosts: ({
@@ -909,6 +918,7 @@ export declare function activeCard(): {
             extras?: undefined;
             id: string;
             label: string;
+            short: string;
             routes: string[];
             envKeys: string[];
             hosts: {
@@ -983,6 +993,7 @@ export declare function activeCard(): {
             extras?: undefined;
             id: string;
             label: string;
+            short: string;
             routes: string[];
             envKeys: string[];
             hosts: {
@@ -1038,6 +1049,7 @@ export declare function activeCard(): {
             errorGate?: undefined;
             id: string;
             label: string;
+            short: string;
             routes: string[];
             envKeys: string[];
             hosts: {

@@ -7,7 +7,7 @@
 
 import { strict as assert } from "node:assert";
 import { apply, Config } from "../src/index.js";
-import { localDay } from "../src/aggregate.js";
+import { localDay, pulseProjectionDefinition, PULSE_STATE_VERSION } from "../src/aggregate.js";
 import { specAdapter } from "../src/quota-adapters/spec-engine.js";
 import { createQuotaService } from "../src/quota-service.js";
 import { displayAmount } from "../src/view.js";
@@ -269,11 +269,20 @@ function makeCtx({ withSettings, withLlm = false, deferSettings = false, withCre
               isSeeded: id === "cold1",
             },
             inheritedEventCount: id === "cold1" ? 3 : 0,
-            events: [
-              { type: "turn/start", time: noon(-1) },
-              { type: "assistant/message", time: noon(-1) + 1000, data: { usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 900, cacheWriteTokens: 10 }, message: { source: { provider: "deepseek-official", model: "deepseek-v4-flash" } } } },
-              { type: "turn/end", time: noon(-1) + 5000 },
-            ],
+            events: id === "cold1"
+              // a forked subagent: the log opens with three inherited parent
+              // events (seq 0..2, below the cut of 3), then its own usage
+              ? [
+                { seq: 0, type: "turn/start", time: noon(-1) },
+                { seq: 1, type: "assistant/message", time: noon(-1) + 1000, data: { usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 900, cacheWriteTokens: 10 }, message: { source: { provider: "deepseek-official", model: "deepseek-v4-flash" } } } },
+                { seq: 2, type: "turn/end", time: noon(-1) + 5000 },
+                { seq: 3, type: "assistant/message", time: noon(-3) + 1000, data: { usage: { inputTokens: 7, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0 }, message: { source: { provider: "deepseek-official", model: "deepseek-v4-pro" } } } },
+              ]
+              : [
+                { type: "turn/start", time: noon(-1) },
+                { type: "assistant/message", time: noon(-1) + 1000, data: { usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 900, cacheWriteTokens: 10 }, message: { source: { provider: "deepseek-official", model: "deepseek-v4-flash" } } } },
+                { type: "turn/end", time: noon(-1) + 5000 },
+              ],
           };
         }
         throw new Error("no such session");
@@ -436,7 +445,7 @@ apply(env.ctx, config);
 // --- the projection unit registered with the official contract --------------
 assert.notEqual(env.unit(), null, "projection unit registered");
 assert.equal(env.unit().key, "pulseUsage");
-assert.equal(env.unit().stateVersion, 11);
+assert.equal(env.unit().stateVersion, PULSE_STATE_VERSION, "the fork-aware fold version at load");
 assert.equal(env.registerCount(), 1, "one registration at load");
 assert.deepEqual(env.unit().view(env.unit().init()), {
   byDay: {}, modelsByDay: {}, hoursByDay: {}, tiersByDay: {}, turnsByDay: {}, toolCallsByDay: {}, toolHistogramByDay: {}, auxByDay: {}, firstDay: null, title: null,
@@ -478,7 +487,7 @@ assert.deepEqual(cold.turnsByDay, { [daysAgo(3)]: 1 });
 // cut) and folded from the readSession body, which arrived with its exact
 // inherited cut and complete log
 assert.deepEqual(env.fastReads, ["broken1", "cold2"], "only unseeded headers touch the fast path");
-assert.deepEqual(env.coldReads[0], { id: "cold1", cut: 3, events: 3 }, "coldSnapshot receives the loaded header, cut and log");
+assert.deepEqual(env.coldReads[0], { id: "cold1", cut: 3, events: 4 }, "coldSnapshot receives the loaded header, cut and log");
 
 // the unseeded cold session comes straight from the stored rows — no log read
 const wide = JSON.parse((await env.serve("/pulse/stats?days=8")).body);
@@ -558,7 +567,7 @@ const peakChange = JSON.parse((await env.serve("/pulse/settings", {
 assert.equal(peakChange.ok, true);
 assert.equal(peakChange.refold, true, "peak-hours save predicts a re-fold");
 assert.equal(env.registerCount(), 2, "peak-hours change re-registers the projection");
-assert.equal(env.unit().stateVersion, 12, "bumped state version invalidates persisted rows");
+assert.equal(env.unit().stateVersion, PULSE_STATE_VERSION + 1, "bumped state version invalidates persisted rows");
 await new Promise((resolve) => setTimeout(resolve, 20));
 assert.ok(env.coldReads.length > coldReadsBefore, "background warm-up re-folds the cold corpus");
 // ...and the shared projections died with the old tier split: the next NEW
@@ -592,7 +601,7 @@ assert.equal(resetSettings.costEnabled, true);
 assert.equal(resetSettings.pricing.length, 2, "official defaults back");
 assert.deepEqual(resetSettings.fx, { usdToCny: 6.8 }, "fx re-inherits the default");
 assert.equal(env.registerCount(), 4, "reset drops the custom hours → re-fold back to official");
-assert.equal(env.unit().stateVersion, 14);
+assert.equal(env.unit().stateVersion, PULSE_STATE_VERSION + 3);
 
 // a provider-scoped rule coexists with the wildcard official default: same
 // model id, two effective rules, and the provider survives the round trip
@@ -1319,6 +1328,11 @@ assert.ok(env.coldReads.length <= before + 3, "shared flight reads the cold corp
   const sub = JSON.parse((await env.serve("/pulse/session?id=cold1")).body);
   assert.equal(sub.header.origin, "subagent");
   assert.equal(sub.header.cwd, "/home/x/repo");
+  // ...and a fork's timeline is its own events: the inherited parent usage
+  // and turn (seq 0..2, below the cut) stay out of the detail view
+  assert.deepEqual(sub.events, [{ t: noon(-3) + 1000, i: 7, o: 3, cr: 0, cw: 0, key: "deepseek-official\u0000deepseek-v4-pro" }],
+    "only the fork's own usage lands");
+  assert.deepEqual(sub.turns, [], "the parent's turn boundaries stay out");
   // missing id refused; unknown session 404s
   assert.equal((await env.serve("/pulse/session")).status, 400);
   const missing = JSON.parse((await env.serve("/pulse/session?id=nope")).body);
@@ -1359,6 +1373,70 @@ assert.ok(env.coldReads.length <= before + 3, "shared flight reads the cold corp
   assert.equal(typeof real.cachedSnapshot, "function", "the real cache class still exposes cachedSnapshot");
   assert.equal(real.cachedSnapshot.length, 2,
     `real cachedSnapshot arity changed to ${real.cachedSnapshot.length} — the zero-I/O fast path call shape must be updated together with the stub`);
+}
+
+// --- guardrail D: the fork cut under the REAL registry ------------------------
+// The registry (the cache package's pinned peer) hands `init` the session's
+// `inheritedEventCount` and then drives `apply` over the copied parent events
+// too. The stub matrix above never runs that path, which is how a fold that
+// counted every fork's inherited prefix passed every test while reading 3.5×
+// the provider's bill. This block runs the real restore / viewCheckpoint /
+// restoreFloor over a forked log in the stored shape (the marker's own seq is
+// the cut).
+{
+  const { SessionProjectionRegistry } = await import("@deepseek-ai/dsh-session-projection");
+  const regCtx = {
+    // 0.2.1-rc registers through a generator effect; newer hosts through a
+    // plain function plus fiber.assertActive().
+    effect: (fn) => {
+      const disposer = fn.constructor?.name === "GeneratorFunction"
+        ? (() => { const it = fn(); it.next(); return it.next().value; })()
+        : fn();
+      return () => { if (typeof disposer === "function") disposer(); };
+    },
+    fiber: { assertActive() {} },
+  };
+  const reg = Object.create(SessionProjectionRegistry.prototype);
+  Object.assign(reg, { registrations: new Map(), summaryKeySet: undefined, listeners: new Set(), eventListeners: new Set(), deprecatedStateOfKeys: new Set(), ctx: regCtx });
+  const release = typeof reg.acquire === "function" ? await reg.acquire(pulseProjectionDefinition(), (d) => d) : reg.register(pulseProjectionDefinition());
+
+  const seqd = (seq, event) => ({ seq, ...event });
+  const usage = (input) => ({ inputTokens: input, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
+  const flash = { provider: "deepseek-official", model: "deepseek-v4-flash" };
+  const pro = { provider: "deepseek-official", model: "deepseek-v4-pro" };
+  const header = { version: 4, id: "fork1", createdAt: noon(-1), cwd: "D:\\DSH\\demo", parentSession: "p0", isSeeded: true, origin: "subagent" };
+  const forkLog = [
+    seqd(0, { type: "session/title", time: noon(-1), data: { title: "父会话" } }),
+    seqd(1, { type: "assistant/message", time: noon(-1), data: { usage: usage(1000), message: { source: flash } } }),
+    seqd(2, { type: "step/end", time: noon(-1), data: { turn: 1, step: 1 } }),
+    seqd(3, { type: "session/end-seed", time: noon(-1), data: { inherited: true } }),
+    seqd(4, { type: "assistant/message", time: noon(-1), data: { usage: usage(7), message: { source: pro } } }),
+  ];
+  const own = { input: 7, output: 0, cacheRead: 0, cacheWrite: 0 };
+
+  // cold fold from an empty checkpoint: the parent's copy stays out
+  const cold = reg.restore({}, forkLog, 0, header, 3);
+  assert.deepEqual(cold.snapshot.values.pulseUsage.byDay, { [daysAgo(1)]: own }, "the real registry's cold fold counts the fork's own usage only");
+  assert.equal(cold.snapshot.values.pulseUsage.title, "父会话", "the fork keeps the inherited title");
+  assert.deepEqual(cold.snapshot.values.pulseUsage.turnsByDay, {}, "the parent's closed turn is not the fork's");
+  // the write-back row carries the cut and validates as stored state
+  const rows = cold.checkpoint;
+  assert.equal(rows.pulseUsage.ver, PULSE_STATE_VERSION);
+  assert.equal(rows.pulseUsage.val.inheritedEventCount, 3, "the cut lives in the persisted state");
+  assert.deepEqual(reg.viewCheckpoint(rows, ["pulseUsage"]).pulseUsage.byDay, { [daysAgo(1)]: own }, "the zero-I/O rung serves the stored row");
+  assert.equal(reg.restoreFloor(rows), forkLog.at(-1).seq, "a current row lets later reads replay the tail only");
+  // a row folded before the fix is never served and forces a full replay
+  const preFixState = { ...rows.pulseUsage.val };
+  delete preFixState.inheritedEventCount;
+  const stale = { pulseUsage: { ver: PULSE_STATE_VERSION - 1, seq: forkLog.at(-1).seq, val: preFixState } };
+  assert.deepEqual(reg.viewCheckpoint(stale, ["pulseUsage"]), {}, "a pre-fix row is not served");
+  assert.equal(reg.restoreFloor(stale), 0, "a pre-fix row sends the next read back to seq 0");
+  assert.deepEqual(reg.restore(stale, forkLog, 0, header, 3).snapshot.values.pulseUsage.byDay, { [daysAgo(1)]: own }, "and the replay folds the same");
+  // a row that claims the current version without the cut is not a state
+  assert.deepEqual(reg.viewCheckpoint({ pulseUsage: { ...stale.pulseUsage, ver: PULSE_STATE_VERSION } }, ["pulseUsage"]), {},
+    "stateSchema rejects a state without the cut");
+
+  typeof release === "function" ? release() : await release.dispose();
 }
 
 // --- volatile Config fields: display AND pricing edits never force a restart --

@@ -546,6 +546,29 @@ test("collect on 0.2.0 shapes: {session} key, createdAt-only header, title from 
 	assert.equal(foldCache.get("sess-020-a").version, createdAt, "closed 0.2.0 sessions stamp on createdAt");
 });
 
+test("collect on a forked session: the inherited prefix stays out of the rollup", async () => {
+	// a fork's log opens with a copy of its parent's events (below the cut);
+	// that usage is the parent's own record, so the fork counts only its tail
+	const createdAt = DAY_TS - 3_600_000;
+	const day = localDayOf(DAY_TS);
+	const header = { version: 1, id: "sess-fork", createdAt, cwd: "D:/proj", isSeeded: true, origin: "subagent", parentSession: "sess-parent" };
+	const { ctx } = stubCollectCtx({
+		listed: [{ header: structuredClone(header), live: false, persisted: true }],
+		read: () => ({
+			session: structuredClone(header),
+			inheritedEventCount: 2,
+			events: [
+				{ seq: 0, ...messageEvent(DAY_TS, 9_000_000) },
+				{ seq: 1, type: "session/end-seed", time: DAY_TS, data: { inherited: true } },
+				{ seq: 2, ...messageEvent(DAY_TS, 1_000_000) },
+			],
+		}),
+	});
+	const result = await collect(ctx, {});
+	assert.equal(result.empty, false);
+	assert.equal(result.record.byDay[day].input, 1_000_000, "only the fork's own usage reaches the rollup");
+});
+
 test("pulseStripToggle: show / repeat / refusal / teardown, no leaked poll", () => {
 	_resetStripForTests();
 	const disposed = [];

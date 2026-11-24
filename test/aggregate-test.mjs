@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import {
   balanceSpendSeries, BEIJING_OFFSET_MS, buildPayload, clampDays, dayStart, estimateTokens, foldEvents, localDay,
-  MAX_WINDOW_DAYS, normalizePeakHours, PEAK_HOURS, projectOf, pulseProjectionDefinition,
+  MAX_WINDOW_DAYS, normalizePeakHours, PEAK_HOURS, projectOf, pulseProjectionDefinition, PULSE_STATE_VERSION,
   resolveWindow, sliceRecord, tierAt, timelineEvents, validDay,
 } from "../src/aggregate.js";
 import { modelKey } from "../src/view.js";
@@ -155,9 +155,11 @@ const flatHoursFolded = foldEvents([
 assert.equal(flatHoursFolded.tiersByDay[localDay(bj(10))]["m-flat"].input.peak, 0, "empty hour set: 10:00 Beijing is off-peak");
 assert.equal(flatHoursFolded.tiersByDay[localDay(bj(10))]["m-flat"].input.offpeak, 5);
 // the definition carries its stateVersion (host bumps it on peak-hour changes);
-// 11 is the tool-histogram fold — persisted pre-11 rows re-fold to gain it
-assert.equal(pulseProjectionDefinition().stateVersion, 11);
-assert.equal(pulseProjectionDefinition({ stateVersion: 12 }).stateVersion, 12);
+// 12 is the fork-aware fold — persisted pre-12 rows re-fold to drop the
+// inherited prefixes they counted
+assert.equal(PULSE_STATE_VERSION, 12);
+assert.equal(pulseProjectionDefinition().stateVersion, 12);
+assert.equal(pulseProjectionDefinition({ stateVersion: 13 }).stateVersion, 13);
 // The official peak windows run Monday–Friday: the same 10:00 Beijing hour is
 // off-peak on a weekend. 2026-08-15 is a Saturday, 2026-08-14 a Friday. A bare
 // hour set keeps the historical all-days reading; the projection and the host
@@ -204,6 +206,14 @@ assert.equal(contract.stateSchema.parse(contractState).lastTurn, 7, "lastTurn su
 const wireState = contract.wire.view(contractState);
 assert.equal(wireState.lastTurn, undefined, "wire view hides fold internals");
 assert.ok(contract.wire.viewSchema.parse(wireState), "wire view validates against wire.viewSchema");
+// ...and the fork cut: init(header, cut) keeps it in the state, the wire view never shows it
+const cutState = contract.init({ id: "fork" }, 4);
+assert.equal(cutState.inheritedEventCount, 4, "the registry's cut lands in the state");
+assert.deepEqual(contract.stateSchema.parse(cutState), cutState, "full state (with the cut) validates against stateSchema");
+assert.equal(contract.wire.view(cutState).inheritedEventCount, undefined, "wire view hides the cut");
+assert.equal(contract.stateSchema.safeParse({ ...cutState, inheritedEventCount: -1 }).success, false, "a negative cut is not a state");
+assert.equal(contract.stateSchema.safeParse({ ...cutState, inheritedEventCount: undefined }).success, false,
+  "a row without the cut is not a state — only the pre-12 rows lack it, and they replay");
 // both views agree on the client-visible shape
 assert.deepEqual(contract.wire.view(contractState), contract.view(contractState), "legacy and wire views agree");
 // per-hour, per-model detail for the intraday chart
@@ -240,6 +250,54 @@ assert.deepEqual(noTime.byDay, {});
 const emptyState = { byDay: {}, modelsByDay: {}, hoursByDay: {}, tiersByDay: {}, turnsByDay: {}, toolCallsByDay: {}, toolHistogramByDay: {}, auxByDay: {}, firstDay: null, title: null };
 assert.deepEqual(foldEvents(null), emptyState);
 assert.deepEqual(foldEvents([{}, null, 42]), emptyState);
+
+// --- fork-inherited prefix ---------------------------------------------------
+// A seeded session (a fork, a subagent spawned from the parent's history)
+// opens with a copy of its parent's events, and the registry drives `apply`
+// over every copied event too. That usage is the parent's: a copy counted
+// again re-bills the inherited history once per fork.
+const seqd = (seq, event) => ({ seq, ...event });
+const src = { provider: "p", model: "m" };
+const own = { input: 10, output: 5, cacheRead: 90, cacheWrite: 0 };
+const forkLog = [
+  seqd(0, { type: "session/title", time: t1, data: { title: "父会话标题" } }),
+  seqd(1, { type: "assistant/message", time: t1, data: { turn: 1, step: 1, message: { source: src }, usage: { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 9000 } } }),
+  seqd(2, { type: "step/end", time: t1, data: { turn: 1, step: 1 } }),
+  seqd(3, { type: "tool/call", time: t1, data: { callId: "c0", name: "bash", arguments: "{}" } }),
+  seqd(4, { type: "session/end-seed", time: t1, data: { inherited: true } }),
+  seqd(5, { type: "assistant/message", time: t1, data: { turn: 2, step: 1, message: { source: src }, usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 90 } } }),
+  seqd(6, { type: "step/end", time: t1, data: { turn: 2, step: 1 } }),
+];
+const forked = foldEvents(forkLog, {}, { inheritedEventCount: 4 });
+assert.deepEqual(forked.byDay, { [day]: own }, "only the fork's own usage counts");
+assert.deepEqual(forked.modelsByDay[day][modelKey("p", "m")], own, "per-model maps follow");
+assert.equal(forked.turnsByDay[day], 1, "the parent's closed turns are not the fork's");
+assert.equal(forked.toolCallsByDay[day], undefined, "the parent's tool calls are not the fork's");
+assert.equal(forked.title, "父会话标题", "the fork stays named after the conversation it forked from");
+const forkInput = forked.tiersByDay[day][modelKey("p", "m")].input;
+assert.deepEqual([forkInput.peak, forkInput.offpeak], tierAt(t1) === "peak" ? [10, 0] : [0, 10], "the tier split sees own usage only");
+// no cut (an unseeded session) counts the whole log, as before
+assert.deepEqual(foldEvents(forkLog).byDay[day], { input: 1010, output: 105, cacheRead: 9090, cacheWrite: 0 });
+// a later fork of the same parent inherits more of it and still counts only its own tail
+const laterFork = foldEvents([
+  ...forkLog,
+  seqd(7, { type: "assistant/message", time: t1, data: { turn: 3, step: 1, message: { source: src }, usage: { inputTokens: 1 } } }),
+], {}, { inheritedEventCount: 7 });
+assert.deepEqual(laterFork.byDay[day], { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 });
+// the registry path — init(header, cut), then apply over the whole log —
+// folds the same, and the cut survives the checkpoint boundary
+const forkUnit = pulseProjectionDefinition();
+let forkState = forkUnit.init({ id: "fork" }, 4);
+for (const event of forkLog) forkState = forkUnit.apply(forkState, event);
+assert.deepEqual(forkUnit.view(forkState).byDay, { [day]: own });
+assert.deepEqual(forkUnit.stateSchema.parse(forkState), forkState, "the cut survives the state boundary");
+// events without a seq are never skipped: a cut alone must not zero a log
+assert.deepEqual(foldEvents([{ type: "assistant/message", time: t1, data: { message: { source: src }, usage: { inputTokens: 5 } } }], {}, { inheritedEventCount: 3 }).byDay[day],
+  { input: 5, output: 0, cacheRead: 0, cacheWrite: 0 });
+// garbage cuts read as unseeded
+for (const bad of [undefined, null, 0, -1, 1.5, "4", NaN]) {
+  assert.equal(forkUnit.init({}, bad).inheritedEventCount, 0, `cut ${String(bad)} normalizes to 0`);
+}
 
 // --- auxiliary calls (search / title LLM) ----------------------------------
 // 一次搜索 = 一条 log-only 请求事件；08:59（闲）与 09:01（峰）跨峰谷边界，
@@ -367,6 +425,23 @@ assert.deepEqual(unsorted.events.map((e) => e.t), [1000, 2000]);
 assert.equal(unsorted.header.origin, "main", "absent subagent origin labels main");
 assert.deepEqual(timelineEvents(null).events, []);
 assert.deepEqual(timelineEvents(null).turns, []);
+// a fork's timeline is its own events: the inherited prefix stays out of
+// the detail chart, the turn marks and the auxiliary bill alike
+const forkTurns = [
+  seqd(0, { type: "turn/start", time: 100 }),
+  seqd(1, { type: "assistant/message", time: 150, data: { usage: { inputTokens: 1000 } } }),
+  seqd(2, { type: "turn/end", time: 200 }),
+  seqd(3, { type: "session/title-llm-request", time: 210, data: { system: "s", messages: [] } }),
+  seqd(4, { type: "turn/start", time: 300 }),
+  seqd(5, { type: "assistant/message", time: 350, data: { usage: { inputTokens: 7 } } }),
+  seqd(6, { type: "turn/end", time: 400 }),
+];
+const forkTl = timelineEvents(forkTurns, { inheritedEventCount: 4 });
+assert.deepEqual(forkTl.events.map((e) => e.i), [7], "only the fork's own usage events");
+assert.deepEqual(forkTl.turns, [{ start: 300, end: 400, preview: null }], "the parent's turn boundaries stay out");
+assert.deepEqual(forkTl.aux, [], "the parent's auxiliary requests stay out");
+assert.equal(timelineEvents(forkTurns).events.length, 2, "no cut: the whole log, as before");
+assert.equal(timelineEvents(forkTurns).aux.length, 1);
 
 // turn previews: the opening user message rides the turn record (F1 chips/hover)
 const pv = timelineEvents([

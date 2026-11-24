@@ -31,6 +31,7 @@ Releases are cut by git tag; this file lists the notable changes per release. Th
 - **Range switches showed the previous window under the new label**: the stale-payload guard tested `schema === 3` against schema-4 payloads and never fired.
 - **Pricing page saved against a stale revision**: any other panel's write made the next save bounce 409; writes now read the live revision and retry once.
 - **USD config inflated official estimates**: the global currency re-labelled CNY rates without converting.
+- **Forked sessions re-billed their parent's history**: a seeded session (a fork, or a subagent spawned from the parent's history) opens with a copy of the parent's events, and the fold counted every copy; four such subagents in one evening read 3.5× the provider's bill. The fold now skips the inherited prefix on every read path (stats, session timeline, TUI). Persisted rows re-fold once on load, so earlier days correct themselves.
 
 ## v0.6.1 — 2026-10-19
 

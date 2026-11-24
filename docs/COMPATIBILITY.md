@@ -37,7 +37,7 @@ dsh-pulse 对每一代受支持的 dsh 都是同一份构建：宿主能力在�
 
 - **Store 引擎**（`dsh-client-store`）：以特性探测 + try/catch 加载；没有它时，实时侧栏同步、设置页席位与 store 支撑的仪表盘退场，普通仪表盘照常工作。
 - **设置代际**：插件按结构探测两代，经典 `SettingsProvider`（任意 `register` 且参数个数 ≥ 2，包括第一代 `register/describe/update` 形态）或 0.1.7+ 的 `SettingsForms` 版本。经典宿主写入独立命名空间；0.1.7+ 宿主寻址插件条目并带版本守卫（过期写入返回 HTTP 409）。
-- **投影缓存代际**：自 0.1.7 起插件只注册一种投影形态，并自己走消费者阶梯：重建时用 `coldSnapshot(meta, inheritedEventCount, events)`，会话从未播种时走零 I/O 的 `cachedSnapshot` 行。形态不匹配会触发启动断言失败，并让 `/pulse/stats` 返回 503，不会静默返回空仪表盘。
+- **投影缓存代际**：自 0.1.7 起插件只注册一种投影形态，并自己走消费者阶梯：重建时用 `coldSnapshot(meta, inheritedEventCount, events)`，会话从未播种时走零 I/O 的 `cachedSnapshot` 行。形态不匹配会触发启动断言失败，并让 `/pulse/stats` 返回 503，不会静默返回空仪表盘。`inheritedEventCount` 之前的事件是分叉会话从父会话拷来的继承前缀，折叠一律跳过，用量归父会话（`session/title` 例外，只作显示名）；会话详情与 TUI 同一口径。
 - **数据卡存储**：导入/拉取的覆盖卡存进宿主的 `storageDomain`；读取失败或卡无效时启动日志留一行并回落内置卡，`/pulse/stats` 照常应答；宿主没有存储设施时覆盖只在本次会话内生效。拉取源必须是 http(s)，http 仅接受环回地址。
 - **插件管理器与设置席位**：每个 factory 注册与每个宿主席位独立拒绝；宿主拒绝一个未知槽位不会影响其他席位。
 - **客户端席位**：扩展按席位注册，带 warn-once 降级；崩溃的第三方仪表盘面板只移除自身。

@@ -11,6 +11,7 @@ Releases are cut by git tag; this file lists the notable changes per release. Th
 - **Declarative quota specs (SPI v2)**: the zai / kimi / minimax adapters are now card specs parsed by `spec-engine.js`, plus a new OpenCode Go spec. The settings page probes routes (`POST /pulse/quota/probe`) and accepts custom specs (`quotaSpecs`); quota windows gain a `usd` unit family.
 - **Quick display redo**: one source selector (`footSource`) and two footer styles. Classic is the 0.6.1 face (still the default, no data traffic). Data adds a utilization ring / peak sun-moon icon, the source name (full or brand `short` by row width), unitless today tokens, a hover tip with windows, reset countdowns and fees, a <50%-share suggestion, and a self-drawn float for hosts without the official Float.
 - **Reconciliation script**: `scripts/reconcile.mjs` refolds the stored session logs with the plugin's own fold (the highest log generation per session, fork cut honored) and lists tokens by day, model and session, for when the dashboard and the provider's usage page disagree.
+- **Timeline report calls counted**: `plugin:timeline/request` carries no usage event, so the fold keeps the honest whole — a per-day count tiered by the billed model the request names. The session detail's auxiliary bill shows it (“Timeline ×N”) and never invents tokens for it; counts no longer hide when cost display is off.
 
 ### Changed
 
@@ -33,6 +34,7 @@ Releases are cut by git tag; this file lists the notable changes per release. Th
 - **Pricing page saved against a stale revision**: any other panel's write made the next save bounce 409; writes now read the live revision and retry once.
 - **USD config inflated official estimates**: the global currency re-labelled CNY rates without converting.
 - **Forked sessions re-billed their parent's history**: a seeded session (a fork, or a subagent spawned from the parent's history) opens with a copy of the parent's events, and the fold counted every copy; four such subagents in one evening read 3.5× the provider's bill. The fold now skips the inherited prefix on every read path (stats, session timeline, TUI). Persisted rows re-fold once on load, so earlier days correct themselves.
+- **Compaction runs were missing from the numbers**: the harness's compaction summary bills real tokens under the event's own provider and model (observed: 300k–410k input per run), but the fold counted only `assistant/message` — the dashboard sat a few million tokens under the provider's bill on compaction-heavy days. `compaction/summary` usage now folds like any message, into the day and model it belongs to (stateVersion 13; persisted rows re-fold once on load).
 
 ## v0.6.1 — 2026-10-19
 

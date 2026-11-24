@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, jsx, jsxs } from "./react.js";
 import { resolveRates, priceTier, ruleMaps, ruleFor, tierAtMs } from "../view.js";
-import { fill, fmtTokens, httpError, loadPanels, loadSessionDetailSnapshot, loadViewSnapshot, saveSessionDetailSnapshot, saveViewSnapshot } from "./stores.js";
+import { applyEchoedCard, fill, fmtTokens, httpError, loadPanels, loadSessionDetailSnapshot, loadViewSnapshot, saveSessionDetailSnapshot, saveViewSnapshot } from "./stores.js";
 import { quotaDur } from "./quota.js";
 import { Btn, HoverCardPrim, Tag, relativeTimePrim } from "./adapter.js";
 import { AUX_CALL_FEE, AUX_PRICE_AS, AUX_SHAPE, breaksSegments, fmtClockMs, fxRateOf, isOfficialProvider, keyMatchesFilter, modelFilterSet, modelKey, moneyCny, monthlySetOf, splitModelKey } from "./../view.js";
+import { applyDisplay } from "../view.js";
 		//#region session detail — SessionDetail / SessionsPanel / focusProjectLabel
 
 		function costCell(cost, monthly, costEnabled, t) {
@@ -47,7 +48,7 @@ import { AUX_CALL_FEE, AUX_PRICE_AS, AUX_SHAPE, breaksSegments, fmtClockMs, fxRa
 						httpError(res);
 						return res.json();
 					})
-					.then((data) => { if (alive) setState({ status: "ready", data, error: null }); })
+					.then((data) => { applyEchoedCard(data.card, data.cardOrigin); applyDisplay(data.displayCurrency, data.fx?.usdToCny); if (alive) setState({ status: "ready", data, error: null }); })
 					.catch((error) => { if (alive) setState({ status: "error", data: null, error: String(error?.message ?? error) }); });
 				return () => { alive = false; };
 			}, [sessionId]);
@@ -155,9 +156,9 @@ import { AUX_CALL_FEE, AUX_PRICE_AS, AUX_SHAPE, breaksSegments, fmtClockMs, fxRa
 					if (e.kind === "search") {
 						auxSearchN += 1;
 						auxCost += priceTier({ input: billShape.miss, cacheRead: billShape.hit, output: billShape.out, cacheWrite: 0 }, rates, tier) * conv;
-						/** 2026-11-01 起的官方按次费：¥0.005/次成功搜索，与 token
-						 *  形状无关，按事件自身时刻（北京零点）门控。 */
-						if (e.t >= AUX_CALL_FEE.fromMs) auxCost += AUX_CALL_FEE.cnyPerCall;
+						/** 官方按次费窗口 [2026-11-01, 2026-11-18 12:00)：¥0.005/次
+						 *  成功搜索，与 token 形状无关，按事件自身时刻精确门控。 */
+						if (e.t >= AUX_CALL_FEE.fromMs && e.t < AUX_CALL_FEE.untilMs) auxCost += AUX_CALL_FEE.cnyPerCall;
 					} else {
 						auxTitleN += 1;
 						auxCost += priceTier({ input: e.in || 0, cacheRead: 0, output: e.out || 0, cacheWrite: 0 }, rates, tier) * conv;

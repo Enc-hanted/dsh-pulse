@@ -1,3 +1,5 @@
+		import { activeCurrency, displayAmount } from "../view.js";
+		import { fill } from "./stores.js";
 		//#region csv export
 		/** One CSV cell: bare numbers stay unquoted, anything with a comma/
 		 *  quote/break gets the RFC-4180 quoting. */
@@ -18,15 +20,20 @@
 			anchor.remove();
 			setTimeout(() => URL.revokeObjectURL(url), 1000);
 		}
-		/** Export the loaded window's daily usage table as UTF-8 CSV (BOM +
-		 *  CRLF, so Excel opens it correctly): one row per day with tokens,
-		 *  cache-hit rate, the tier-aware cost estimate and the official spend
-		 *  reconciliation, followed by a totals row. Pure client-side — the
-		 *  payload already carries every number. */
-		export function exportDailyCsv({ t, view, costDays, balanceSeries = [], fromDay, toDay }) {
+		/** Build the loaded window's daily usage table as UTF-8 CSV text (BOM +
+		 *  CRLF, so Excel opens it correctly): a currency title row, one row
+		 *  per day with tokens, cache-hit rate, the tier-aware cost estimate
+		 *  and the official spend reconciliation, followed by a totals row.
+		 *  The money columns follow the display currency — every value rides
+		 *  displayAmount, the single conversion exit (the internal CNY sums
+		 *  stay CNY and convert only at cell-write time). Pure client-side —
+		 *  the payload already carries every number. Split from exportDailyCsv
+		 *  so tests can pin the text without a DOM. */
+		export function buildDailyCsv({ t, view, costDays, balanceSeries = [], fromDay, toDay }) {
 			const costBy = new Map(Array.isArray(costDays) ? costDays.map((d) => [d.key, d]) : []);
 			const spendBy = new Map(Array.isArray(balanceSeries) ? balanceSeries.map((d) => [d.key, d]) : []);
 			const buckets = Array.isArray(view?.buckets) ? view.buckets : [];
+			const cur = activeCurrency();
 			const rows = [];
 			let sumSessions = 0, sumIn = 0, sumRead = 0, sumWrite = 0, sumOut = 0, sumCost = 0, sumSearch = 0, sumTitle = 0;
 			for (const bucket of buckets) {
@@ -52,20 +59,26 @@
 					prompt > 0 ? `${((read / prompt) * 100).toFixed(1)}%` : "",
 					searchCalls > 0 || titleCalls > 0 ? searchCalls : "",
 					searchCalls > 0 || titleCalls > 0 ? titleCalls : "",
-					costVal === null ? "" : Math.round(costVal * 1e6) / 1e6,
-					spendVal === null ? "" : spendVal,
+					costVal === null ? "" : Math.round(displayAmount(costVal) * 1e6) / 1e6,
+					spendVal === null ? "" : Math.round(displayAmount(spendVal) * 1e6) / 1e6,
 					costVal !== null && spendVal !== null
-						? Math.round((spendVal - costVal) * 1e6) / 1e6
+						? Math.round(displayAmount(spendVal - costVal) * 1e6) / 1e6
 						: "",
 				]);
 			}
 			const header = [t("expDate"), t("expSessions"), t("expInput"), t("expCacheRead"),
 				t("expCacheWrite"), t("expOutput"), t("expTotal"), t("expHitRate"), t("expSearch"), t("expTitle"),
-				t("expCost"), t("expSpend"), t("expGap")];
+				fill(t("expCost"), { cur }), fill(t("expSpend"), { cur }), fill(t("expGap"), { cur })];
 			const grand = [t("expSum"), sumSessions, sumIn, sumRead, sumWrite, sumOut,
 				sumIn + sumRead + sumWrite + sumOut, "", sumSearch, sumTitle,
-				Math.round(sumCost * 1e6) / 1e6, "", ""];
-			const csv = "\uFEFF" + [header, ...rows, grand].map((row) => row.map(csvCell).join(",")).join("\r\n");
-			downloadCsv(`pulse-${fromDay}_${toDay}.csv`, csv);
+				Math.round(displayAmount(sumCost) * 1e6) / 1e6, "", ""];
+			// The title row names the currency up front, so a spreadsheet that
+			// hides its header row still says which unit the money columns use.
+			return "\uFEFF" + [[fill(t("expCurrency"), { cur })], header, ...rows, grand]
+				.map((row) => row.map(csvCell).join(",")).join("\r\n");
+		}
+		/** Export buildDailyCsv's text as a file download. */
+		export function exportDailyCsv(args) {
+			downloadCsv(`pulse-${args.fromDay}_${args.toDay}.csv`, buildDailyCsv(args));
 		}
 		//#endregion

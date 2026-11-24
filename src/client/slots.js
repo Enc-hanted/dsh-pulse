@@ -1,22 +1,26 @@
 import { useState, useEffect, useMemo, useRef, useSyncExternalStore, jsx, jsxs } from "./react.js";
 import { recordTokens } from "../view.js";
-import { WIDTH_MAX, WIDTH_MIN, clearSeen, clearViewSnapshot, dataChangedBus, dataChangedSnapshot, fill, fmtTokens, loadPanels, loadStats, loadTheme, loadWidth, markExplicitClose, openOverlay, overlaySnapshot, setOverlayOpen, setTheme, setWidth, statsState, subscribeDataChanged, subscribeOverlay, subscribePanels, subscribeStats, subscribeTheme, subscribeWidth, useBalance, useEscape, usePulseStats } from "./stores.js";
+import { WIDTH_MAX, WIDTH_MIN, clearSeen, clearViewSnapshot, dataChangedBus, dataChangedSnapshot, fetchSettings, fill, fmtTokens, loadFootHint, loadPanels, loadStats, loadTheme, loadWidth, markExplicitClose, openOverlay, overlaySnapshot, saveFootHint, setOverlayOpen, setTheme, setWidth, statsState, subscribeDataChanged, subscribeOverlay, subscribePanels, subscribeSettings, subscribeStats, subscribeTheme, subscribeWidth, useBalance, useEscape, useQuota } from "./stores.js";
 import { focusProjectLabel } from "./charts.js";
 import { PulseDashboard } from "./dashboard.js";
 import { PricingPage } from "./settings.js";
 import { ComparePage } from "./compare.js";
 import { PanelsPage } from "./panels.js";
-import { Btn, primitives } from "./adapter.js";
-import { buildView, cacheHitRateOf, costOf, localDay, moneyCny, sessionModelRows, shiftDay } from "./../view.js";
+import { Btn, Float, floatReady, primitives } from "./adapter.js";
+import { FootFloat, FootGlyph, FootTip, footAriaLabel, footPctClass, footValueText, useFootWindow } from "./foot.js";
+import { quotaEntryName, quotaEntryShort } from "./quota.js";
+import { PEAK_HOURS } from "../pricing-facts.js";
+import { buildView, cacheHitRateOf, costOf, footHintShow, footShareOf, footTodaySplitTokens, footTodayTokens, isOffPeakDay, localDay, moneyCny, pickFootSource, sessionModelRows, shiftDay, tierAtMs } from "./../view.js";
 		//#region slot components
 		/** settings.section page - owner props `{close}`, locale `t` via inject
 		 *  face. Four levels of internal state (no shell navigation API): the
 		 *  dashboard and the pricing / compare / settings pages. Every second
 		 *  level header carries the full tab set (current page highlighted),
 		 *  so the pages are reachable from each other without any pairwise
-		 *  coupling; a fresh open always lands on the dashboard. */
-		export function PulseSection({ t, renderFactorySlot }) {
-			const [page, setPage] = useState("dashboard");
+		 *  coupling; a fresh open lands on `initialPage` (dashboard default —
+		 *  the overlay's panels face opens it on the settings page). */
+		export function PulseSection({ t, renderFactorySlot, initialPage = "dashboard" }) {
+			const [page, setPage] = useState(initialPage);
 			const [theme, setTheme] = useState(loadTheme);
 			/** Live theme sync (no save button, like the panel toggles): the
 			 *  picker writes through the module bus, so the whole section
@@ -107,8 +111,12 @@ import { buildView, cacheHitRateOf, costOf, localDay, moneyCny, sessionModelRows
 				const today = localDay(Date.now());
 				return { from: shiftDay(today, -6), to: today };
 			}, []);
-			const stats = usePulseStats(range.from, range.to);
-			const data = stats.data;
+			/** The footer's window read, NOT the dashboard's store: the summary
+			 *  card speaks a fixed 7-day window, and a remounted transcript card
+			 *  must never retarget the shared store under an open observatory
+			 *  (with the stale guard that read as a perpetual veil). Shared
+			 *  cache + in-flight GET keep N cards on one request. */
+			const { data, error: statsError } = useFootWindow(range.from, range.to);
 			const project = useMemo(
 				() => (data === null ? null : focusProjectLabel(data, focusSession)),
 				[data, focusSession],
@@ -266,8 +274,8 @@ import { buildView, cacheHitRateOf, costOf, localDay, moneyCny, sessionModelRows
 					jsx("span", { className: "dp_cmdWs", title: project ?? undefined, children: project ?? t("projectAll") }),
 				] }),
 				data === null
-					? jsx("div", { className: "dp_cmdNote", children: stats.status === "error"
-						? fill(t("cmdLoadFailed"), { err: stats.error ?? "" }) : t("loading") })
+					? jsx("div", { className: "dp_cmdNote", children: statsError !== null
+						? fill(t("cmdLoadFailed"), { err: statsError }) : t("loading") })
 					: jsxs("div", { className: "dp_cmdHero", children: [
 						jsx("span", { className: "dp_cmdHeroLabel", children: hero === null ? t("cmdNoUsage") : hero.label }),
 						hero !== null && jsx("span", { className: "dp_cmdHeroValue", children: hero.value }),
@@ -327,30 +335,198 @@ import { buildView, cacheHitRateOf, costOf, localDay, moneyCny, sessionModelRows
 			return jsx(PulseSummaryCard, { t, focus, onOpenFull: () => openOverlay("full", focus) });
 		}
 
-		/** sidebar.footer.action - icon rail / labeled row that opens the
-		 *  overlay. In the wide (labeled) form, the current official balance
-		 *  rides along next to the label when the display setting is on. */
+		/** Pointer transit budget: the tip portals to document.body with a
+		 *  6px anchor gap (adapter.js Float), so crossing from the button to
+		 *  the tip fires the button's mouseleave FIRST — an immediate close
+		 *  there made the tip's own actions unreachable. Leaving either side
+		 *  schedules the close; entering either cancels it. Long enough to
+		 *  cross the gap without flicker, short enough to still feel like a
+		 *  tooltip. */
+		const FOOT_TIP_CLOSE_MS = 250;
+		/** Keyboard-focus detector (:focus-visible — true on Tab focus, false
+		 *  on click/hover focus). A host that doesn't know the selector reads
+		 *  as hover-open (no focus hand-off), never as a thrown selector. */
+		const focusVisible = (el) => {
+			try { return typeof el?.matches === "function" && el.matches(":focus-visible"); } catch { return false; }
+		};
+		/** sidebar.footer.action - the quick-display seat: ≤3 segments in the
+		 *  wide form (glyph + source value, today's global tokens), the glyph
+		 *  alone on the rail. The source is the manual selector's choice
+		 *  (config footSource, shared with the TUI strip): A money wears the
+		 *  peak sun / off-peak moon, B quota wears a utilization ring (≥80%
+		 *  warn). Hover/focus floats the details; a <50% seven-day share
+		 *  raises a one-time hint (hysteresis-rearmed). The suggestion's
+		 *  interactive path lives in the tip (US-15: 「去选择」/「不再提示」) —
+		 *  the dot on the button is only a decorative pointer shortcut, so
+		 *  the button never nests interactive elements. */
 		export function PulseFooterAction({ wide, t }) {
 			const [panels, setPanelsLive] = useState(loadPanels);
 			/** Live preference sync: the General-settings balance row (and any
 			 *  other writer) flips the toggle, this chip follows immediately. */
 			useEffect(() => subscribePanels((next) => setPanelsLive({ ...next })), []);
-			const balance = useBalance(panels.footBalance !== false);
-			const showBalance = wide && panels.footBalance !== false
-				&& balance.data !== null && balance.data.ok === true;
-			return jsx("button", {
+			/** 快显样式（localStorage 偏好，web 侧）：classic = 0.6.1 已发布的
+			 *  入口行（图标 + 标签 + 余额胶囊），默认如此——升级用户看到的
+			 *  和上一个版本一样，产品不硬切自己的发布面；data = 数据脸
+			 *  （glyph + 来源 + 今日）。两套面长期共存，各有语义。 */
+			const classic = panels.footStyle !== "data";
+			const enabled = panels.footBalance !== false;
+			const balance = useBalance(enabled);
+			/** classic（默认面）只消费余额：数据面的额度轮询、设置订阅与 7 天
+			 *  窗口读全部按 classic 门控——升级用户的页脚不该为新样式买单
+			 *  （hook 顺序不变，只改 enabled）。 */
+			const quota = useQuota(!classic && enabled);
+			const [settings, setSettings] = useState(null);
+			useEffect(() => {
+				if (classic) return undefined;
+				let cancelled = false;
+				const read = () => fetchSettings().then((data) => { if (!cancelled) setSettings(data); }).catch(() => { /* the selector face degrades to auto */ });
+				read();
+				const unsubscribe = subscribeSettings(read);
+				return () => { cancelled = true; unsubscribe(); };
+			}, [classic]);
+			const today = localDay(Date.now());
+			const { data: footData } = useFootWindow(shiftDay(today, -6), today, !classic);
+			const [tipOpen, setTipOpen] = useState(false);
+			/** Keyboard-opened tips take focus into the tip's action row (the
+			 *  portaled buttons sit at body END — tab-only access would walk
+			 *  the whole document first). Hover-open never steals focus. */
+			const [tipTakeFocus, setTipTakeFocus] = useState(false);
+			const [hintMuted, setHintMuted] = useState(false);
+			const btnRef = useRef(null);
+			/** Reachability contract for the tip's actions (US-15): pointer
+			 *  users cross the anchor gap under the close-delay bridge; the
+			 *  tip's own root cancels the pending close on enter. Keyboard
+			 *  users must NOT lose the tip on blur — blur fires the moment
+			 *  focus leaves the button, while the portaled buttons are only
+			 *  reached a Tab later, so blur here used to unmount the panel
+			 *  under the focus hand-off (focus fell to body, 「不再提示」
+			 *  unreachable). Keyboard/pointer close paths: Escape (tip-only —
+			 *  capture+consume so the observatory overlay's own Escape
+			 *  doesn't chain), any outside pointerdown (Float's dismiss),
+			 *  and the pointer leaving both sides. */
+			const tipCloseTimer = useRef(null);
+			const cancelTipClose = () => {
+				if (tipCloseTimer.current !== null) { clearTimeout(tipCloseTimer.current); tipCloseTimer.current = null; }
+			};
+			const scheduleTipClose = () => {
+				cancelTipClose();
+				tipCloseTimer.current = setTimeout(() => { tipCloseTimer.current = null; setTipOpen(false); }, FOOT_TIP_CLOSE_MS);
+			};
+			const openTip = (takeFocus) => {
+				cancelTipClose();
+				setTipTakeFocus(takeFocus === true);
+				setTipOpen(true);
+			};
+			useEffect(() => cancelTipClose, []);
+			useEscape(tipOpen, () => setTipOpen(false), { capture: true, consume: true });
+			const source = enabled ? pickFootSource(settings?.footSource ?? "", balance.data, quota.data?.providers) : null;
+			const sessions = Array.isArray(footData?.sessions) ? footData.sessions : [];
+			const now = Date.now();
+			const todayTok = footTodayTokens(sessions, now);
+			const todaySplit = footTodaySplitTokens(sessions, now);
+			const share = source !== null ? footShareOf(sessions, source.kind, source.route, now) : null;
+			const hintGate = footHintShow(share?.share ?? null, loadFootHint());
+			const hint = { ...hintGate, share: share?.share ?? null, show: hintGate.show && !hintMuted && !classic };
+			const hintDismissed = hintGate.next?.dismissed === true;
+			useEffect(() => {
+				if (!classic && (loadFootHint()?.dismissed === true) !== hintDismissed) saveFootHint(hintGate.next);
+			}, [hintDismissed, classic]);
+			const peak = tierAtMs(now, PEAK_HOURS) === "peak" && !isOffPeakDay(today);
+			const value = footValueText(source);
+			/** 身份段：官方余额报「余额」，订阅报 plan 名（无应答的来源退回
+			 *  路由名）——不开 tooltip 也知道这个环/这个数属于谁；TUI 条早已
+			 *  如此，这里补齐 web 面的同一叙事。 */
+			const name = source === null ? null
+				: source.kind === "official" ? t("footNameOfficial")
+					: source.entry !== null && source.entry !== undefined ? quotaEntryName(source.entry) : source.route;
+			/** 紧档短名：spec 声明的品牌词（无则全名首词），由容器查询在宽度
+			 *  不足时替换全名——设计好的降级，不是省略号；浮层与读屏仍报全名。 */
+			const shortName = source === null ? null
+				: source.kind === "official" ? t("footNameOfficial")
+					: source.entry !== null && source.entry !== undefined ? quotaEntryShort(source.entry) : source.route;
+			/** 桥接层：tip（无论 portal 还是自绘降级）都渲染在按钮的hover语
+			 *  义之外——按钮的 mouseleave 在指针进 tip 前就已触发（portal 在
+			 *  body，自绘在视觉上越出按钮框），tip 自己的 enter/leave 也要
+			 *  参与取消/排程，桥才闭合。 */
+			const tipBody = jsx("div", {
+				onMouseEnter: cancelTipClose,
+				onMouseLeave: scheduleTipClose,
+				children: jsx(FootTip, {
+					source, peak, todayTok, todaySplit, hint, t, takeFocus: tipTakeFocus,
+					onPickSource: () => { setTipOpen(false); openOverlay("panels", null); },
+					onDismissHint: () => { saveFootHint({ dismissed: true }); setHintMuted(true); },
+				}),
+			});
+			/** 经典面：0.6.1 的发布样原样回归——图标 + 「用量观测台」 +
+			 *  余额胶囊（余额开关开且应答时）。无 tip、无建议点、无数据段；
+			 *  窄 rail 只有图标。hooks 全部在此之上调用完毕，早退不换 hook 序。 */
+			if (classic) {
+				const showBalance = wide && enabled && balance.data !== null && balance.data.ok === true;
+				return jsxs("button", {
+					type: "button",
+					ref: btnRef,
+					className: `dp_footBtn${wide ? "" : " dp_footRail"}`,
+					onClick: () => openOverlay("full", null),
+					"aria-label": t("openOverlay"),
+					title: t("openOverlay"),
+					children: [
+						jsx(primitives.IconDataOutline16, { key: "i", size: 16 }),
+						wide && jsx("span", { key: "l", children: t("nav") }),
+						showBalance && jsx("span", { key: "b", className: "dp_footBalance", children: moneyCny(balance.data.total ?? 0) }),
+					],
+				});
+			}
+			return jsxs("button", {
 				type: "button",
+				ref: btnRef,
 				className: `dp_footBtn${wide ? "" : " dp_footRail"}`,
 				/** 聚焦当前窗口工作区不在这里传会话——观测台挂载后自己向宿主
 				 *  问「主视图当前保留的会话」（retainBy mainView），对两个入
 				 *  口统一生效。 */
 				onClick: () => openOverlay("full", null),
-				"aria-label": t("openOverlay"),
-				title: t("openOverlay"),
-				children: wide
-					? [jsx(primitives.IconDataOutline16, { key: "i", size: 16 }), jsx("span", { key: "l", children: t("nav") }),
-						showBalance && jsx("span", { key: "b", className: "dp_footBalance", children: moneyCny(balance.data.total ?? 0) })]
-					: jsx(primitives.IconDataOutline16, { size: 16 }),
+				onMouseEnter: () => openTip(false),
+				onMouseLeave: () => {
+					// 只豁免「键盘驻留」：:focus-visible 为真即 Tab 焦点还在
+					// 按钮上，鼠标路过不赶走 tip。点击焦点不豁免——那一下
+					// 点击本就打开了观测台，指针离开时 tip 该排程关闭，别
+					// 让它叠在浮层底下等下一次外点/Esc 才消失。
+					if (focusVisible(btnRef.current)) return;
+					scheduleTipClose();
+				},
+				onFocus: (e) => openTip(focusVisible(e?.target)),
+				"aria-label": footAriaLabel({ source, peak, todayTok, todaySplit, t }),
+				children: [
+					jsx(FootGlyph, { key: "g", source, peak, size: 18 }),
+					// 数据脸的空态回退入口行：无可用来源时没有数据段可说，
+					// 退回「图标 + 标签」保住按钮的自述性（glyph 槽在
+					// source=null 时本就渲染同一枚图标）。
+					wide && source === null && jsx("span", { key: "l", children: t("nav") }),
+					wide && name !== null && jsxs("span", { key: "n", className: "dp_footName", title: name, children: [
+						jsx("span", { className: "dp_footNameFull", children: name }),
+						jsx("span", { className: "dp_footNameShort", children: shortName }),
+					] }),
+					wide && value !== null && jsx("span", { key: "v", className: `dp_footValue${footPctClass(source?.entry?.windows?.[0]?.usedPct)}`, children: value }),
+					/** 今日段去单位：标签三级色、数字二级加重——页脚读作数字，
+					 *  单位留给浮层与读屏（footToday 仍是「今日 {v} tok」）。 */
+					wide && source !== null && jsxs("span", { key: "t", className: "dp_footToday", children: [
+						jsx("span", { children: t("footTodayLabel") }),
+						jsx("b", { className: "dp_footTodayNum", children: fmtTokens(todayTok) }),
+					] }),
+					/** 纯装饰（aria-hidden，不可聚焦）：指针点它仍直达来源选择
+					 *  ——便利，不是第二个交互元素；键盘与读屏路径走 tip 里的
+					 *  建议行（US-15）。 */
+					hint.show && jsx("span", {
+						key: "h", className: "dp_footHintDot", "aria-hidden": true,
+						title: t("footHintTitle"),
+						onClick: (e) => { e.stopPropagation(); openOverlay("panels", null); },
+					}),
+					tipOpen && (floatReady()
+						/** 宿主 Float（0.1.7+ primitives）：官方定位/关闭钩子。 */
+						? jsx(Float, { open: true, onClose: () => setTipOpen(false), rootRef: btnRef, anchorRef: btnRef, maxHeight: 320, children: tipBody })
+						/** 降级：自绘浮层——没有 MenuSurface 的宿主以前根本没有
+						 *  tip，hover 只剩原生 title，建议动作完全不可达。 */
+						: jsx(FootFloat, { anchorRef: btnRef, onClose: () => setTipOpen(false), children: tipBody })),
+				],
 			});
 		}
 
@@ -410,14 +586,15 @@ import { buildView, cacheHitRateOf, costOf, localDay, moneyCny, sessionModelRows
 				"aria-label": dataChanged ? t("refreshNew") : t("refresh"), title: dataChanged ? t("refreshNew") : t("refresh"), disabled: stats.busy || stats.from === null,
 				icon: jsx(primitives.IconRefreshOutline16, { size: 15 }),
 			});
-			/** 显式关闭（点 ×）：产品语义是「结束这次观测」——视图快照与数
-			 *  据指纹整份清除，下次打开从初始状态开始。旗标挡住观测台卸载
-			 *  时的补写（清空在前、卸载在后，补写不许让快照复活）。Esc /
-			 *  点背景 / 页面刷新都是收起，不动快照。 */
+			/** 显式关闭（点 ×）分脸：完整观测台的 × 是「结束这次观测」——视
+			 *  图快照与数据指纹整份清除，下次打开从初始状态开始，旗标挡住卸
+			 *  载补写。summary / panels 两张脸从未展示过会被遗忘的东西，× 就
+			 *  只是收起（Esc / 点背景同义）。 */
+			const endObservation = !summary && overlay.mode === "full";
 			const closeExplicit = () => { clearViewSnapshot(); clearSeen(); markExplicitClose(); setOverlayOpen(false); };
 			const closeBtn = jsx(Btn, {
 				variant: "toolbar", size: "sm", fallbackClass: "dp_iconBtn",
-				onClick: closeExplicit, "aria-label": t("close"), title: t("close"),
+				onClick: endObservation ? closeExplicit : () => setOverlayOpen(false), "aria-label": t("close"), title: t("close"),
 				icon: jsx(primitives.IconCloseOutline16, { size: 14 }),
 			});
 			/** Clicking the blank seat outside the card closes the overlay;
@@ -436,7 +613,12 @@ import { buildView, cacheHitRateOf, costOf, localDay, moneyCny, sessionModelRows
 					t, flush: true, focus: overlay.focus,
 					onOpenFull: () => openOverlay("full", overlay.focus),
 				})
-				: dashboard;
+				/** panels 脸 = 完整设置分节（初始落在设置页）：返回观台、定价
+				 *  与对比页签全部可达——「去选择」的闭环不再断在死胡同，费用
+				 *  卡的去设置也一跳即达。分节自带主题同步。 */
+				: overlay.mode === "panels"
+					? jsx(PulseSection, { t, renderFactorySlot, initialPage: "panels" })
+					: dashboard;
 			return jsx("div", {
 				className: "dp_overlaySeat", onClick: onBackdrop,
 				children: jsx("div", {

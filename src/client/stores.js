@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useSyncExternalStore } from "./react.js";
-import { modelKey, providerLabelOf, splitModelKey } from "./../view.js";
+import { applyDisplay, modelKey, providerLabelOf, splitModelKey } from "./../view.js";
+import { applyCard } from "../pricing-facts.js";
 import { createSnapshotStore } from "./adapter.js";
 		//#region utils
 		/** ONE conversion of a failed fetch Response into a thrown Error —
@@ -62,10 +63,57 @@ import { createSnapshotStore } from "./adapter.js";
 			else payloadError(res, data);
 			return { conflict, data };
 		}
+		/** Direct-write skeleton over postSettings for controls that save on
+		 *  every interaction: the live revision is read immediately before the
+		 *  write, and a 409 re-reads ONCE and retries the SAME intent — any
+		 *  other writer (another panel, another window, the host settings
+		 *  page) bumps the entry revision, so with per-interaction writes a
+		 *  mount-time revision is stale as a rule rather than a race (「显示
+		 *  币种修改无效」 was exactly this: the second flip always bounced and
+		 *  the panel reloaded the old value). A second 409 is a genuine
+		 *  concurrent writer — surfaced through onConflict. The patch is the
+		 *  caller's intent snapshot: the retry refreshes only the revision,
+		 *  never re-derives the fields. Invalidation is owned here (before
+		 *  each re-read and after every outcome), so a caller refreshes by
+		 *  simply calling fetchSettings again. */
+		export async function writeSettings(patch, { onConflict } = {}) {
+			invalidateSettings();
+			const fresh = await fetchSettings();
+			const body = { ...patch, revision: typeof fresh?.revision === "number" ? fresh.revision : undefined };
+			let result = await postSettings(body);
+			if (result.conflict) {
+				invalidateSettings();
+				const retried = await fetchSettings();
+				body.revision = typeof retried?.revision === "number" ? retried.revision : undefined;
+				result = await postSettings(body);
+				if (result.conflict) {
+					invalidateSettings();
+					onConflict?.();
+				}
+			} else {
+				invalidateSettings();
+			}
+			return result;
+		}
 		// fmtTokens / fmtClock ride the view.js primitives (their single home);
 		// the clock's null-on-garbage contract replaces the old fake midnight.
 		export { fmtTokens } from "../view.js";
 		export { clockOf as fmtClock } from "../view.js";
+		/** The payload-echoed card's ONE application gate (loadStats' fresh
+		 *  reply, its payload cache, and the shared settings cache all ride
+		 *  it): a card applies only when its own `schemaVersion` matches the
+		 *  grammar this bundle was built against (3), and always inside
+		 *  try/catch. The host validated the card host-side, but version skew
+		 *  is not validation skew — a NEWER host may echo a card this bundle
+		 *  cannot derive (reshaped/renamed sections throw inside applyCard's
+		 *  derive), and letting that throw reject the very fetch that carried
+		 *  good stats data would blank the dashboard over numbers we already
+		 *  hold. Version-skew degradation is deliberately "ignore the card,
+		 *  keep the current facts" — never a white screen. */
+		export function applyEchoedCard(card, origin) {
+			if (card === null || typeof card !== "object" || card.schemaVersion !== 3) return;
+			try { applyCard(card, typeof origin === "string" && origin !== "" ? origin : "imported"); } catch { /* skewed card: keep the current facts */ }
+		}
 		/** Replace `{key}` placeholders in a copy string. */
 		export function fill(text, vars) {
 			return String(text).replace(/\{(\w+)\}/g, (_, key) => (key in vars ? String(vars[key]) : `{${key}}`));
@@ -101,6 +149,20 @@ import { createSnapshotStore } from "./adapter.js";
 		export const EMPTY_RETRY_MAX = 8;
 		export let statsEmptyAttempts = 0;
 		export const payloadCache = new Map();
+		/** Stats freshness driver — the balance and quota cadence (60 s, gated on
+		 *  document visibility) applied to the fold itself. Before this the stats
+		 *  store had NO periodic refetch: the always-mounted footer's 「今日 X tok」
+		 *  froze at the moment the sidebar mounted and only moved when the
+		 *  observatory was reopened (the orange-dot comparison) or the day rolled
+		 *  over. The host serves the fold through a 15 s corpus-keyed cache, so a
+		 *  visible-tab poll costs one local read a minute, never an upstream call.
+		 *  The floor is the fold's own discipline: a step in flight counts once its
+		 *  message commits — live streamed tokens are not durable events. */
+		export const STATS_POLL_MS = 60000;
+		/** One in-flight GET per window across the non-store readers (the footer's
+		 *  own window read): concurrent mounts and the gentle poll share the same
+		 *  promise instead of firing the same aggregation twice. */
+		const statsInflight = new Map();
 		export let statsRetry = null;
 		export function setStatsState(next) {
 			statsState = next;
@@ -141,7 +203,55 @@ import { createSnapshotStore } from "./adapter.js";
 				loadStats(statsState.from ?? from, statsState.to ?? to);
 			}, delay);
 		}
-		export function loadStats(from, to) {
+		/** Validate a /pulse/stats body, apply the echoed card and the display
+		 *  currency it carries, and land it in the payload cache (cachable bodies
+		 *  only; the current key re-inserted newest so LRU eviction never drops
+		 *  it). THE one landing path for every stats reader — loadStats and the
+		 *  footer's fetchStatsPayload — so the envelope shape can never drift
+		 *  between writers again (the footer once read a store-written entry as a
+		 *  sessionless body and silently showed zero tokens). */
+		function landStatsPayload(key, data) {
+			// Schema 4 hosts add `corpusSessions` to the schema-3 payload;
+			// schemas 3 and 2 (previous releases) stay readable so a rolling
+			// upgrade never hard-fails on a version skew.
+			if (data?.schema !== 4 && data?.schema !== 3 && data?.schema !== 2) throw new Error("unexpected payload schema");
+			applyEchoedCard(data.card, data.cardOrigin);
+			applyDisplay(data.displayCurrency, data.fx?.usdToCny);
+			if (isCachable(data)) {
+				statsEmptyAttempts = 0;
+				payloadCache.delete(key);
+				payloadCache.set(key, { at: Date.now(), payload: data });
+				while (payloadCache.size > 4) payloadCache.delete(payloadCache.keys().next().value);
+			} else {
+				payloadCache.delete(key);
+			}
+			return data;
+		}
+		/** The footer's window read: one shared in-flight GET per window that
+		 *  lands through the same path as the store, without touching statsState
+		 *  (the always-mounted footer must not hijack the dashboard's window).
+		 *  Resolves the validated body; rejects on HTTP or schema failure. */
+		export function fetchStatsPayload(from, to) {
+			const key = `${from}:${to}`;
+			const existing = statsInflight.get(key);
+			if (existing !== undefined) return existing;
+			const flight = fetch(`/pulse/stats?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, {
+				credentials: "same-origin",
+				headers: { accept: "application/json" },
+			}).then(async (res) => {
+				httpError(res);
+				return res.json();
+			}).then((data) => landStatsPayload(key, data))
+				.finally(() => statsInflight.delete(key));
+			statsInflight.set(key, flight);
+			return flight;
+		}
+		/** `quiet: true` is the visibility-gated poll's form: it refreshes the
+		 *  data without flipping `busy` (the refresh button and the panel slots
+		 *  must not blink once a minute) and defers to a load already in flight
+		 *  instead of aborting it. */
+		export function loadStats(from, to, { quiet = false } = {}) {
+			if (quiet && statsState.busy) return;
 			const seq = ++statsSeq;
 			const key = `${from}:${to}`;
 			if (statsAbort !== null) statsAbort.abort();
@@ -149,6 +259,8 @@ import { createSnapshotStore } from "./adapter.js";
 			const entry = payloadCache.get(key);
 			const cached = entry !== undefined && Date.now() - entry.at < PAYLOAD_CACHE_MS ? entry.payload : undefined;
 			if (entry !== undefined && cached === undefined) payloadCache.delete(key);
+			if (cached !== undefined) applyEchoedCard(cached.card, cached.cardOrigin);
+			if (cached !== undefined) applyDisplay(cached.displayCurrency, cached.fx?.usdToCny);
 			setStatsState({
 				...statsState,
 				key,
@@ -156,7 +268,7 @@ import { createSnapshotStore } from "./adapter.js";
 				to,
 				status: cached !== undefined ? "ready" : statsState.data === null ? "loading" : "ready",
 				data: cached !== undefined ? cached : statsState.data,
-				busy: true,
+				busy: quiet ? statsState.busy : true,
 				error: null,
 			});
 			fetch(`/pulse/stats?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, {
@@ -165,22 +277,10 @@ import { createSnapshotStore } from "./adapter.js";
 				signal: statsAbort.signal,
 			}).then(async (res) => {
 				httpError(res);
-				const data = await res.json();
-				// Schema 4 hosts add `corpusSessions` to the schema-3 payload;
-				// schemas 3 and 2 (previous releases) stay readable so a rolling
-				// upgrade never hard-fails on a version skew.
-				if (data?.schema !== 4 && data?.schema !== 3 && data?.schema !== 2) throw new Error("unexpected payload schema");
+				return res.json();
+			}).then((data) => {
 				if (seq !== statsSeq) return;
-				if (isCachable(data)) {
-					statsEmptyAttempts = 0;
-					payloadCache.delete(key);
-					payloadCache.set(key, { at: Date.now(), payload: data });
-					// The current key was just re-inserted (newest), so LRU
-					// eviction never drops it.
-					while (payloadCache.size > 4) payloadCache.delete(payloadCache.keys().next().value);
-				} else {
-					payloadCache.delete(key);
-				}
+				landStatsPayload(key, data);
 				setStatsState({ key, from, to, status: "ready", data, error: null, busy: false, emptyRetry: false });
 				if (!isCachable(data)) scheduleEmptyRetry(from, to);
 			}).catch((error) => {
@@ -188,12 +288,19 @@ import { createSnapshotStore } from "./adapter.js";
 				setStatsState({ ...statsState, key, from, to, status: "error", error: String(error?.message ?? error), busy: false, emptyRetry: false });
 			});
 		}
-		/** Read the shared store; triggers a load when this mount's window differs. */
+		/** Read the shared store; triggers a load when this mount's window differs,
+		 *  then keeps it fresh on the balance/quota cadence — a visible-tab poll
+		 *  every STATS_POLL_MS plus a refetch the moment the tab is visible again
+		 *  (the user comes back to find today's tokens already current). */
 		export function usePulseStats(from, to) {
 			const state = useSyncExternalStore(subscribeStats, () => statsState);
 			const key = `${from}:${to}`;
 			useEffect(() => {
 				if (statsState.key !== key || statsState.status === "error") loadStats(from, to);
+				const poll = () => { if (document.visibilityState === "visible" && statsState.key === key) loadStats(from, to, { quiet: true }); };
+				const timer = setInterval(poll, STATS_POLL_MS);
+				document.addEventListener("visibilitychange", poll);
+				return () => { clearInterval(timer); document.removeEventListener("visibilitychange", poll); };
 			}, [key, from, to]);
 			return { ...state, reload: () => loadStats(from, to) };
 		}
@@ -304,6 +411,15 @@ import { createSnapshotStore } from "./adapter.js";
 		 *  is fresh. */
 		export const SETTINGS_CACHE_MS = 30000;
 		export let settingsCache = { at: 0, value: null, inflight: null };
+		const settingsListeners = new Set();
+		/** Live settings face: surfaces that render config-derived facts (the
+		 *  footer's source selector) re-read whenever a save invalidates the
+		 *  cache or a fresh read lands. */
+		export function subscribeSettings(listener) {
+			settingsListeners.add(listener);
+			return () => settingsListeners.delete(listener);
+		}
+		const notifySettings = () => { for (const listener of [...settingsListeners]) listener(); };
 		export function fetchSettings(force = false) {
 			if (settingsCache.inflight !== null) return settingsCache.inflight;
 			if (!force && settingsCache.value !== null && Date.now() - settingsCache.at < SETTINGS_CACHE_MS) {
@@ -311,11 +427,11 @@ import { createSnapshotStore } from "./adapter.js";
 			}
 			settingsCache.inflight = fetch("/pulse/settings", { credentials: "same-origin", headers: { accept: "application/json" } })
 				.then((res) => { httpError(res); return res.json(); })
-				.then((data) => { settingsCache.value = data; settingsCache.at = Date.now(); return data; })
+				.then((data) => { applyEchoedCard(data.card, data.cardOrigin); applyDisplay(data.displayCurrency, data.fx?.usdToCny); settingsCache.value = data; settingsCache.at = Date.now(); notifySettings(); return data; })
 				.finally(() => { settingsCache.inflight = null; });
 			return settingsCache.inflight;
 		}
-		export function invalidateSettings() { settingsCache.value = null; settingsCache.at = 0; }
+		export function invalidateSettings() { settingsCache.value = null; settingsCache.at = 0; notifySettings(); }
 		//#endregion
 
 		//#region local preference buses
@@ -387,6 +503,19 @@ import { createSnapshotStore } from "./adapter.js";
 		 *  it without a remount. */
 		export function subscribePanels(listener) {
 			return panelsBus.subscribe(listener);
+		}
+		/** The quick-display share suggestion's one-time memory: dismissed
+		 *  stays dismissed until the share recovers (hysteresis rearms it in
+		 *  the view layer). Pure preference, no usage data. */
+		export const FOOT_HINT_STORAGE = "dsh-pulse:footHint";
+		export function loadFootHint() {
+			try {
+				const parsed = JSON.parse(localStorage.getItem(FOOT_HINT_STORAGE) ?? "null");
+				return parsed !== null && typeof parsed === "object" ? parsed : null;
+			} catch { return null; }
+		}
+		export function saveFootHint(value) {
+			try { localStorage.setItem(FOOT_HINT_STORAGE, JSON.stringify(value)); } catch { /* non-fatal */ }
 		}
 		//#endregion
 

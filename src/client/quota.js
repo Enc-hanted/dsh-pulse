@@ -42,6 +42,14 @@ import { quotaBurn, quotaCalibrate, quotaCoverage, quotaFeeShare, quotaMonthlyFe
 		/** Display face: plan name once a query answered, else the adapter's
 		 *  label, else the catalog/route name. */
 		export const quotaEntryName = (entry) => entry.plan?.name ?? entry.label ?? entry.displayName ?? entry.provider;
+		/** The squeezed footer tier's compact name: the spec's declared short
+		 *  brand word, else the full name's first word — a truncation-free
+		 *  degradation that invents nothing. */
+		export const quotaEntryShort = (entry) => {
+			if (typeof entry?.short === "string" && entry.short !== "") return entry.short;
+			const full = quotaEntryName(entry);
+			return typeof full === "string" && full !== "" ? full.trim().split(/\s+/)[0] : full;
+		};
 		/**
 		 * Rank quota providers for the collapsed bar: today's dsh-side tokens
 		 * lead (the actively-burning plans first), then the plan's own weekly
@@ -156,7 +164,7 @@ import { quotaBurn, quotaCalibrate, quotaCoverage, quotaFeeShare, quotaMonthlyFe
 				const cal = coverage.state !== "external" && w.kind === "tokens" ? quotaCalibrate(w.usedPct, local.total) : null;
 				const burn = quotaBurn(series.filter((p) => p.provider === active.provider && p.window === w.id), now, w.resetsAt ?? null);
 				const usedText = w.used !== null && w.used !== undefined && w.total !== null && w.total !== undefined
-					? `${w.used}/${w.total} ${t("quotaKindRequests")}`
+					? (w.kind === "usd" ? `${quotaMoney(w.used, "USD")} / ${quotaMoney(w.total, "USD")}` : `${w.used}/${w.total} ${t("quotaKindRequests")}`)
 					: null;
 				const resetText = w.resetsAt !== null && w.resetsAt !== undefined && w.resetsAt > now
 					? fill(t("quotaResetIn"), { v: quotaDur(w.resetsAt - now, t) })

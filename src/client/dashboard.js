@@ -201,10 +201,11 @@ import { AUX_CALL_FEE, AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, cost
 					: (s !== null && Math.abs(s - 1) <= 0.03
 						? fill(t("auxCalAligned"), { s: s.toFixed(2), n: calib.samples })
 						: fill(t("auxCalCalibrated"), { s: s === null ? "1.00" : s.toFixed(2), n: calib.samples }));
-				/** 2026-11-01 起的官方按次费已计入估算：窗口到达该日才提，
-				 *  历史窗口不加这句噪音。 */
-				const feePart = data !== null && typeof data.toDay === "string" && data.toDay >= AUX_CALL_FEE.from
-					? ` · ${t("auxFeeNote")}` : "";
+				/** 官方按次费窗口 [from, untilDay) 与展示窗口相交才提，
+				 *  历史/窗口后不加这句噪音；文案数字由卡模板生成。 */
+				const feePart = data !== null && typeof data.toDay === "string"
+					&& data.toDay >= AUX_CALL_FEE.from && (data.fromDay ?? data.toDay) < AUX_CALL_FEE.untilDay
+					? ` · ${fill(t("auxFeeNote"), { from: AUX_CALL_FEE.from, until: `${AUX_CALL_FEE.untilDay} ${AUX_CALL_FEE.until.slice(11, 16)}`, fee: AUX_CALL_FEE.cnyPerCall })}` : "";
 				return `${shapePart} · ${statusText}${feePart}`;
 			}, [calib, data, t]);
 
@@ -339,9 +340,14 @@ import { AUX_CALL_FEE, AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, cost
 			/** Workspace focus (`focusSession`, from the `/pulse` menu row):
 			 *  the first payload that can name the invoking session's project
 			 *  auto-selects it in the 项目 filter — once, and only until the
-			 *  user picks a filter themselves. */
+			 *  user picks a filter themselves. The auto-selection is silent no
+			 *  more: when it fires, the toolbar grows a one-line hint (「已自动
+			 *  聚焦工作区 …」 with a 查看全部 escape) so the heuristic reads as
+			 *  help, not a guess. Restored snapshots keep no hint — that view
+			 *  is the user's by then. */
 			const [projectTouched, setProjectTouched] = useState(snapshot?.projectTouched === true);
-			const setProjectUser = (value) => { setProjectTouched(true); setProject(value); };
+			const [focusNote, setFocusNote] = useState(null);
+			const setProjectUser = (value) => { setProjectTouched(true); setProject(value); setFocusNote(null); };
 			/** Model multi-select (the legend-linked filter): an id array, empty
 			 *  = all. Legend clicks and picker clicks toggle the same set. */
 			const [models, setModels] = useState(() => (Array.isArray(snapshot?.models) ? snapshot.models.filter((k) => typeof k === "string") : []));
@@ -613,6 +619,12 @@ import { AUX_CALL_FEE, AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, cost
 			focusDataRef.current = data;
 			useEffect(() => {
 				if (focusAttemptedRef.current || focusDataRef.current === null) return undefined;
+				const fresh = focusDataRef.current;
+				/** 只对与工具栏窗口一致的载荷下判断：切换/回退后的旧载荷既不能
+				 *  证明聚焦该做，也不能证明它失败——交接回退正是靠这条等到新
+				 *  窗口的载荷再试。 */
+				if (typeof fresh.fromDay === "string" && typeof fresh.toDay === "string"
+					&& (fresh.fromDay !== range.from || fresh.toDay !== range.to)) return undefined;
 				const explicitId = focusSession !== null && focusSession !== undefined && focusSession.id !== null && focusSession.id !== undefined
 					? String(focusSession.id) : null;
 				/** 开关只管左下角按钮（探测）这条路；/pulse 显式会话不受它管。 */
@@ -626,6 +638,7 @@ import { AUX_CALL_FEE, AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, cost
 					if (label === null) return false;
 					setProject(label);
 					setProjectTouched(true);
+					setFocusNote(label);
 					return true;
 				};
 				const logMiss = () => {
@@ -634,6 +647,15 @@ import { AUX_CALL_FEE, AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, cost
 					console.debug(`[dsh-pulse:focus] miss: source=${sessionsSourceInfo()}, candidates=${candidateIds.length}${sample}`);
 				};
 				if (attempt()) return undefined;
+				/** 交接回退：记住的范围里看不到被调用的会话（比如记住的是
+				 *  「今天」而会话昨天活跃）时，工作区聚焦与明细展开会双双落
+				 *  空、静默退回记住的筛选。退回默认 7 天再试一次——找到会话
+				 *  则保持记住的范围不动，连续性让位给入口自身的语义。 */
+				if (explicitId !== null && rangeKey !== "7") {
+					focusAttemptedRef.current = false;
+					setRangeKey("7");
+					return undefined;
+				}
 				/** 显式会话解析不出标签是数据问题，没有可等的事件，落一行诊
 				 *  断即止。 */
 				if (explicitId !== null) {
@@ -657,7 +679,7 @@ import { AUX_CALL_FEE, AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, cost
 				}
 				logMiss();
 				return undefined;
-			}, [focusSession, project, projectTouched, data === null, panels.focusWorkspace]);
+			}, [data, focusSession, project, projectTouched, panels.focusWorkspace, rangeKey, range.from, range.to]);
 
 
 
@@ -704,14 +726,53 @@ import { AUX_CALL_FEE, AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, cost
 				!floatActions && (headerExtra !== undefined && headerExtra !== null ? headerExtra : null),
 			] });
 
-			/** A payload whose window differs from the toolbar's selection is
-			 *  a not-yet-replaced leftover from the previous range — render
-			 *  the loading treatment, never last window's numbers under the
-			 *  new label. Schema-2 payloads can't be verified; they render. */
-			const staleWindow = data !== null && data.schema === 3
+			/** The toolbar's selected range as one label (hero card + status bar). */
+			const rangeLabel = rangeKey === "custom"
+				? `${range.from} ~ ${range.to}`
+				: t(rangeKey === "1" ? "range1" : rangeKey === "7" ? "range7"
+					: rangeKey === "30" ? "range30" : rangeKey === "90" ? "range90" : "range365");
+			/** A payload whose window differs from the toolbar's selection is a
+			 *  not-yet-replaced leftover from the previous range. This guard used
+			 *  to test `schema === 3` while payloads have been schema 4 since
+			 *  0.4.4 — it never fired, so every range switch showed last window's
+			 *  figures under the new label until the fold landed. Any payload that
+			 *  states its window is checked; a schema-2 body cannot be verified
+			 *  and renders. */
+			const staleWindow = data !== null && typeof data.fromDay === "string" && typeof data.toDay === "string"
 				&& (data.fromDay !== range.from || data.toDay !== range.to);
+			/** Range switch in flight or failed: the previous window stays
+			 *  mounted, veiled (.dp_stale), under an explicit status bar — never
+			 *  readable as the new range, never a blank skeleton for a
+			 *  multi-second fold. The veil keys on the store's `busy` flag (raised
+			 *  in the same update that retargets the window) plus the key itself
+			 *  for the one frame before that update; a client-cache hit swaps the
+			 *  data in that very update, so it never flashes. */
+			const switching = staleWindow && (stats.busy === true || stats.key !== `${range.from}:${range.to}`);
+			const switchFailed = staleWindow && stats.status === "error";
+			const rootProps = {
+				ref: rootRef,
+				className: `dp_root${switching || switchFailed ? " dp_stale" : ""}`,
+				"data-dp-theme": theme,
+				"aria-busy": switching ? true : undefined,
+			};
+			const staleBar = switching || switchFailed
+				? jsxs("div", { className: `dp_staleBar${switchFailed ? " dp_staleErr" : ""}`, role: "status", children: [
+					jsx("span", { children: fill(t(switchFailed ? "staleError" : "loadingWindow"), { w: rangeLabel }) }),
+					switchFailed
+						? jsx(Btn, { variant: "outline", size: "sm", fallbackClass: "dp_miniBtn", onClick: () => stats.reload(), children: t("retry") })
+						: jsx("span", { className: "dp_staleTrack", "aria-hidden": true }),
+				] })
+				: null;
+			/** 聚焦提示：自动聚焦刚生效时的一行说明 + 一键「查看全部」——
+			 *  启发式说出来才算帮忙。用户动过筛选（setProjectUser）即消失。 */
+			const focusHint = focusNote !== null && project !== ""
+				? jsxs("div", { className: "dp_focusNote", children: [
+					jsx("span", { children: fill(t("workspaceFocused"), { p: focusNote }) }),
+					jsx(Btn, { fallbackClass: "dp_miniBtn", variant: "outline", size: "sm", onClick: () => setProjectUser(""), children: t("workspaceAll") }),
+				] })
+				: null;
 			if (stats.status === "error" && data === null) {
-				return jsxs("div", { ref: rootRef, className: "dp_root", "data-dp-theme": theme, children: [
+				return jsxs("div", { ...rootProps, children: [
 					header,
 					jsxs("div", { className: "dp_stateBox", children: [
 						jsx(primitives.IconWarningOutline16, { size: 22, className: "dp_stateIcon" }),
@@ -721,8 +782,8 @@ import { AUX_CALL_FEE, AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, cost
 					] }),
 				] });
 			}
-			if (data === null || stats.status === "loading" || staleWindow) {
-				return jsxs("div", { ref: rootRef, className: "dp_root", "data-dp-theme": theme, children: [
+			if (data === null || stats.status === "loading") {
+				return jsxs("div", { ...rootProps, children: [
 					header,
 					// The toolbar stays interactive across switches (retargeting
 					// is cheap: the store aborts and re-sequences); only the
@@ -759,7 +820,7 @@ import { AUX_CALL_FEE, AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, cost
 				? data.corpusSessions === 0
 				: (data.sessions ?? []).length === 0;
 			if (corpusEmpty) {
-				return jsxs("div", { ref: rootRef, className: "dp_root", "data-dp-theme": theme, children: [
+				return jsxs("div", { ...rootProps, children: [
 					header,
 					jsxs("div", { className: "dp_stateBox", children: [
 						jsx(primitives.IconDataOutline16, { size: 22, className: "dp_stateIcon" }),
@@ -775,9 +836,10 @@ import { AUX_CALL_FEE, AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, cost
 			 *  window is usually the freshly-booted race), so it is framed as
 			 *  "not yet". */
 			if ((data.sessions ?? []).length === 0) {
-				return jsxs("div", { ref: rootRef, className: "dp_root", "data-dp-theme": theme, children: [
+				return jsxs("div", { ...rootProps, children: [
 					header,
 					jsx(Toolbar, { rangeKey, setRangeKey, custom, setCustom, project, setProject: setProjectUser, knownProjects: view.knownProjects, models, onModelToggle: toggleModel, onModelClear: clearModels, knownModels: view.knownModels, names, t, filterSlot: renderPanelsSlot }),
+					staleBar,
 					jsxs("div", { className: "dp_stateBox", children: [
 						jsx(primitives.IconClockOutline16, { size: 22, className: "dp_stateIcon" }),
 						jsx("span", { className: "dp_stateTitle", children: t("windowEmptyTitle") }),
@@ -786,9 +848,11 @@ import { AUX_CALL_FEE, AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, cost
 				] });
 			}
 			if (!view.hasData) {
-				return jsxs("div", { ref: rootRef, className: "dp_root", "data-dp-theme": theme, children: [
+				return jsxs("div", { ...rootProps, children: [
 					header,
 					jsx(Toolbar, { rangeKey, setRangeKey, custom, setCustom, project, setProject: setProjectUser, knownProjects: view.knownProjects, models, onModelToggle: toggleModel, onModelClear: clearModels, knownModels: view.knownModels, names, t, filterSlot: renderPanelsSlot }),
+					staleBar,
+					focusHint,
 					jsxs("div", { className: "dp_stateBox", children: [
 						jsx(primitives.IconSearchOutline16, { size: 20, className: "dp_stateIcon" }),
 						jsx("span", { className: "dp_stateTitle", children: t("filteredTitle") }),
@@ -877,9 +941,11 @@ import { AUX_CALL_FEE, AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, cost
 			const dimWrap = (node) => (expandX !== null && heroOpenable && node !== null && node !== undefined && node !== false
 				? jsx("div", { className: "dp_blurSec", children: node })
 				: node);
-			return jsxs("div", { ref: rootRef, className: "dp_root", "data-dp-theme": theme, children: [
+			return jsxs("div", { ...rootProps, children: [
 				header,
 				jsx(Toolbar, { rangeKey, setRangeKey, custom, setCustom, project, setProject: setProjectUser, knownProjects: view.knownProjects, models, onModelToggle: toggleModel, onModelClear: clearModels, knownModels: view.knownModels, names, t, filterSlot: renderPanelsSlot }),
+				staleBar,
+				focusHint,
 				showChips && jsx("div", {
 					className: "dp_chips",
 					children: jsx(HeroCard, {
@@ -897,10 +963,7 @@ import { AUX_CALL_FEE, AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, cost
 						openX: expandX,
 						onHot: openExpandX,
 						onConfigure,
-						rangeLabel: rangeKey === "custom"
-							? `${range.from} ~ ${range.to}`
-							: t(rangeKey === "1" ? "range1" : rangeKey === "7" ? "range7"
-								: rangeKey === "30" ? "range30" : rangeKey === "90" ? "range90" : "range365"),
+						rangeLabel,
 						activityLine,
 						t,
 					}),

@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useSyncExternalStore, jsx, jsxs } from "./react.js";
-import { fetchSettings, fill, invalidateSettings, loadStats, payloadCache, postSettings, statsState, subscribeStats } from "./stores.js";
-import { Btn, Input, PillBtn } from "./adapter.js";
+import { fetchSettings, fill, invalidateSettings, loadStats, payloadCache, writeSettings, statsState, subscribeStats } from "./stores.js";
+import { Btn, Checkbox, Input, PillBtn } from "./adapter.js";
 import { PEAK_HOURS } from "../pricing-facts.js";
 import { DEFAULT_USD_TO_CNY, accentEntryOf, buildView, daysBetween, familyRouteOf, localDay, modelAccentMap, modelKey, moneyCny, providerLabelOf, shiftDay } from "./../view.js";
 		//#region settings page
@@ -265,13 +265,15 @@ import { DEFAULT_USD_TO_CNY, accentEntryOf, buildView, daysBetween, familyRouteO
 
 			const persist = (payload) => {
 				setState((s) => ({ ...s, saving: true, saved: false, refold: false, error: null }));
-				// The revision observed at read time: a revisioned host refuses
-				// the write when the section moved underneath us (409/conflict).
-				postSettings({ ...payload, revision: state.revision }, {
+				// payload 只是用户意图；revision 由 writeSettings 写前现读，
+				// 并在良性 409 时自动重试一次。挂载时读的 revision 在同页
+				// 其他面板（Seg/开关走 writeSettings）任何一次写入后都会
+				// 过期——旧写法让定价页每次保存都稳定撞 409，还把误导的
+				// 「已被其他窗口修改」甩给用户。
+				writeSettings(payload, {
 					onConflict: () => {
-						// Another surface won the race. Drop the shared settings
-						// cache so the reload observes the fresh revision, and
-						// refresh the local copy for a clean retry.
+						// 真正的并发写者赢了。丢掉共享缓存、刷新本地副本，
+						// 让下一次保存从新鲜值出发。
 						invalidateSettings();
 						load();
 					},
@@ -481,15 +483,15 @@ import { DEFAULT_USD_TO_CNY, accentEntryOf, buildView, daysBetween, familyRouteO
 				] });
 			} else {
 				body = jsxs("div", { className: "dp_setGrid", children: [
-					jsxs("label", { className: "dp_setSwitch", children: [
-						jsx("input", {
-							type: "checkbox",
-							checked: state.costEnabled === true,
-							disabled: !state.writable || state.saving,
-							onChange: (e) => setState((s) => ({ ...s, costEnabled: e.target.checked, saved: false })),
-						}),
-						jsx("span", { children: t("costEnabledLabel") }),
-					] }),
+					// adapter Checkbox（官方宿主走 primitive）——设置页的开关
+					// 不再各写各的裸 label+input；onChange 语义是 checked 布尔。
+					jsx(Checkbox, {
+						className: "dp_setSwitch",
+						checked: state.costEnabled === true,
+						disabled: !state.writable || state.saving,
+						onChange: (checked) => setState((s) => ({ ...s, costEnabled: checked, saved: false })),
+						label: t("costEnabledLabel"),
+					}),
 					jsx("span", { className: "dp_costNote", children: t("costEnabledHint") }),
 					!state.hasCatalog && jsx("span", { className: "dp_costNote", children: t("setCatalogEmpty") }),
 					jsx("span", { className: "dp_costNote", children: t("setPeakNote") }),
@@ -560,7 +562,8 @@ import { DEFAULT_USD_TO_CNY, accentEntryOf, buildView, daysBetween, familyRouteO
 				] });
 			}
 			return jsxs("div", { className: "dp_setPanel", children: [
-				jsx("div", { className: "dp_setSub", children: t("setSub") }),
+				jsx("div", { className: "dp_setSub", children: t("setTitle") }),
+				jsx("span", { className: "dp_setMsg", children: t("setSub") }),
 				body,
 			] });
 		}

@@ -367,7 +367,9 @@ import { DEFAULT_USD_TO_CNY, buildView, fmtCost, localDay, modelKey, niceMax, qu
 			const manualRow = (m) => {
 				const field = (label, key) => jsxs("div", { className: "dp_setField", children: [
 					jsx("span", { className: "dp_setLabel", children: label }),
-					jsx("input", {
+					// adapter Input（官方宿主走 primitive，包一层 span）——与
+					// 本行名称字段同律，不再一个面板两种输入件。
+					jsx(Input, {
 						className: "dp_setInput", inputMode: "decimal",
 						value: m[key],
 						onChange: (e) => patchManual(m.id, (row) => ({ ...row, [key]: Number(e.target.value) || 0 })),
@@ -443,7 +445,8 @@ import { DEFAULT_USD_TO_CNY, buildView, fmtCost, localDay, modelKey, niceMax, qu
 			const rowView = (r) => (r.origin === "rule" ? ruleRow(r) : r.origin === "sub" ? subRow(r) : manualRow(r));
 
 			return jsxs("div", { className: "dp_setPanel", children: [
-				jsx("div", { className: "dp_setSub", children: t("cmpSub") }),
+				jsx("div", { className: "dp_setSub", children: t("cmpTitle") }),
+				jsx("span", { className: "dp_setMsg", children: t("cmpSub") }),
 				jsxs("div", { className: "dp_cmpControls", children: [
 					paramControl(t("cmpInput"), "input", 0.1, 1000, 0.1, 1e9),
 					paramControl(t("cmpRatio"), "ratio", 0, 50, 0.01),

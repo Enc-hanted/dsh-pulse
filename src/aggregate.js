@@ -225,7 +225,7 @@ export const pulseUsageSchema = z.object({
    *  stay byte-identical without it. */
   label: z.string().optional(),
   /** Title of the task tree the session's timeline plugin last reported
-   *  (`plugin:timeline/tree`): the collaboration panel names a session's
+   *  (`plugin:timeline/tree`): the family view names a session's
    *  timeline work by it. Absent until the log carries one. */
   timelineTitle: z.string().optional(),
   /** Formal team members the session spawned (Agent Teams `team/member`):

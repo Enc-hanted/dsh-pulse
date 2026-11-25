@@ -2,7 +2,7 @@
 
 Releases are cut by git tag; this file lists the notable changes per release. The user-facing overview is in the [README](README.md); host-generation notes are in [Compatibility](docs/en/COMPATIBILITY.md).
 
-## v0.6.2 — 2026-11-24
+## v0.6.2 — 2026-11-25
 
 ### Added
 
@@ -12,7 +12,7 @@ Releases are cut by git tag; this file lists the notable changes per release. Th
 - **Quick display redo**: one source selector (`footSource`) and two footer styles. Classic is the 0.6.1 face (still the default, no data traffic). Data adds a utilization ring / peak sun-moon icon, the source name (full or brand `short` by row width), unitless today tokens, a hover tip with windows, reset countdowns and fees, a <50%-share suggestion, and a self-drawn float for hosts without the official Float.
 - **Reconciliation script**: `scripts/reconcile.mjs` refolds the stored session logs with the plugin's own fold (the highest log generation per session, fork cut honored) and lists tokens by day, model and session, for when the dashboard and the provider's usage page disagree.
 - **Timeline report calls counted**: `plugin:timeline/request` carries no usage event, so the fold keeps the honest whole — a per-day count tiered by the billed model the request names. The session detail's auxiliary bill shows it (“Timeline ×N”) and never invents tokens for it; counts no longer hide when cost display is off.
-- **Collaboration attribution**: a subagent row goes by its own descriptor label — its LLM title is a fragment of the delegation prompt, and a forked one carried the parent's title outright — sits right after the parent that spawned it (nested ones included), and a parent row summarizes its direct children (count, tokens, share). A new **Collaboration** panel lists every family across workspaces (member label, model, tokens, off-peak share, share of the family's subagent tokens, the head's team member names) and the timeline work rows (task tree title, reports, failures), with “Open in Timeline” on the on-screen session. Timeline report outcomes are folded as plain day counts (`timelineReports` / `timelineFailures`); the session detail shows “failed ×N”. Nothing is attributed per task: usage events carry no task id.
+- **Collaboration attribution**: a subagent row goes by its own descriptor label — its LLM title is a fragment of the delegation prompt, and a forked one carried the parent's title outright — sits right after the parent that spawned it (nested ones included), and a parent row summarizes its direct children (count, tokens, share). Timeline report outcomes are folded as plain day counts (`timelineReports` / `timelineFailures`); the session detail shows “failed ×N”. Nothing is attributed per task: usage events carry no task id.
 
 ### Changed
 

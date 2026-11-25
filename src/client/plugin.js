@@ -1,6 +1,6 @@
 import { useState, useEffect, jsx, jsxs } from "./react.js";
 import { NS, en, zh } from "./locale.js";
-import { loadPanels, loadTheme, markSessionsInjectFired, markSessionsReady, openOverlay, savePanels, setSessionsSource, setTheme, setTimelineLink, subscribePanels, subscribeTheme } from "./stores.js";
+import { loadPanels, loadTheme, markSessionsInjectFired, markSessionsReady, openOverlay, savePanels, setSessionsSource, setTheme, subscribePanels, subscribeTheme } from "./stores.js";
 import { PulseDashboard } from "./dashboard.js";
 import { PricingPage } from "./settings.js";
 import { PulseCommandCard, PulseFooterAction, PulseOverlay, PulseSection } from "./slots.js";
@@ -92,32 +92,6 @@ import { defineStore, Switch, Tag, primitives } from "./adapter.js";
 				}
 			} catch (error) {
 				ctx.logger?.warn?.("dsh-pulse: sessions service wait unavailable", error);
-			}
-			/** 时间线深链：宿主的 Timeline 是右侧栏的一个页签，没有 URL 路由，
-			 *  唯一入口是 `sidebarRight.openTabIn(sessionId, "timeline")`。两条
-			 *  契约限制写在它的类型注释里：未注册的 kind 会抛错（dsh-timeline
-			 *  没装时），不在屏幕上的会话什么都不做。所以路由只在两个服务都
-			 *  到位后登记，调用前先查 `sidebarRightTabs.get("timeline")`，而
-			 *  链接只在当前会话的行上渲染——出现即可用。老宿主没有这些服务
-			 *  就一直是 null，面板不画链接。 */
-			try {
-				if (typeof ctx.inject === "function") {
-					ctx.inject(["sidebarRight", "sidebarRightTabs"], (scope) => {
-						const sidebarRight = typeof scope.get === "function" ? scope.get("sidebarRight") : scope.sidebarRight;
-						const sidebarRightTabs = typeof scope.get === "function" ? scope.get("sidebarRightTabs") : scope.sidebarRightTabs;
-						if (typeof sidebarRight?.openTabIn !== "function" || typeof sidebarRightTabs?.get !== "function") return;
-						setTimelineLink({
-							available: () => sidebarRightTabs.get("timeline") !== undefined,
-							open: (sessionId) => {
-								if (sidebarRightTabs.get("timeline") === undefined) return false;
-								sidebarRight.openTabIn(sessionId, "timeline");
-								return true;
-							},
-						});
-					});
-				}
-			} catch (error) {
-				ctx.logger?.warn?.("dsh-pulse: timeline link unavailable", error);
 			}
 			/** '/' 菜单行：dsh 只为它自己的六个内置命令画图标（那张表写死在宿主
 			 *  里，没有面插件接口），而官方客户端命令契约 `ctx.commandUi.register`

@@ -257,7 +257,9 @@ export type SessionGroup = {
     total: number;
 };
 /**
- * Families of the collaboration panel: every session present in the window
+ * Families of a session list — the family view's data layer (the session
+ *  rows a workspace detail shows, grouped by the parent that spawned them):
+ *  every session present in the window
  * that spawned subagents, with all of them as members (nested ones
  * included, `nest` = depth under the family root) and each member's share
  * of the family's subagent tokens. A subagent whose own parent is out of
@@ -272,7 +274,7 @@ export type SessionGroup = {
  */
 export declare function collaborationOf(groups: Array<SessionGroup>): Array<object>;
 /**
- * Timeline work per session for the collaboration panel: the task tree the
+ * Timeline work per session for the family view: the task tree the
  * session last touched (its title, falling back to the session's own
  * name) with the window's report and failure counts. Only sessions with a
  * tree or an outcome list.

@@ -128,8 +128,13 @@ export declare const pulseUsageSchema: z.ZodObject<{
             peak: z.ZodNumber;
             offpeak: z.ZodNumber;
         }, z.core.$strict>>;
+        timelineReports: z.ZodOptional<z.ZodNumber>;
+        timelineFailures: z.ZodOptional<z.ZodNumber>;
     }, z.core.$strict>>;
     title: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    label: z.ZodOptional<z.ZodString>;
+    timelineTitle: z.ZodOptional<z.ZodString>;
+    teamNames: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
     firstDay: z.ZodNullable<z.ZodString>;
 }, z.core.$strict>;
 /** Full fold-state shape of the `pulseUsage` unit: the client-visible view
@@ -201,8 +206,13 @@ export declare const pulseUsageStateSchema: z.ZodObject<{
             peak: z.ZodNumber;
             offpeak: z.ZodNumber;
         }, z.core.$strict>>;
+        timelineReports: z.ZodOptional<z.ZodNumber>;
+        timelineFailures: z.ZodOptional<z.ZodNumber>;
     }, z.core.$strict>>;
     title: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    label: z.ZodOptional<z.ZodString>;
+    timelineTitle: z.ZodOptional<z.ZodString>;
+    teamNames: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
     firstDay: z.ZodNullable<z.ZodString>;
     lastTurn: z.ZodNullable<z.ZodNumber>;
     inheritedEventCount: z.ZodNumber;
@@ -325,6 +335,18 @@ export type WindowedRecord = {
      */
     auxByDay?: Record<string, any>;
     /**
+     * - a subagent's own descriptor label.
+     */
+    label?: string;
+    /**
+     * - the task tree the session last touched.
+     */
+    timelineTitle?: string;
+    /**
+     * - team member id → name.
+     */
+    teamNames?: Record<string, string>;
+    /**
      * - schema-2 fallback scalar.
      */
     turns?: number;
@@ -373,17 +395,23 @@ export type WindowedRecord = {
  * @property {Object.<string, number>} [toolCallsByDay]
  * @property {Object.<string, Object.<string, number>>} [toolHistogramByDay] - day → tool → count.
  * @property {Object.<string, any>} [auxByDay] - day → aux counters.
+ * @property {string} [label] - a subagent's own descriptor label.
+ * @property {string} [timelineTitle] - the task tree the session last touched.
+ * @property {Object.<string, string>} [teamNames] - team member id → name.
  * @property {number} [turns] - schema-2 fallback scalar.
  * @property {number} [toolCalls] - schema-2 fallback scalar.
  */
 /** Fold-semantics version of the `pulseUsage` unit at load (the host adds its
- *  peak-hour epoch on top). 13 folds the auxiliary bills the fold used to
- *  miss: `compaction/summary` carries real usage under its own provider and
- *  model, and `plugin:timeline/request` at least carries its call. 12 was the
- *  fork-aware fold: a seeded session's inherited prefix stops counting, so
- *  every row persisted before it replays from its log. 11 added the tool
+ *  peak-hour epoch on top). 14 adds the collaboration attribution: a
+ *  subagent's own descriptor label, the timeline report outcomes, the task
+ *  tree title, the team member names — all optional, all absent until the
+ *  log carries them. 13 folded the auxiliary bills the fold used to miss:
+ *  `compaction/summary` carries real usage under its own provider and
+ *  model, and `plugin:timeline/request` at least carries its call. 12 was
+ *  the fork-aware fold: a seeded session's inherited prefix stops counting,
+ *  so every row persisted before it replays from its log. 11 added the tool
  *  histogram. */
-export declare const PULSE_STATE_VERSION = 13;
+export declare const PULSE_STATE_VERSION = 14;
 /**
  * The `pulseUsage` projection unit for `ctx.sessionProjections.register`.
  *
@@ -419,6 +447,14 @@ export declare const PULSE_STATE_VERSION = 13;
  *   `step/end`, the step-lifecycle authority, so rejected/empty turns are
  *   uncounted (first-party `dsh-session-stats` parity).
  * - `toolCallsByDay` counts `tool/call` events.
+ * - `label` is a subagent's own `subagent/descriptor` label. Every stored
+ *   subagent log opens with it one event above the fork cut, so the cut has
+ *   already kept an inherited parent descriptor out: a forked subagent names
+ *   itself, never the parent title it inherited below the cut. `timelineTitle`
+ *   is the tree the session's timeline plugin last reported, `teamNames` the
+ *   members an Agent Teams parent spawned (member id = child session id), and
+ *   `auxByDay.timelineReports` / `timelineFailures` the outcomes of timeline
+ *   report summaries. All four stay absent until the log carries them.
  * - `firstDay` is the lexicographically earliest attributed day; day keys
  *   come from each event's timestamp in the local timezone. Events with a
  *   missing timestamp are not day-attributed (they still count nowhere —
@@ -517,7 +553,8 @@ export declare function sliceRecord(record: WindowedRecord, fromDay: string, toD
  * session's auxiliary requests (official web_search, title LLM, timeline
  * reports) with the title entries' text-derived input/output estimates, so
  * the detail view can render an honest auxiliary bill without re-reading the
- * log. Events inside
+ * log. Timeline report outcomes ride along as `timeline-report` /
+ * `timeline-failure` entries — counts only, never priced. Events inside
  * a fork's inherited prefix are skipped, like the projection fold: the
  * detail view shows the session's own consumption, not its parent's.
  *
@@ -530,7 +567,9 @@ export declare function sliceRecord(record: WindowedRecord, fromDay: string, toD
  *   `events` = `[{t, i, o, cr, cw, key}]` sorted by time; `turns` =
  *   `[{start, end, preview}]` in time order, where `preview` is the turn's
  *   opening user message flattened and capped to 40 code points (null when
- *   the turn carries no user text); `aux` = `[{t, kind, key?, in?, out?}]`.
+ *   the turn carries no user text); `aux` = `[{t, kind, key?, in?, out?}]`
+ *   with `kind` one of `search`, `title`, `timeline` (a report request),
+ *   `timeline-report` (a summary that landed), `timeline-failure`.
  */
 export declare function timelineEvents(events: Array<{
     type?: string;

@@ -126,6 +126,18 @@ export type WindowedRecord = {
      * - day → aux counters.
      */
     auxByDay?: Record<string, any>;
+    /**
+     * - a subagent's own descriptor label.
+     */
+    label?: string;
+    /**
+     * - the task tree the session last touched.
+     */
+    timelineTitle?: string;
+    /**
+     * - team member id → name.
+     */
+    teamNames?: Record<string, string>;
 };
 /**
  * One windowed session record as served by `/pulse/stats` (a `sliceRecord`
@@ -151,6 +163,9 @@ export type WindowedRecord = {
  * @property {Object.<string, number>} [toolCallsByDay]
  * @property {Object.<string, Object.<string, number>>} [toolHistogramByDay] - day → tool → count.
  * @property {Object.<string, any>} [auxByDay] - day → aux counters.
+ * @property {string} [label] - a subagent's own descriptor label.
+ * @property {string} [timelineTitle] - the task tree the session last touched.
+ * @property {Object.<string, string>} [teamNames] - team member id → name.
  */
 /**
  * Session list grouped by project — the session panel's data source. Each
@@ -160,6 +175,12 @@ export type WindowedRecord = {
  * adds the subagent subtotal (count, tokens, cost) so "project × subagent"
  * reads at a glance.
  *
+ * Within a group a subagent row follows the parent it was spawned from,
+ * nested ones included, so a family reads as one block; `nestDepth` is the
+ * row's depth under its top-most ancestor in the list, and `childCount` /
+ * `childTokens` / `childShare` summarize a row's direct children (count,
+ * tokens, and their share of parent + children).
+ *
  * @param {Array<WindowedRecord>} sessions - payload session records.
  * @param {{pricing?: Array<any>, fx?: {usdToCny?: number}, monthly?: string[], model?: string, models?: Array<any>, catalog?: any}} [options]
  *   - `{pricing, fx, monthly, model, catalog}` for cost estimation and an
@@ -168,7 +189,7 @@ export type WindowedRecord = {
  *   the model drop out entirely, so the project-detail panel never
  *   surfaces other models' sessions. `catalog` (the model config) lets
  *   provider-less rows resolve their provider for monthly/cost matching.
- * @returns {Array<object>} groups sorted by total tokens descending.
+ * @returns {Array<SessionGroup>} groups sorted by total tokens descending.
  */
 export declare function sessionGroups(sessions: Array<WindowedRecord>, { pricing, fx, monthly, model, models, catalog }?: {
     pricing?: Array<any>;
@@ -179,7 +200,95 @@ export declare function sessionGroups(sessions: Array<WindowedRecord>, { pricing
     model?: string;
     models?: Array<any>;
     catalog?: any;
-}): Array<object>;
+}): Array<SessionGroup>;
+export type SessionRow = {
+    id: string | null;
+    createdAt: number | null;
+    title: string | null;
+    label: string | null;
+    day: string | null;
+    subagent: boolean;
+    parentSession: string | null;
+    delegationDepth: number;
+    tokens: {
+        input: number;
+        output: number;
+        cacheRead: number;
+        cacheWrite: number;
+    };
+    total: number;
+    cost: any;
+    topModel: string | null;
+    monthly: boolean;
+    modelRows: Array<object>;
+    auxSearch: number;
+    offpeakShare: number | null;
+    timelineTitle: string | null;
+    timelineReports: number;
+    timelineFailures: number;
+    teamNames: Record<string, string> | null;
+    nestDepth: number;
+    childCount: number;
+    childTokens: number;
+    childShare: number;
+};
+export type SessionGroup = {
+    project: string | null;
+    sessions: SessionRow[];
+    mainSessions: number;
+    subagentSessions: number;
+    tokens: {
+        input: number;
+        output: number;
+        cacheRead: number;
+        cacheWrite: number;
+    };
+    subagentTokens: {
+        input: number;
+        output: number;
+        cacheRead: number;
+        cacheWrite: number;
+    };
+    cost: any;
+    /**
+     * - the subagent subtotal's cost, null without subagents.
+     */
+    subagentCost: any;
+    total: number;
+};
+/**
+ * Families of the collaboration panel: every session present in the window
+ * that spawned subagents, with all of them as members (nested ones
+ * included, `nest` = depth under the family root) and each member's share
+ * of the family's subagent tokens. A subagent whose own parent is out of
+ * the window is a member of an "absent parent" family keyed by that parent
+ * id (`absentParent`), so no subagent spend falls off the panel. The head
+ * carries its own `tokens`, the members' sum as `memberTokens`, and the
+ * team member names the head's log recorded. Families sort by member
+ * tokens; members arrive in list order.
+ *
+ * @param {Array<SessionGroup>} groups - `sessionGroups` output.
+ * @returns {Array<object>} families, busiest first.
+ */
+export declare function collaborationOf(groups: Array<SessionGroup>): Array<object>;
+/**
+ * Timeline work per session for the collaboration panel: the task tree the
+ * session last touched (its title, falling back to the session's own
+ * name) with the window's report and failure counts. Only sessions with a
+ * tree or an outcome list.
+ *
+ * @param {Array<SessionGroup>} groups - `sessionGroups` output.
+ * @returns {Array<{id: string|null, project: string|null, sessionTitle: string|null, title: string|null, reports: number, failures: number}>}
+ *   most reports first.
+ */
+export declare function timelineOfWork(groups: Array<SessionGroup>): Array<{
+    id: string | null;
+    project: string | null;
+    sessionTitle: string | null;
+    title: string | null;
+    reports: number;
+    failures: number;
+}>;
 /**
  * Slice one session's event timeline at up to three break timestamps into
  * segments, each with its token totals, tier-aware cost and per-model split.

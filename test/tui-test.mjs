@@ -476,16 +476,20 @@ test("mergeRecord folds auxByDay (counts + title estimates) into the merged corp
 				titleIn: { peak: 500, offpeak: 0 },
 				titleOut: { peak: 32, offpeak: 0 },
 				titleKey: "deepseek-v4-pro",
+				timelineReports: 2,
+				timelineFailures: 1,
 			},
 		},
 	});
 	mergeRecord(target, {
-		auxByDay: { "2026-09-28": { search: { peak: 1, offpeak: 0 } } },
+		auxByDay: { "2026-09-28": { search: { peak: 1, offpeak: 0 }, timelineFailures: 1 } },
 	});
 	assert.deepEqual(target.auxByDay["2026-09-28"].search, { peak: 3, offpeak: 1 });
 	assert.deepEqual(target.auxByDay["2026-09-28"].title, { peak: 1, offpeak: 0 });
 	assert.equal(target.auxByDay["2026-09-28"].titleIn.peak, 500);
 	assert.equal(target.auxByDay["2026-09-28"].titleKey, "deepseek-v4-pro");
+	assert.deepEqual([target.auxByDay["2026-09-28"].timelineReports, target.auxByDay["2026-09-28"].timelineFailures], [2, 2],
+		"plain outcome counters sum across sessions instead of dropping out of the merged record");
 });
 
 /* ---- dsh 0.2.0 adaptation locks: data-layer shapes + C-070 fallback ---- */
@@ -556,17 +560,21 @@ test("collect on a forked session: the inherited prefix stays out of the rollup"
 		listed: [{ header: structuredClone(header), live: false, persisted: true }],
 		read: () => ({
 			session: structuredClone(header),
-			inheritedEventCount: 2,
+			inheritedEventCount: 3,
 			events: [
 				{ seq: 0, ...messageEvent(DAY_TS, 9_000_000) },
-				{ seq: 1, type: "session/end-seed", time: DAY_TS, data: { inherited: true } },
-				{ seq: 2, ...messageEvent(DAY_TS, 1_000_000) },
+				{ seq: 1, time: DAY_TS, ...titleEvent("父会话标题") },
+				{ seq: 2, type: "session/end-seed", time: DAY_TS, data: { inherited: true } },
+				{ seq: 3, time: DAY_TS, type: "subagent/descriptor", data: { version: 3, mode: "continuable", label: "深挖 minimax-code 功能机制", agentModel: "deepseek-v4-pro" } },
+				{ seq: 4, ...messageEvent(DAY_TS, 1_000_000) },
 			],
 		}),
 	});
 	const result = await collect(ctx, {});
 	assert.equal(result.empty, false);
 	assert.equal(result.record.byDay[day].input, 1_000_000, "only the fork's own usage reaches the rollup");
+	assert.equal(result.sessions[0].title, "深挖 minimax-code 功能机制",
+		"a subagent goes by its own descriptor label, never the parent title it inherited below the cut");
 });
 
 test("pulseStripToggle: show / repeat / refusal / teardown, no leaked poll", () => {

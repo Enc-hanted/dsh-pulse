@@ -54,11 +54,11 @@ put("--D-work-projA--/s-main/session.v4.jsonl.zstd",
   frame([header("s-main")]),
   frame([msg(0, tA, FLASH, 1_000_000, { cacheReadTokens: 500_000 }), stepEnd(1, tA, 1)]),
   frame([msg(2, tB, GLM, 2_000_000), stepEnd(3, tB, 2), { seq: 4, type: "session/title", time: tB, data: { title: "主会话" } }]));
-// a forked subagent: inherited parent history, the marker, then its own tail
+// a forked subagent: inherited parent history, the marker, then its own descriptor and tail
 put("--D-work-projA--/s-fork/session.v4.jsonl.zstd",
   frame([header("s-fork", { isSeeded: true, origin: "subagent", parentSession: "s-main" })]),
   frame([msg(0, tB, GLM, 9_000_000), stepEnd(1, tB, 1), { seq: 2, type: "session/title", time: tB, data: { title: "主会话" } }, marker(3, tB)]),
-  frame([msg(4, tB, GLM, 1_000_000), stepEnd(5, tB, 2)]));
+  frame([{ seq: 4, type: "subagent/descriptor", time: tB, data: { version: 3, mode: "continuable", provider: "spawn", label: "Audit the release surface", agentModel: GLM } }, msg(5, tB, GLM, 1_000_000), stepEnd(6, tB, 2)]));
 // a seeded log whose seq run is broken: the cut cannot be trusted
 put("--D-work-projA--/s-forkbad/session.v4.jsonl.zstd",
   frame([header("s-forkbad", { isSeeded: true, origin: "subagent", parentSession: "s-main" }), msg(0, tB, GLM, 9_000_000), marker(5, tB)]));
@@ -141,6 +141,8 @@ put("--D-work-projA--/loose.txt", Buffer.from("not a session either"));
   assert.equal(byId["s-main"].project, "projA", "the project label is the dashboard's (cwd basename)");
   assert.deepEqual([byId["s-fork"].fork, byId["s-fork"].parent, byId["s-fork"].tokens, byId["s-fork"].inherited], [true, "s-main", 1_000_000, 9_000_000],
     "the fork keeps its own usage and reports what it carries of its parent's");
+  assert.equal(byId["s-fork"].label, "Audit the release surface", "a subagent carries its own descriptor label");
+  assert.equal(byId["s-main"].label, null, "a main session carries none");
   assert.deepEqual([byId["s-legacy"].fork, byId["s-legacy"].tokens, byId["s-plain"].tokens, byId["s-torn"].tokens, byId["s-torn"].torn], [false, 250_000, 25, 100, true]);
   assert.equal(byId["s-forkbad"], undefined);
   assert.equal(result.sessions[0].id, "s-main", "sessions sort by tokens");
@@ -166,8 +168,10 @@ put("--D-work-projA--/loose.txt", Buffer.from("not a session either"));
   const single = renderReport({ root, result: foldCorpus(listStore(root), { fromDay: dayB, toDay: dayB }) });
   assert.match(single, new RegExp(`^\\s+tokens\\s+project\\s+session\\s+fork\\s+parent\\s+by model\\s+inherited excluded$`, "m"));
   assert.match(single, new RegExp(`^\\s+2\\.00M\\s+projA\\s+s-main\\s+glm-5\\.4 2\\.00M`, "m"));
-  assert.match(single, new RegExp(`^\\s+1\\.00M\\s+projA\\s+s-fork\\s+↑\\s+s-main\\s+glm-5\\.4 1\\.00M\\s+9\\.00M$`, "m"),
-    "a fork row shows its parent and the inherited tokens it left out");
+  assert.match(single, new RegExp(`^\\s+1\\.00M\\s+projA\\s+└ s-fork\\s+Audit the release surface\\s+↑\\s+s-main\\s+glm-5\\.4 1\\.00M\\s+9\\.00M$`, "m"),
+    "a spawned session sits indented under its parent, named by its own label, with the inherited tokens it left out");
+  assert.match(single, /indented under another was spawned by it/, "the indentation is explained once");
+  assert.ok(single.indexOf("└ s-fork") > single.indexOf("projA  s-main"), "the child follows its parent");
   assert.match(single, new RegExp(`^\\s+100\\s+projB\\s+s-torn\\s+glm-5\\.4 100 !`, "m"), "a torn log is flagged in place");
   assert.doesNotMatch(single, /s-plain/, "a session with nothing on the day stays out of its table");
 

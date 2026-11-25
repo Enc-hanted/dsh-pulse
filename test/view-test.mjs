@@ -3,7 +3,7 @@ import {
   accentEntryOf, accentFillOf, accentLabDistance, ACCENT_MIN_DISTANCE, auxCalibration, auxDayUsage, bucketOf, bucketLabel, breaksSegments, buildView, cacheHitRateOf, clampSpan, costOf, costSeries, daysBetween,
   familyRouteOf, fmtClockMs, fmtCost, heatmapCells, heatmapLevel, hourlyCostSeries, hourlySeries, isOfficialProvider, modelAccentMap, modelFilterSet, keyMatchesFilter, monthKey, niceMax,
   officialEstimateRulesFor, providerLabelOf, rangeKeys, reconDrift, reconcileSeries, rollupKeyOf, rollupModelFamilies,
-  sessionGroups, sessionModelRows, shiftDay, statsFingerprint, weekStart,
+  sessionGroups, sessionModelRows, shiftDay, statsFingerprint, weekStart, collaborationOf, timelineOfWork,
   quotaBurn, quotaCalibrate, quotaCoverage, quotaFeeShare, quotaMonthlyFee, quotaProjectAttribution, quotaWindowTokens,
   footHintShow, footShareOf, footTodaySplitTokens, footTodayTokens, localDay, pickFootSource,
 } from "../src/view.js";
@@ -533,6 +533,97 @@ assert.deepEqual(sessionGroups([], {}), []);
 assert.deepEqual(sessionGroups(null, {}), []);
 // a session with no countable usage (no tokens, no model rows) is dropped
 assert.deepEqual(sessionGroups([null, { project: "x", byDay: {}, modelsByDay: {} }], {}).length, 0, "zero-usage session dropped");
+
+// --- collaboration attribution on the session rows ----------------------------
+// A subagent's own descriptor label names its row; family adjacency puts
+// every subagent right after the parent it was spawned from (nested ones
+// included), and a parent carries its direct children's count and tokens.
+const tierAll = (peakInput, offpeakInput) => ({
+  input: { peak: peakInput, offpeak: offpeakInput }, output: { peak: 0, offpeak: 0 },
+  cacheRead: { peak: 0, offpeak: 0 }, cacheWrite: { peak: 0, offpeak: 0 },
+});
+const famChild = (id, parent, over = {}) => sgRecord({
+  id, project: "repo", subagent: true, parentSession: parent, delegationDepth: 1, label: `任务 ${id}`,
+  title: "你是一个全新会话的编码代理",
+  byDay: { "2026-08-14": { input: 10, output: 0, cacheRead: 0, cacheWrite: 0 } },
+  modelsByDay: { "2026-08-14": { "deepseek-v4-flash": { input: 10, output: 0, cacheRead: 0, cacheWrite: 0 } } },
+  tiersByDay: { "2026-08-14": { "deepseek-v4-flash": tierAll(10, 0) } },
+  ...over,
+});
+const famMain = sgRecord({
+  id: "fm", project: "repo", title: "主会话", teamNames: { fc2: "zh-translator" }, timelineTitle: "移植功能分析",
+  auxByDay: { "2026-08-14": { timelineReports: 3, timelineFailures: 1 } },
+});
+const famGroups = sessionGroups([
+  famChild("fc3", "fc1"), famChild("fc1", "fm"), famMain, famChild("fc2", "fm", { teamNames: undefined }),
+], { pricing: sgPricing });
+const famRows = famGroups[0].sessions;
+assert.deepEqual(famRows.map((s) => s.id), ["fm", "fc1", "fc3", "fc2"], "a subagent follows its parent, nested ones included, siblings in arrival order");
+assert.deepEqual(famRows.map((s) => s.nestDepth), [0, 1, 2, 1], "nesting depth under the top-most ancestor in the list");
+assert.deepEqual([famRows[0].childCount, famRows[0].childTokens, famRows[0].childShare], [2, 20, 20 / 500], "a parent summarizes its DIRECT children");
+assert.deepEqual([famRows[1].childCount, famRows[1].childTokens, famRows[1].childShare], [1, 10, 0.5], "an intermediate parent its own");
+assert.deepEqual([famRows[3].childCount, famRows[3].childTokens, famRows[3].childShare], [0, 0, 0], "a leaf carries zeros");
+assert.deepEqual([famRows[1].label, famRows[1].title, famRows[1].total], ["任务 fc1", "你是一个全新会话的编码代理", 10], "the label rides beside the LLM title; total is the token sum");
+assert.equal(famRows[0].label, null, "a main session has no label");
+assert.deepEqual([famRows[0].timelineTitle, famRows[0].timelineReports, famRows[0].timelineFailures, famRows[0].teamNames],
+  ["移植功能分析", 3, 1, { fc2: "zh-translator" }], "tree title, report outcomes and team names ride the row");
+assert.equal(famRows[3].teamNames, null, "no team event → no team names");
+// off-peak share: the main session is 330 of 480 tokens off-peak (day 2 whole, day 1's cache reads); a tier-less record reads null
+assert.equal(famRows[0].offpeakShare, 330 / 480);
+assert.equal(famRows[1].offpeakShare, 0, "an all-peak member reads 0, not null");
+assert.equal(sessionGroups([sgRecord({ id: "nt", project: "repo", tiersByDay: {} })], {})[0].sessions[0].offpeakShare, null, "no tier split → no reading");
+// a model filter hides the aux-derived counters like the search badge, and narrows the share
+const famFiltered = sessionGroups([famMain, famChild("fc1", "fm")], { pricing: sgPricing, model: "other-model" });
+assert.equal(famFiltered.length, 0, "nobody used the other model");
+const famFiltered2 = sessionGroups([famMain, famChild("fc1", "fm")], { pricing: sgPricing, model: "deepseek-v4-flash" });
+assert.equal(famFiltered2[0].sessions[0].timelineReports, 0, "a model filter hides the aux-derived counters, like the search badge");
+assert.equal(famFiltered2[0].sessions[1].nestDepth, 1, "family adjacency holds under a filter");
+assert.equal(famFiltered2[0].sessions[1].label, "任务 fc1", "so does the label");
+// a subagent whose parent is out of the list stays a root and carries no family note
+const orphanRows = sessionGroups([famChild("fo", "gone")], { pricing: sgPricing })[0].sessions;
+assert.deepEqual([orphanRows[0].nestDepth, orphanRows[0].childCount], [0, 0]);
+// a parent cycle strands nothing
+const cyc = sessionGroups([famChild("ca", "cb"), famChild("cb", "ca")], { pricing: sgPricing })[0].sessions;
+assert.deepEqual(cyc.map((s) => s.id).sort(), ["ca", "cb"], "every row survives a parent cycle");
+
+// --- collaborationOf / timelineOfWork: the collaboration panel -----------------
+assert.deepEqual(collaborationOf([]), []);
+assert.deepEqual(collaborationOf(null), []);
+const fams = collaborationOf(famGroups);
+assert.equal(fams.length, 1, "one family per parent present in the window");
+assert.deepEqual([fams[0].id, fams[0].title, fams[0].project, fams[0].tokens, fams[0].memberTokens, fams[0].familyTokens],
+  ["fm", "主会话", "repo", 480, 30, 510], "the head's own tokens, the members' sum, and both");
+assert.deepEqual(fams[0].members.map((m) => [m.id, m.nest, m.label, m.share]), [["fc1", 1, "任务 fc1", 1 / 3], ["fc3", 2, "任务 fc3", 1 / 3], ["fc2", 1, "任务 fc2", 1 / 3]],
+  "members in list order with their nesting and share of the member tokens");
+assert.deepEqual(fams[0].teamNames, { fc2: "zh-translator" }, "the head's team member names ride the family");
+// orphan subagents: one family per ABSENT parent id, each orphan a first-level member, nested ones deeper
+const orphans = collaborationOf(sessionGroups([
+  famChild("o1", "gone-1"), famChild("o2", "gone-1"), famChild("o3", "gone-2"), famChild("o1a", "o1"), sgRecord({ id: "alone", project: "repo" }),
+], { pricing: sgPricing }));
+assert.deepEqual(orphans.map((f) => [f.id, f.absentParent, f.title, f.tokens, f.memberTokens, f.members.map((m) => [m.id, m.nest])]),
+  [[null, "gone-1", null, 0, 30, [["o1", 1], ["o1a", 2], ["o2", 1]]], [null, "gone-2", null, 0, 10, [["o3", 1]]]],
+  "absent parents group by id, the busier family first, a session without subagents founds none");
+// families sort by member tokens, then by key
+const sorted = collaborationOf(sessionGroups([
+  sgRecord({ id: "big", project: "repo", label: undefined }), famChild("bc", "big", { byDay: { "2026-08-14": { input: 70, output: 0, cacheRead: 0, cacheWrite: 0 } } }),
+  famMain, famChild("sc", "fm"),
+], { pricing: sgPricing }));
+assert.deepEqual(sorted.map((f) => f.id), ["big", "fm"], "busiest family first");
+assert.equal(sorted[0].members[0].share, 1, "a sole member owns the whole member share");
+
+assert.deepEqual(timelineOfWork([]), []);
+assert.deepEqual(timelineOfWork(null), []);
+assert.deepEqual(timelineOfWork(famGroups), [{ id: "fm", project: "repo", sessionTitle: "主会话", title: "移植功能分析", reports: 3, failures: 1 }],
+  "the tree title names the row, with the window's outcomes");
+const tlMixed = sessionGroups([
+  sgRecord({ id: "t1", project: "repo", title: "无树有报告", auxByDay: { "2026-08-14": { timelineFailures: 2 } } }),
+  famMain,
+  sgRecord({ id: "t3", project: "repo", title: "只有树", timelineTitle: "空树" }),
+  sgRecord({ id: "t4", project: "repo", title: "无关会话" }),
+], { pricing: sgPricing });
+assert.deepEqual(timelineOfWork(tlMixed).map((r) => [r.id, r.title, r.sessionTitle, r.reports, r.failures]),
+  [["fm", "移植功能分析", "主会话", 3, 1], ["t1", "无树有报告", "无树有报告", 0, 2], ["t3", "空树", "只有树", 0, 0]],
+  "most reports first; a tree-less session falls back to its own name; a session with neither stays out");
 
 // a model filter narrows each session to that model and drops never-users:
 // the project detail never surfaces other models' sessions

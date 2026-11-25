@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import {
   balanceSpendSeries, BEIJING_OFFSET_MS, buildPayload, clampDays, dayStart, estimateTokens, foldEvents, localDay,
-  MAX_WINDOW_DAYS, normalizePeakHours, PEAK_HOURS, projectOf, pulseProjectionDefinition, PULSE_STATE_VERSION,
+  MAX_WINDOW_DAYS, normalizePeakHours, PEAK_HOURS, projectOf, pulseProjectionDefinition, pulseUsageSchema, PULSE_STATE_VERSION,
   resolveWindow, sliceRecord, tierAt, timelineEvents, validDay,
 } from "../src/aggregate.js";
 import { modelKey } from "../src/view.js";
@@ -157,8 +157,8 @@ assert.equal(flatHoursFolded.tiersByDay[localDay(bj(10))]["m-flat"].input.offpea
 // the definition carries its stateVersion (host bumps it on peak-hour changes);
 // 13 folds the auxiliary bills the fold used to miss — compaction usage and
 // timeline call counts — so persisted pre-13 rows re-fold to pick them up
-assert.equal(PULSE_STATE_VERSION, 13);
-assert.equal(pulseProjectionDefinition().stateVersion, 13);
+assert.equal(PULSE_STATE_VERSION, 14);
+assert.equal(pulseProjectionDefinition().stateVersion, 14);
 assert.equal(pulseProjectionDefinition({ stateVersion: 99 }).stateVersion, 99);
 // The official peak windows run Monday–Friday: the same 10:00 Beijing hour is
 // off-peak on a weekend. 2026-08-15 is a Saturday, 2026-08-14 a Friday. A bare
@@ -399,6 +399,112 @@ let tlState = tlUnit.init({}, 0);
 tlState = tlUnit.apply(tlState, { type: "plugin:timeline/request", time: bj(12), seq: 3, data: { request: { provider: "", model: "glm-5.4" } } });
 assert.deepEqual(tlUnit.stateSchema.parse(tlState), tlState, "the timeline count survives the state boundary");
 
+// --- timeline report outcomes ------------------------------------------------
+// A summary that landed and one that failed count per day as plain numbers
+// (no tier side); the request behind either is counted under `timeline`
+// already. Nothing here is a token.
+const outcomeTier = tierAt(bj(12));
+const outcomeView = foldEvents([
+  { type: "plugin:timeline/request", time: bj(12), data: { request: { provider: "zai-coding-cn", model: "glm-5.3-flash" } } },
+  { type: "plugin:timeline/report", time: bj(12) + 60_000, data: { version: 1, sessionId: "s", report: { id: "report-1", level: "turn" } } },
+  { type: "plugin:timeline/failure", time: bj(12) + 120_000, data: { version: 1, sessionId: "s", id: "report-2", message: "Timeline summary failed with RATE_LIMIT: 429" } },
+  { type: "plugin:timeline/failure", time: bj(12) + 180_000, data: { version: 1, sessionId: "s", id: "report-3", message: "Timeline summary did not finish normally" } },
+  { type: "plugin:timeline/report", time: 0, data: { report: { id: "report-4" } } },
+]);
+assert.deepEqual(tlOutcomeAux(outcomeView), {
+  timeline: { peak: outcomeTier === "peak" ? 1 : 0, offpeak: outcomeTier === "peak" ? 0 : 1 },
+  timelineReports: 1,
+  timelineFailures: 2,
+}, "landed and failed summaries count per day; an untimestamped one counts nowhere");
+assert.deepEqual(outcomeView.byDay, {}, "report outcomes never touch the token totals");
+function tlOutcomeAux(view) { return view.auxByDay[auxDay]; }
+let outcomeState = tlUnit.init({}, 0);
+outcomeState = tlUnit.apply(outcomeState, { type: "plugin:timeline/failure", time: bj(12), seq: 4, data: { id: "report-9" } });
+assert.deepEqual(tlUnit.stateSchema.parse(outcomeState), outcomeState, "the outcome count survives the state boundary");
+// an inherited outcome belongs to the parent, like every inherited event
+const outcomeFork = foldEvents([
+  { type: "plugin:timeline/report", time: bj(12), seq: 1, data: { report: { id: "r" } } },
+], {}, { inheritedEventCount: 2 });
+assert.deepEqual(outcomeFork.auxByDay, {}, "an inherited report outcome stays out of the fork");
+
+// --- collaboration attribution: label, tree title, team names ----------------
+// A subagent's own log opens with its descriptor one event above the fork
+// cut. Its label names the job the spawning call asked for; the parent
+// title inherited below the cut still rides (a fork stays named after its
+// conversation), and the session list shows the label ahead of it.
+const subLog = [
+  seqd(0, { type: "session/title", time: t1, data: { title: "父会话标题" } }),
+  seqd(1, { type: "assistant/message", time: t1, data: { turn: 1, step: 1, message: { source: src }, usage: { inputTokens: 1000 } } }),
+  seqd(2, { type: "session/end-seed", time: t1, data: { inherited: true } }),
+  seqd(3, { type: "subagent/descriptor", time: t1, data: { version: 3, mode: "continuable", provider: "spawn", label: " 深挖 minimax-code 功能机制 ", agentProvider: "zai-coding-cn", agentModel: "glm-5.3-flash", agentReasoningEffort: "high" } }),
+  seqd(4, { type: "assistant/message", time: t1, data: { turn: 2, step: 1, message: { source: src }, usage: { inputTokens: 10 } } }),
+];
+const subView = foldEvents(subLog, {}, { inheritedEventCount: 3 });
+assert.equal(subView.label, "深挖 minimax-code 功能机制", "the descriptor label, trimmed");
+assert.equal(subView.title, "父会话标题", "the inherited parent title still rides beside it");
+assert.deepEqual(subView.byDay, { [day]: { input: 10, output: 0, cacheRead: 0, cacheWrite: 0 } }, "own usage only, as before");
+assert.deepEqual(pulseUsageSchema.parse(subView), subView, "a labelled view passes the wire boundary");
+// an inherited descriptor never names the fork: a fork of a subagent opens
+// with that subagent's descriptor below the cut
+const forkOfSubagent = foldEvents([
+  seqd(0, { type: "subagent/descriptor", time: t1, data: { label: "父代理" } }),
+  seqd(1, { type: "session/end-seed", time: t1, data: { inherited: true } }),
+], {}, { inheritedEventCount: 2 });
+assert.equal("label" in forkOfSubagent, false, "an inherited descriptor stays out of the fork");
+assert.equal(forkOfSubagent.label, undefined);
+// last descriptor wins; a blank one changes nothing; the state reference
+// holds when an event carries no new label
+const subUnit = pulseProjectionDefinition();
+let subState = subUnit.init({}, 0);
+for (const event of subLog) subState = subUnit.apply(subState, event);
+assert.equal(subUnit.apply(subState, seqd(5, { type: "subagent/descriptor", time: t1, data: { label: "  " } })), subState, "a blank label leaves the state untouched");
+assert.equal(subUnit.apply(subState, seqd(5, { type: "subagent/descriptor", time: t1, data: { version: 3 } })), subState, "a descriptor without a label leaves the state untouched");
+const relabelled = subUnit.apply(subState, seqd(5, { type: "subagent/descriptor", time: t1, data: { label: "Final workspace entry check" } }));
+assert.equal(subUnit.view(relabelled).label, "Final workspace entry check", "the newest descriptor names the session");
+assert.deepEqual(subUnit.stateSchema.parse(relabelled), relabelled, "the label survives the state boundary");
+// without the events the view keeps its exact pre-attribution shape
+for (const quiet of [foldEvents([]), foldEvents([seqd(0, { type: "assistant/message", time: t1, data: { message: { source: src }, usage: { inputTokens: 5 } } })])]) {
+  assert.equal("label" in quiet, false);
+  assert.equal("timelineTitle" in quiet, false);
+  assert.equal("teamNames" in quiet, false);
+}
+// the task tree the session last touched names its timeline work
+const treeView = foldEvents([
+  { type: "plugin:timeline/tree", time: t1, data: { version: 1, sessionId: "s", callId: "c1", tree: { id: "tree-1", title: "移植功能分析", tasks: [] } } },
+  { type: "plugin:timeline/tree", time: t1, data: { version: 1, sessionId: "s", callId: "c2", tree: { id: "tree-2", title: "" }, receipt: { total: 3 } } },
+]);
+assert.equal(treeView.timelineTitle, "移植功能分析", "a blank title changes nothing");
+assert.equal(foldEvents([
+  { type: "plugin:timeline/tree", time: t1, data: { tree: { id: "tree-1", title: " 移植功能分析 " } } },
+  { type: "plugin:timeline/tree", time: t1, data: { tree: { id: "tree-1", title: "补齐回执" } } },
+]).timelineTitle, "补齐回执", "the newest tree event wins");
+assert.equal("timelineTitle" in foldEvents([{ type: "plugin:timeline/tree", time: t1, data: { callId: "c" } }]), false, "a tree event without a title adds nothing");
+// Agent Teams membership: the member IS a child session, so the parent
+// keeps the board's name under the child id; other team events count nothing
+const teamView = foldEvents([
+  { type: "team/mode", time: t1, data: { enabled: true } },
+  { type: "team/member", time: t1, data: { version: 2, teamId: "session-p", member: { id: "c1", name: " release-auditor ", description: "Read-only audit", phase: "provisioning" } } },
+  { type: "team/member", time: t1, data: { version: 2, teamId: "session-p", member: { id: "c1", name: "release-auditor", description: "Read-only audit", phase: "active" } } },
+  { type: "team/member", time: t1, data: { version: 2, teamId: "session-p", member: { id: "c2", name: "zh-translator", phase: "active" } } },
+  { type: "team/member", time: t1, data: { version: 2, teamId: "session-p", member: { id: "", name: "nameless" } } },
+  { type: "team/member", time: t1, data: { version: 2, teamId: "session-p", member: { id: "c3" } } },
+  { type: "team/task", time: t1, data: { version: 2, teamId: "session-p", task: { id: "task-1", revision: 1 } } },
+]);
+assert.deepEqual(teamView.teamNames, { c1: "release-auditor", c2: "zh-translator" }, "member names trimmed, id-less or name-less members skipped");
+const teamUnit = pulseProjectionDefinition();
+const teamState = foldEventsState(teamUnit, [
+  { type: "team/member", time: t1, data: { member: { id: "c1", name: "release-auditor" } } },
+]);
+assert.equal(teamUnit.apply(teamState, { type: "team/member", time: t1, data: { member: { id: "c1", name: "release-auditor", phase: "done" } } }), teamState,
+  "the same member under the same name leaves the state untouched");
+assert.deepEqual(teamUnit.stateSchema.parse(teamState), teamState, "team names survive the state boundary");
+/** The fold STATE behind `foldEvents`' view (the view cuts the internals). */
+function foldEventsState(unit, events) {
+  let state = unit.init({}, 0);
+  for (const event of events) state = unit.apply(state, event);
+  return state;
+}
+
 // --- sliceRecord ------------------------------------------------------------
 const base = {
   id: "s1", createdAt: noon(-1), createdDay: localDay(noon(-1)), project: "demo", subagent: false,
@@ -455,6 +561,15 @@ assert.equal(parented.parentSession, "s0");
 assert.equal(parented.delegationDepth, 2, "delegation depth passes through");
 assert.equal(sliceRecord({ ...base, parentSession: undefined, delegationDepth: "x" }, daysAgo(7), today()).delegationDepth, 0, "invalid depth normalizes to 0");
 assert.equal(sliceRecord({ ...base }, daysAgo(7), today()).parentSession, null, "absent parent is null");
+// collaboration attribution rides the window slice, and only when present
+const named = sliceRecord({ ...base, label: "深挖 minimax-code 功能机制", timelineTitle: "移植功能分析", teamNames: { c1: "release-auditor" } }, daysAgo(7), today());
+assert.deepEqual([named.label, named.timelineTitle, named.teamNames], ["深挖 minimax-code 功能机制", "移植功能分析", { c1: "release-auditor" }], "label, tree title and team names pass through");
+const unnamed = sliceRecord({ ...base, label: null, timelineTitle: undefined, teamNames: {} }, daysAgo(7), today());
+assert.deepEqual(["label", "timelineTitle", "teamNames"].filter((key) => key in unnamed), [], "an empty attribution leaves no key behind — the record stays byte-identical");
+const outcomeRecord = sliceRecord({
+  ...base, auxByDay: { [localDay(noon(-3))]: { timeline: { peak: 2, offpeak: 0 }, timelineReports: 2, timelineFailures: 1 } },
+}, daysAgo(7), today());
+assert.deepEqual(outcomeRecord.auxByDay[localDay(noon(-3))], { timeline: { peak: 2, offpeak: 0 }, timelineReports: 2, timelineFailures: 1 }, "report outcomes ride the aux slice whole");
 
 // --- timelineEvents: event-level usage timeline + turn boundaries -------------
 const tl = timelineEvents([
@@ -657,5 +772,20 @@ assert.deepEqual(timelineEvents([
   { t: 700, kind: "timeline", key: "zai-coding-cn\u0000glm-5.3-flash" },
   { t: 800, kind: "timeline", key: null },
 ], "timeline requests ride the aux array with their billed model");
+
+// report outcomes ride beside them as bare counts (the detail line's
+// failure number), never with a price shape, and respect the fork cut
+assert.deepEqual(timelineEvents([
+  { type: "plugin:timeline/report", time: 700, data: { version: 1, report: { id: "r1" } } },
+  { type: "plugin:timeline/failure", time: 800, data: { version: 1, id: "r2", message: "RATE_LIMIT" } },
+  { type: "plugin:timeline/report", time: 0, data: { report: { id: "r3" } } },
+]).aux, [
+  { t: 700, kind: "timeline-report" },
+  { t: 800, kind: "timeline-failure" },
+], "landed and failed summaries ride the aux array; an untimestamped one stays out");
+assert.deepEqual(timelineEvents([
+  { seq: 0, type: "plugin:timeline/failure", time: 700, data: { id: "r0" } },
+  { seq: 1, type: "plugin:timeline/report", time: 800, data: { report: { id: "r1" } } },
+], { inheritedEventCount: 1 }).aux, [{ t: 800, kind: "timeline-report" }], "an inherited outcome stays out");
 
 console.log("aggregate-test: all assertions passed");

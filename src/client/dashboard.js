@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useSyncExternalStore, jsx, jsxs } from "./react.js";
-import { COST_STACK_STORAGE, RANGE_PRESETS, TREND_STACK_STORAGE, UNPRICED_HINT_TOKENS, catalogNames, consumeExplicitClose, currentMainSessionId, dataChangedBus, dataChangedSnapshot, fill, fmtClock, fmtTokens, httpError, loadCostStack, loadPanels, loadSeen, loadTheme, loadTrendStack, loadViewSnapshot, onSessionsReady, saveSeen, saveViewSnapshot, sessionsRetainSample, sessionsSourceInfo, setTheme, subscribeDataChanged, subscribeTheme, useBalance, useCatalog, useEscape, usePulseStats, useQuota } from "./stores.js";
-import { BucketChart, BucketXLabels, CostTrendPanel, HeatmapChart, HourlyChart, HourlyCostChart, ModelBars, ProjectTable, ReconTable, SessionsPanel, accentOf, focusProjectLabel } from "./charts.js";
+import { COST_STACK_STORAGE, RANGE_PRESETS, TREND_STACK_STORAGE, UNPRICED_HINT_TOKENS, catalogNames, consumeExplicitClose, currentMainSessionId, dataChangedBus, dataChangedSnapshot, fill, fmtClock, fmtTokens, httpError, loadCostStack, loadPanels, loadSeen, loadTheme, loadTrendStack, loadViewSnapshot, onSessionsReady, openTimelineTab, saveSeen, saveViewSnapshot, sessionsRetainSample, sessionsSourceInfo, setTheme, subscribeDataChanged, subscribeTheme, timelineLinkReady, useBalance, useCatalog, useEscape, usePulseStats, useQuota } from "./stores.js";
+import { BucketChart, BucketXLabels, CollabPanel, CostTrendPanel, HeatmapChart, HourlyChart, HourlyCostChart, ModelBars, ProjectTable, ReconTable, SessionsPanel, accentOf, focusProjectLabel } from "./charts.js";
 import { HeroCard } from "./heroCard.js";
 import { Toolbar } from "./toolbar.js";
 import { QuotaPanel } from "./quota.js";
@@ -1102,6 +1102,17 @@ import { AUX_CALL_FEE, AUX_MODEL_KEY, auxCalibration, buildView, clampSpan, cost
 				dimWrap(panels.projects !== false && project === "" && jsxs("div", { children: [
 					jsx("div", { className: "dp_panelTitle", children: t("projectsTitle") }),
 					jsx(ProjectTable, { projects: view.projects, topProjects: data.topProjects, onSelect: setProjectUser, t }),
+				] })),
+				/** 协作归因：跨工作区按家族列出子代理与团队的用量，再列时间线报告
+				 *  计数；选中工作区时收窄到该工作区。窗口里没有可归因的对象时组件
+				 *  自己返回 null，整节退场。时间线深链只在当前会话的行上出现。 */
+				dimWrap(panels.collab !== false && jsx("div", { children: [
+					jsx("div", { className: "dp_panelTitle", children: t("collabTitle") }),
+					jsx(CollabPanel, {
+						groups: project === "" ? sessionGroupsData : sessionGroupsData.filter((g) => g.project === project),
+						names, focusSessionId: focusSession === null ? null : focusSession.id,
+						timelineReady: timelineLinkReady(), onOpenTimeline: openTimelineTab, t,
+					}),
 				] })),
 				dimWrap(panels.sessions !== false && project !== "" && jsxs("div", { children: [
 					jsxs("div", { className: "dp_panelTitle", children: [

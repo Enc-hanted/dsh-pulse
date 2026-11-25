@@ -131,13 +131,14 @@ import { applyDisplay } from "../view.js";
 			 *  请求，从 /pulse/session 的 aux 事件聚合；搜索按（自校准后的）形状
 			 *  折算，标题按折算层给出的实文估算 token 计价，事件按自身时刻定峰
 			 *  谷。时间线请求没有 usage 事件——只计数，不计价；次数不随成本
-			 *  开关变化。 */
+			 *  开关变化。报告结果（成功 / 失败）同样只计数：失败数进这一行。 */
 			const auxEvents = (Array.isArray(state.data?.aux) ? state.data.aux : [])
 				.filter((e) => e !== null && typeof e === "object" && Number.isFinite(e.t));
 			const billShape = auxShape !== null && typeof auxShape === "object" ? auxShape : AUX_SHAPE;
 			const auxSearchN = auxEvents.filter((e) => e.kind === "search").length;
 			const auxTitleN = auxEvents.filter((e) => e.kind === "title").length;
 			const auxTimelineN = auxEvents.filter((e) => e.kind === "timeline").length;
+			const auxTimelineFailN = auxEvents.filter((e) => e.kind === "timeline-failure").length;
 			let auxCost = 0;
 			if (auxEvents.length > 0 && costEnabled) {
 				const maps = ruleMaps(pricing);
@@ -260,6 +261,7 @@ import { applyDisplay } from "../view.js";
 					jsx("span", { className: "dp_auxBillName", children: t("detailAuxTitle") }),
 					jsx("span", { children: fill(t("detailAuxLine"), { s: auxSearchN, t: auxTitleN }) }),
 					auxTimelineN > 0 && jsx("span", { children: fill(t("detailAuxTimeline"), { n: auxTimelineN }) }),
+				auxTimelineFailN > 0 && jsx("span", { className: "dp_auxFail", children: fill(t("detailAuxFailures"), { n: auxTimelineFailN }) }),
 					costEnabled && auxCost > 0 && jsx("span", { children: `≈${moneyCny(auxCost)}` }),
 				] }),
 				jsxs("div", { className: "dp_curveWrap", onPointerLeave: () => setHoverTurn(null), children: [
@@ -477,22 +479,32 @@ import { applyDisplay } from "../view.js";
 								] }, mr.key);
 							};
 							const current = isCurrent(s);
-							return jsxs("div", { className: `dp_sessRow${current ? " dp_sessRowCurrent" : ""}`, children: [
+							const nest = Number.isFinite(s.nestDepth) ? s.nestDepth : 0;
+							// A subagent goes by its own descriptor label; the LLM title
+							// (for a subagent a fragment of its delegation prompt, for a
+							// forked one the parent's title) stays on hover.
+							const name = s.label ?? s.title ?? (s.id === null || s.id === undefined ? "—" : String(s.id).slice(-8));
+							return jsxs("div", {
+								className: `dp_sessRow${nest > 0 ? " dp_sessRowChild" : ""}${current ? " dp_sessRowCurrent" : ""}`,
+								style: nest > 0 ? { "--dp-nest": nest } : undefined,
+								children: [
 								jsx(Tag, { tone: "neutral", fallbackClass: s.subagent ? "dp_sessBadge dp_sessBadgeSub" : "dp_sessBadge", children: s.subagent ? `${t("sessionSub")}${s.delegationDepth > 0 ? " " + s.delegationDepth : ""}` : t("sessionMain") }),
 								current && jsx(Tag, { tone: "solid", fallbackClass: "dp_sessBadge dp_sessBadgeCurrent", children: t("sessionCurrent") }),
 								// 辅助调用徽标：纯文本「搜索 ×N」，不用 emoji。计数是
 								// 该会话在窗口内的实测请求次数，与模型筛选一致。
 								s.auxSearch > 0 && jsx(Tag, { tone: "info", fallbackClass: "dp_sessBadge", children: fill(t("auxBadge"), { n: s.auxSearch }) }),
-								jsx("span", { className: "dp_sessTitle", title: s.title ?? undefined, children: s.title ?? (s.id === null || s.id === undefined ? "—" : String(s.id).slice(-8)) }),
+								// 家族备注：本行直接派生的子代理数、它们的 token、占父子合计的份额。
+								s.childCount > 0 && jsx(Tag, { tone: "neutral", fallbackClass: "dp_sessBadge dp_sessFamily", children: fill(t("sessionFamily"), { n: s.childCount, tokens: fmtTokens(s.childTokens), pct: Math.round((s.childShare || 0) * 100) }) }),
+								jsx("span", { className: "dp_sessTitle", title: s.label !== null && s.label !== undefined ? (s.title ?? undefined) : undefined, children: name }),
 								s.day && jsx("span", { className: "dp_sessRel", title: s.day, children: relLabel(s.day, t) }),
 								jsx("span", { className: "dp_sessModel", title: modelLabel, children: modelLabel }),
-								jsx("span", { className: "dp_sessNum", children: fmtTokens((s.tokens.input || 0) + (s.tokens.output || 0) + (s.tokens.cacheRead || 0) + (s.tokens.cacheWrite || 0)) }),
+								jsx("span", { className: "dp_sessNum", children: fmtTokens(s.total ?? ((s.tokens.input || 0) + (s.tokens.output || 0) + (s.tokens.cacheRead || 0) + (s.tokens.cacheWrite || 0))) }),
 								jsx("span", { className: "dp_sessNum", children: cost }),
 								jsx(Btn, { variant: "ghost", size: "sm", fallbackClass: "dp_miniBtn", onClick: () => openDetail(detailOpen ? null : s.id), children: t("sessionOpenDetail") }),
 								jsx("div", { className: "dp_sessModels", children: (Array.isArray(s.modelRows) ? s.modelRows : []).map(modelRow) }),
 								detailOpen && jsx(SessionDetail, { key: s.id, sessionId: s.id, pricing, fx, monthly, costEnabled, models, auxShape, catalog, names, t }),
 							] }, s.id ?? i);
-						}),
+							}),
 					] }),
 				] }, name);
 			}) });

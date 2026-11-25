@@ -6,6 +6,7 @@ import { primitives } from "./adapter.js";
 import { AUX_MODEL_KEY, accentEntryOf, bucketLabel, bucketOf, costOf, heatmapCells, heatmapLevel, isOffPeakDay, modelAccentMap, modelKey, moneyCny, niceMax, splitModelKey, ymd } from "./../view.js";
 		export { SearchPicker, ModelMultiPicker } from "./charts.pickers.js";
 		export { SessionDetail, SessionsPanel, focusProjectLabel } from "./charts.session-detail.js";
+	export { CollabPanel } from "./charts.collab.js";
 
 		//#region charts
 		/** Stacked bucket bar chart built from divs - responsive without

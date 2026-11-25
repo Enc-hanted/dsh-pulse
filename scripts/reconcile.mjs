@@ -233,6 +233,9 @@ export function foldCorpus(logs, { fromDay, toDay }) {
         project: projectOf(header.cwd, 1) ?? log.dir,
         fork: cut > 0,
         parent: typeof header.parentSession === "string" ? header.parentSession : null,
+        // A subagent names itself by its own descriptor label (the same
+        // field the dashboard's session list shows).
+        label: typeof view.label === "string" ? view.label : null,
         events: events.length,
         torn: stored.torn,
         inherited: 0,
@@ -307,22 +310,44 @@ export function renderReport({ root, result }) {
   if (days.length === 1) {
     out.push("");
     out.push(`${days[0]} by session`);
-    const modelCells = sessions.map((row) => `${byModel(new Map(Object.entries(row.models)))}${row.torn ? " !" : ""}`);
-    const modelWidth = Math.max(24, ...modelCells.map((cell) => cell.length));
+    const cellOf = (session) => `${byModel(new Map(Object.entries(session.models)))}${session.torn ? " !" : ""}`;
+    const modelWidth = Math.max(24, ...sessions.map((session) => cellOf(session).length));
+    const labelWidth = Math.max(8, ...sessions.map((session) => (session.label ?? "").length));
+    // Family adjacency: a session follows the parent it was spawned from,
+    // nested ones included, so a delegation reads as one block.
+    const byId = new Map(sessions.map((session) => [session.id, session]));
+    const kidsOf = new Map();
+    const heads = [];
+    for (const session of sessions) {
+      const parent = session.parent !== null ? byId.get(session.parent) : undefined;
+      if (parent !== undefined && parent !== session) kidsOf.set(parent.id, [...(kidsOf.get(parent.id) ?? []), session]);
+      else heads.push(session);
+    }
+    const ordered = [];
+    const placed = new Set();
+    const emit = (session, depth) => {
+      if (placed.has(session)) return;
+      placed.add(session);
+      ordered.push([session, depth]);
+      for (const kid of kidsOf.get(session.id) ?? []) emit(kid, depth + 1);
+    };
+    for (const session of heads) emit(session, 0);
+    for (const session of sessions) emit(session, 0);
     const row = (cells) => [
-      cells[0].padStart(9), cells[1].padEnd(16), cells[2].padEnd(8), cells[3].padEnd(4),
+      cells[0].padStart(9), cells[1].padEnd(16), cells[2].padEnd(10 + labelWidth), cells[3].padEnd(4),
       cells[4].padEnd(8), cells[5].padEnd(modelWidth), cells[6].padStart(18),
     ].join("  ").trimEnd();
     out.push(row(["tokens", "project", "session", "fork", "parent", "by model", "inherited excluded"]));
-    sessions.forEach((session, i) => out.push(row([
+    for (const [session, depth] of ordered) out.push(row([
       fmt(session.tokens),
       session.project,
-      shortId(session.id),
+      `${"  ".repeat(depth)}${depth > 0 ? "└ " : ""}${shortId(session.id)}${session.label === null ? "" : `  ${session.label}`}`,
       session.fork ? "↑" : "",
       session.parent === null ? "" : shortId(session.parent),
-      modelCells[i],
+      cellOf(session),
       session.inherited > 0 ? fmt(session.inherited) : "",
-    ])));
+    ]));
+    out.push("(a row indented under another was spawned by it; the name after an id is the agent's own descriptor label)");
   }
   if (skipped.length > 0) {
     out.push("");

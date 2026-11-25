@@ -674,6 +674,29 @@ import { createSnapshotStore } from "./adapter.js";
 		}
 		//#endregion
 
+		//#region timeline link
+		/** The host's route into the Timeline sidebar tab, filled by plugin.js
+		 *  once the sidebar and its tab registry services arrive: `open`
+		 *  switches the on-screen session to its `timeline` tab, `available`
+		 *  says the tab type is registered (dsh-timeline installed). Null on
+		 *  a host without either — the collaboration panel then draws no
+		 *  link, instead of one that throws or silently does nothing. */
+		let timelineLink = null;
+		export function setTimelineLink(link) {
+			timelineLink = link !== null && typeof link === "object"
+				&& typeof link.open === "function" && typeof link.available === "function" ? link : null;
+		}
+		export function timelineLinkReady() {
+			try { return timelineLink !== null && timelineLink.available() === true; } catch { return false; }
+		}
+		/** Switch the on-screen session to its Timeline tab; `false` when the
+		 *  host cannot (no route, no tab type, nothing done). */
+		export function openTimelineTab(sessionId) {
+			if (timelineLink === null || typeof sessionId !== "string" || sessionId === "") return false;
+			try { return timelineLink.open(sessionId) === true; } catch { return false; }
+		}
+		//#endregion
+
 		//#region trend stack pref
 		/** Usage-trend stack dimension: token types (default) or per-model
 		 *  accent colors. A localStorage preference like theme/panels. */

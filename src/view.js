@@ -304,6 +304,9 @@ function foldModelTokens(models) {
  * @property {Object.<string, number>} [toolCallsByDay]
  * @property {Object.<string, Object.<string, number>>} [toolHistogramByDay] - day → tool → count.
  * @property {Object.<string, any>} [auxByDay] - day → aux counters.
+ * @property {string} [label] - a subagent's own descriptor label.
+ * @property {string} [timelineTitle] - the task tree the session last touched.
+ * @property {Object.<string, string>} [teamNames] - team member id → name.
  */
 
 /**
@@ -314,6 +317,12 @@ function foldModelTokens(models) {
  * adds the subagent subtotal (count, tokens, cost) so "project × subagent"
  * reads at a glance.
  *
+ * Within a group a subagent row follows the parent it was spawned from,
+ * nested ones included, so a family reads as one block; `nestDepth` is the
+ * row's depth under its top-most ancestor in the list, and `childCount` /
+ * `childTokens` / `childShare` summarize a row's direct children (count,
+ * tokens, and their share of parent + children).
+ *
  * @param {Array<WindowedRecord>} sessions - payload session records.
  * @param {{pricing?: Array<any>, fx?: {usdToCny?: number}, monthly?: string[], model?: string, models?: Array<any>, catalog?: any}} [options]
  *   - `{pricing, fx, monthly, model, catalog}` for cost estimation and an
@@ -322,7 +331,7 @@ function foldModelTokens(models) {
  *   the model drop out entirely, so the project-detail panel never
  *   surfaces other models' sessions. `catalog` (the model config) lets
  *   provider-less rows resolve their provider for monthly/cost matching.
- * @returns {Array<object>} groups sorted by total tokens descending.
+ * @returns {Array<SessionGroup>} groups sorted by total tokens descending.
  */
 export function sessionGroups(sessions, { pricing = [], fx = {}, monthly = [], model = "", models = [], catalog = null } = {}) {
   const modelSet = modelFilterSet(model, models);
@@ -343,9 +352,13 @@ export function sessionGroups(sessions, { pricing = [], fx = {}, monthly = [], m
     // Session-list aux badge: the window's own search calls (the projection
     // folds per session, so this is per-session truth, not a day share).
     let auxSearch = 0;
+    let timelineReports = 0;
+    let timelineFailures = 0;
     if (auxVisible) {
       for (const aux of Object.values(record.auxByDay ?? {})) {
         auxSearch += (aux?.search?.peak || 0) + (aux?.search?.offpeak || 0);
+        timelineReports += aux?.timelineReports || 0;
+        timelineFailures += aux?.timelineFailures || 0;
       }
     }
     for (const m of models) if (m.provider === "") m.provider = resolveProvider(m);
@@ -356,16 +369,26 @@ export function sessionGroups(sessions, { pricing = [], fx = {}, monthly = [], m
     // A session with no countable usage (no tokens, no model rows) is a shell
     // — drop it, the detail panel lists actual consumption only.
     if (total <= 0 && models.length === 0) continue;
-    const label = record.project === null || record.project === undefined ? "" : String(record.project);
-    let group = byProject.get(label);
+    // Off-peak share of the row's tokens. Null without a tier split: a
+    // tier-less record prices whole days off-peak, which is no reading.
+    let peakTokens = 0;
+    let offpeakTokens = 0;
+    for (const m of models) {
+      peakTokens += m.peak.input + m.peak.output + m.peak.cacheRead + m.peak.cacheWrite;
+      offpeakTokens += m.offpeak.input + m.offpeak.output + m.offpeak.cacheRead + m.offpeak.cacheWrite;
+    }
+    const hasTiers = Object.values(record.tiersByDay ?? {}).some((dayTiers) => Object.keys(dayTiers ?? {}).length > 0);
+    const offpeakShare = hasTiers && peakTokens + offpeakTokens > 0 ? offpeakTokens / (peakTokens + offpeakTokens) : null;
+    const projectLabel = record.project === null || record.project === undefined ? "" : String(record.project);
+    let group = byProject.get(projectLabel);
     if (group === undefined) {
       group = {
-        project: label === "" ? null : label,
+        project: projectLabel === "" ? null : projectLabel,
         sessions: [], mainSessions: 0, subagentSessions: 0,
         tokens: EMPTY_TOKENS(), subagentTokens: EMPTY_TOKENS(),
         models: [], subagentModels: [],
       };
-      byProject.set(label, group);
+      byProject.set(projectLabel, group);
     }
     const cost = costOf(models, pricing, fx, monthly);
     const subagent = record.subagent === true;
@@ -384,16 +407,24 @@ export function sessionGroups(sessions, { pricing = [], fx = {}, monthly = [], m
       id: record.id ?? null,
       createdAt: record.createdAt ?? null,
       title: record.title ?? null,
+      // A subagent's own descriptor label; null for every other session.
+      label: typeof record.label === "string" && record.label !== "" ? record.label : null,
       day: record.day ?? null,
       subagent,
       parentSession: record.parentSession ?? null,
       delegationDepth: record.delegationDepth ?? 0,
       tokens,
+      total,
       cost,
       topModel: models[0]?.key ?? null,
       monthly: allMonthly(models),
       modelRows,
       auxSearch,
+      offpeakShare,
+      timelineTitle: typeof record.timelineTitle === "string" && record.timelineTitle !== "" ? record.timelineTitle : null,
+      timelineReports,
+      timelineFailures,
+      teamNames: record.teamNames ?? null,
     };
     group.sessions.push(row);
     addTokens(group.tokens, tokens);
@@ -408,7 +439,7 @@ export function sessionGroups(sessions, { pricing = [], fx = {}, monthly = [], m
   }
   const groups = [...byProject.values()].map((g) => ({
     project: g.project,
-    sessions: g.sessions,
+    sessions: orderFamily(g.sessions),
     mainSessions: g.mainSessions,
     subagentSessions: g.subagentSessions,
     tokens: g.tokens,
@@ -419,6 +450,209 @@ export function sessionGroups(sessions, { pricing = [], fx = {}, monthly = [], m
     total: g.tokens.input + g.tokens.output + g.tokens.cacheRead + g.tokens.cacheWrite,
   }));
   return groups.sort((a, b) => b.total - a.total);
+}
+
+/**
+ * One session row of a {@link SessionGroup}: identity (`id`, `title`, a
+ * subagent's descriptor `label`), family placement (`parentSession`,
+ * `nestDepth`, the direct-children summary `childCount` / `childTokens` /
+ * `childShare`), windowed `tokens` and their sum `total`, `offpeakShare`
+ * (null without a tier split), the timeline attribution (`timelineTitle`,
+ * `timelineReports`, `timelineFailures`) and the team member names a
+ * parent's log recorded (`teamNames`, null without any).
+ *
+ * @typedef {object} SessionRow
+ * @property {string|null} id
+ * @property {number|null} createdAt
+ * @property {string|null} title
+ * @property {string|null} label
+ * @property {string|null} day
+ * @property {boolean} subagent
+ * @property {string|null} parentSession
+ * @property {number} delegationDepth
+ * @property {{input: number, output: number, cacheRead: number, cacheWrite: number}} tokens
+ * @property {number} total
+ * @property {any} cost
+ * @property {string|null} topModel
+ * @property {boolean} monthly
+ * @property {Array<object>} modelRows
+ * @property {number} auxSearch
+ * @property {number|null} offpeakShare
+ * @property {string|null} timelineTitle
+ * @property {number} timelineReports
+ * @property {number} timelineFailures
+ * @property {Object.<string, string>|null} teamNames
+ * @property {number} nestDepth
+ * @property {number} childCount
+ * @property {number} childTokens
+ * @property {number} childShare
+ */
+
+/**
+ * One project's session rows in family order, with the project's subagent
+ * subtotal.
+ *
+ * @typedef {object} SessionGroup
+ * @property {string|null} project
+ * @property {SessionRow[]} sessions
+ * @property {number} mainSessions
+ * @property {number} subagentSessions
+ * @property {{input: number, output: number, cacheRead: number, cacheWrite: number}} tokens
+ * @property {{input: number, output: number, cacheRead: number, cacheWrite: number}} subagentTokens
+ * @property {any} cost
+ * @property {any} subagentCost - the subagent subtotal's cost, null without subagents.
+ * @property {number} total
+ */
+
+/**
+ * Family adjacency for one project's session rows: every subagent follows
+ * the parent it was spawned from (nested ones included, depth under the
+ * top-most ancestor in the list as `nestDepth`), a family with several
+ * children keeps them in the order they arrived. Each row also learns its
+ * direct children: `childCount`, `childTokens`, and `childShare` — their
+ * share of parent + children, 0 without children. Rows whose parent is
+ * absent (out of the window) stay in place.
+ *
+ * @param {SessionRow[]} rows
+ * @returns {SessionRow[]}
+ */
+function orderFamily(rows) {
+  const byId = new Map();
+  for (const row of rows) if (row.id !== null && row.id !== undefined) byId.set(row.id, row);
+  const kidsOf = new Map();
+  const roots = [];
+  for (const row of rows) {
+    const parent = row.parentSession !== null && row.parentSession !== row.id ? byId.get(row.parentSession) : undefined;
+    if (parent === undefined) roots.push(row);
+    else kidsOf.set(parent, [...(kidsOf.get(parent) ?? []), row]);
+  }
+  const ordered = [];
+  const placed = new Set();
+  const place = (row, depth) => {
+    if (placed.has(row)) return;
+    placed.add(row);
+    const children = kidsOf.get(row) ?? [];
+    row.nestDepth = depth;
+    row.childCount = children.length;
+    row.childTokens = children.reduce((sum, child) => sum + child.total, 0);
+    row.childShare = row.total + row.childTokens > 0 ? row.childTokens / (row.total + row.childTokens) : 0;
+    ordered.push(row);
+    for (const child of children) place(child, depth + 1);
+  };
+  for (const root of roots) place(root, 0);
+  for (const row of rows) place(row, 0); // a parent cycle strands nothing
+  return ordered;
+}
+
+/**
+ * Families of the collaboration panel: every session present in the window
+ * that spawned subagents, with all of them as members (nested ones
+ * included, `nest` = depth under the family root) and each member's share
+ * of the family's subagent tokens. A subagent whose own parent is out of
+ * the window is a member of an "absent parent" family keyed by that parent
+ * id (`absentParent`), so no subagent spend falls off the panel. The head
+ * carries its own `tokens`, the members' sum as `memberTokens`, and the
+ * team member names the head's log recorded. Families sort by member
+ * tokens; members arrive in list order.
+ *
+ * @param {Array<SessionGroup>} groups - `sessionGroups` output.
+ * @returns {Array<object>} families, busiest first.
+ */
+export function collaborationOf(groups) {
+  const rows = [];
+  for (const group of Array.isArray(groups) ? groups : []) {
+    for (const row of group?.sessions ?? []) {
+      if (row === null || typeof row !== "object" || row.id === null || row.id === undefined) continue;
+      rows.push({ ...row, project: group.project ?? null });
+    }
+  }
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const kidsOf = new Map();
+  const roots = [];
+  for (const row of rows) {
+    const parent = row.parentSession !== null && row.parentSession !== row.id ? byId.get(row.parentSession) : undefined;
+    if (parent === undefined) roots.push(row);
+    else kidsOf.set(parent.id, [...(kidsOf.get(parent.id) ?? []), row]);
+  }
+  const families = new Map();
+  const seen = new Set();
+  /** Every descendant of `row`, `nest` = depth under the family root. */
+  const descendants = (row, depth, into) => {
+    for (const kid of kidsOf.get(row.id) ?? []) {
+      if (seen.has(kid.id)) continue;
+      seen.add(kid.id);
+      into.push({ ...kid, nest: depth });
+      descendants(kid, depth + 1, into);
+    }
+  };
+  /** Fold one family head into its family: a present parent adds its own
+   *  tokens, an orphan subagent (its parent is out of the window) becomes
+   *  the first member of that parent's family. */
+  const absorb = (root) => {
+    if (seen.has(root.id)) return;
+    seen.add(root.id);
+    const orphan = root.subagent === true && root.parentSession !== null;
+    const key = orphan ? `absent\u0000${root.parentSession}` : root.id;
+    let family = families.get(key);
+    if (family === undefined) {
+      family = {
+        id: orphan ? null : root.id,
+        absentParent: orphan ? root.parentSession : null,
+        project: root.project,
+        title: orphan ? null : root.title,
+        label: orphan ? null : root.label,
+        teamNames: orphan ? {} : (root.teamNames ?? {}),
+        tokens: 0,
+        members: [],
+      };
+      families.set(key, family);
+    }
+    if (orphan) family.members.push({ ...root, nest: 1 });
+    else family.tokens += root.total;
+    // The orphan is itself a first-level member, so its own children nest one deeper.
+    descendants(root, orphan ? 2 : 1, family.members);
+  };
+  for (const root of roots) absorb(root);
+  // A parent cycle strands no row: whatever is still unseen heads a family.
+  for (const row of rows) absorb(row);
+  const out = [...families.values()].filter((family) => family.members.length > 0).map((family) => {
+    const memberTokens = family.members.reduce((sum, member) => sum + member.total, 0);
+    const members = family.members.map((member) => ({ ...member, share: memberTokens > 0 ? member.total / memberTokens : 0 }));
+    return { ...family, memberTokens, familyTokens: family.tokens + memberTokens, members };
+  });
+  const byKey = (family) => String(family.id ?? `\u0000${family.absentParent ?? ""}`);
+  return out.sort((a, b) => b.memberTokens - a.memberTokens || byKey(a).localeCompare(byKey(b)));
+}
+
+/**
+ * Timeline work per session for the collaboration panel: the task tree the
+ * session last touched (its title, falling back to the session's own
+ * name) with the window's report and failure counts. Only sessions with a
+ * tree or an outcome list.
+ *
+ * @param {Array<SessionGroup>} groups - `sessionGroups` output.
+ * @returns {Array<{id: string|null, project: string|null, sessionTitle: string|null, title: string|null, reports: number, failures: number}>}
+ *   most reports first.
+ */
+export function timelineOfWork(groups) {
+  const out = [];
+  for (const group of Array.isArray(groups) ? groups : []) {
+    for (const row of group?.sessions ?? []) {
+      if (row === null || typeof row !== "object") continue;
+      const reports = row.timelineReports || 0;
+      const failures = row.timelineFailures || 0;
+      if (reports === 0 && failures === 0 && row.timelineTitle === null) continue;
+      out.push({
+        id: row.id ?? null,
+        project: group.project ?? null,
+        sessionTitle: row.title ?? null,
+        title: row.timelineTitle ?? row.title ?? null,
+        reports,
+        failures,
+      });
+    }
+  }
+  return out.sort((a, b) => b.reports - a.reports || b.failures - a.failures);
 }
 
 /**

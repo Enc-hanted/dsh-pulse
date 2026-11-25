@@ -206,11 +206,32 @@ export const pulseUsageSchema = z.object({
     titleOut: auxTierCountsSchema.optional(),
     titleKey: z.string().optional(),
     timeline: auxTierCountsSchema.optional(),
+    /** Timeline report outcomes, plain counts with no tier side: a report's
+     *  summary call that landed (`plugin:timeline/report`) and one that
+     *  failed — rate limit, transport, unfinished (`plugin:timeline/failure`).
+     *  The request behind either is already counted under `timeline`. */
+    timelineReports: z.number().int().nonnegative().optional(),
+    timelineFailures: z.number().int().nonnegative().optional(),
   }).strict()),
   /** The session's display title (last `session/title` event wins): rides the
    *  fold so the sessions list can name rows without a per-session service
    *  round-trip. Null until the log carries one. */
   title: z.string().nullable().optional(),
+  /** The session's own agent label: a subagent's log opens with its
+   *  `subagent/descriptor`, whose `label` names the job it was spawned for
+   *  ("深挖 minimax-code 功能机制"). The session list shows it ahead of the
+   *  LLM title, which for a subagent is a fragment of its delegation prompt.
+   *  Absent until the log carries one — the view and the windowed record
+   *  stay byte-identical without it. */
+  label: z.string().optional(),
+  /** Title of the task tree the session's timeline plugin last reported
+   *  (`plugin:timeline/tree`): the collaboration panel names a session's
+   *  timeline work by it. Absent until the log carries one. */
+  timelineTitle: z.string().optional(),
+  /** Formal team members the session spawned (Agent Teams `team/member`):
+   *  member id — which IS the member's child session id — → the name the
+   *  team board shows. Absent until the log carries one. */
+  teamNames: z.record(z.string(), z.string()).optional(),
   firstDay: z.string().nullable(),
 }).strict();
 
@@ -381,18 +402,24 @@ export function tierAt(timeMs, peakHours = PEAK_HOURS) {
  * @property {Object.<string, number>} [toolCallsByDay]
  * @property {Object.<string, Object.<string, number>>} [toolHistogramByDay] - day → tool → count.
  * @property {Object.<string, any>} [auxByDay] - day → aux counters.
+ * @property {string} [label] - a subagent's own descriptor label.
+ * @property {string} [timelineTitle] - the task tree the session last touched.
+ * @property {Object.<string, string>} [teamNames] - team member id → name.
  * @property {number} [turns] - schema-2 fallback scalar.
  * @property {number} [toolCalls] - schema-2 fallback scalar.
  */
 
 /** Fold-semantics version of the `pulseUsage` unit at load (the host adds its
- *  peak-hour epoch on top). 13 folds the auxiliary bills the fold used to
- *  miss: `compaction/summary` carries real usage under its own provider and
- *  model, and `plugin:timeline/request` at least carries its call. 12 was the
- *  fork-aware fold: a seeded session's inherited prefix stops counting, so
- *  every row persisted before it replays from its log. 11 added the tool
+ *  peak-hour epoch on top). 14 adds the collaboration attribution: a
+ *  subagent's own descriptor label, the timeline report outcomes, the task
+ *  tree title, the team member names — all optional, all absent until the
+ *  log carries them. 13 folded the auxiliary bills the fold used to miss:
+ *  `compaction/summary` carries real usage under its own provider and
+ *  model, and `plugin:timeline/request` at least carries its call. 12 was
+ *  the fork-aware fold: a seeded session's inherited prefix stops counting,
+ *  so every row persisted before it replays from its log. 11 added the tool
  *  histogram. */
-export const PULSE_STATE_VERSION = 13;
+export const PULSE_STATE_VERSION = 14;
 
 /** The registry's fork cut, normalized: a positive safe integer, else 0
  *  (unseeded sessions, synthetic folds, older hosts that pass nothing). */
@@ -440,6 +467,14 @@ function isInherited(event, inheritedEventCount) {
  *   `step/end`, the step-lifecycle authority, so rejected/empty turns are
  *   uncounted (first-party `dsh-session-stats` parity).
  * - `toolCallsByDay` counts `tool/call` events.
+ * - `label` is a subagent's own `subagent/descriptor` label. Every stored
+ *   subagent log opens with it one event above the fork cut, so the cut has
+ *   already kept an inherited parent descriptor out: a forked subagent names
+ *   itself, never the parent title it inherited below the cut. `timelineTitle`
+ *   is the tree the session's timeline plugin last reported, `teamNames` the
+ *   members an Agent Teams parent spawned (member id = child session id), and
+ *   `auxByDay.timelineReports` / `timelineFailures` the outcomes of timeline
+ *   report summaries. All four stay absent until the log carries them.
  * - `firstDay` is the lexicographically earliest attributed day; day keys
  *   come from each event's timestamp in the local timezone. Events with a
  *   missing timestamp are not day-attributed (they still count nowhere —
@@ -564,6 +599,10 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = PULSE_S
     auxByDay: state.auxByDay,
     firstDay: state.firstDay,
     title: state.title ?? null,
+    // Collaboration attribution rides only once the log carried it.
+    ...(typeof state.label === "string" ? { label: state.label } : {}),
+    ...(typeof state.timelineTitle === "string" ? { timelineTitle: state.timelineTitle } : {}),
+    ...(state.teamNames !== undefined && Object.keys(state.teamNames).length > 0 ? { teamNames: state.teamNames } : {}),
   });
   return {
     key: "pulseUsage",
@@ -591,6 +630,27 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = PULSE_S
       }
       // Below the fork cut lies the parent's history, already folded there.
       if (isInherited(event, state.inheritedEventCount)) return state;
+      if (type === "subagent/descriptor") {
+        // The label names the job the spawning call asked for. Last one wins.
+        const label = typeof data.label === "string" && data.label.trim() !== "" ? data.label.trim() : null;
+        if (label === null || label === state.label) return state;
+        return { ...state, label };
+      }
+      if (type === "team/member") {
+        // Agent Teams membership: the member IS a child session, so the
+        // parent's fold keeps the board's display name under the child id.
+        const id = data.member?.id;
+        const name = typeof data.member?.name === "string" ? data.member.name.trim() : "";
+        if (typeof id !== "string" || id === "" || name === "") return state;
+        if (state.teamNames?.[id] === name) return state;
+        return { ...state, teamNames: { ...(state.teamNames ?? {}), [id]: name } };
+      }
+      if (type === "plugin:timeline/tree") {
+        // The tree the session last touched names its timeline work.
+        const title = typeof data.tree?.title === "string" && data.tree.title.trim() !== "" ? data.tree.title.trim() : null;
+        if (title === null || title === state.timelineTitle) return state;
+        return { ...state, timelineTitle: title };
+      }
       if (type === "assistant/message") {
         const usage = data.usage;
         if (usage === null || typeof usage !== "object") return state;
@@ -637,7 +697,8 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = PULSE_S
         return next;
       }
       if (type === "web/deepseek-search-llm-request" || type === "session/title-llm-request"
-        || type === "plugin:timeline/request") {
+        || type === "plugin:timeline/request" || type === "plugin:timeline/report"
+        || type === "plugin:timeline/failure") {
         // Auxiliary LLM calls (official web_search, title generation, timeline
         // reports): the log-only request event is the whole story locally.
         // Search keeps a count (the billing shape is the view's concern,
@@ -645,7 +706,8 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = PULSE_S
         // cap, so the fold records TEXT-DERIVED token estimates split by the
         // pricing tier of the event's own instant — the route's tier spec
         // when the event names one, the aux billing model's otherwise.
-        // Timeline keeps a plain count under its billed model's tier spec.
+        // Timeline keeps a plain count under its billed model's tier spec,
+        // and its report outcomes a plain day count.
         const day = dayOf(event);
         if (day === null) return state;
         const next = { ...state };
@@ -680,7 +742,7 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = PULSE_S
           // Last route wins: a mid-day config change prices the day under the
           // route its newest title call used (the estimate is labeled 估算).
           if (titleKey !== null) dayAux.titleKey = titleKey;
-        } else {
+        } else if (type === "plugin:timeline/request") {
           // Timeline report requests: no usage event exists, so the count is
           // the honest whole — tiered by the billed model the request names
           // (its own tier spec), the aux billing model's when it names none.
@@ -693,6 +755,11 @@ export function pulseProjectionDefinition({ peakHoursFor, stateVersion = PULSE_S
           const counts = { ...(dayAux.timeline ?? { peak: 0, offpeak: 0 }) };
           counts[tier] = (counts[tier] ?? 0) + 1;
           dayAux.timeline = counts;
+        } else {
+          // A report summary that landed, and one that failed: plain day
+          // counts. The request behind either is counted above already.
+          const outcome = type === "plugin:timeline/report" ? "timelineReports" : "timelineFailures";
+          dayAux[outcome] = (dayAux[outcome] ?? 0) + 1;
         }
         next.auxByDay[day] = dayAux;
         withFirstDay(next, day);
@@ -839,6 +906,10 @@ export function sliceRecord(record, fromDay, toDay) {
     toolCallsByDay,
     ...(hasHistogram ? { toolHistogramByDay } : {}),
     ...(hasAux ? { auxByDay } : {}),
+    // Collaboration attribution rides only when the fold produced it.
+    ...(typeof record.label === "string" && record.label !== "" ? { label: record.label } : {}),
+    ...(typeof record.timelineTitle === "string" && record.timelineTitle !== "" ? { timelineTitle: record.timelineTitle } : {}),
+    ...(record.teamNames !== null && typeof record.teamNames === "object" && Object.keys(record.teamNames).length > 0 ? { teamNames: record.teamNames } : {}),
   };
 }
 
@@ -852,7 +923,8 @@ export function sliceRecord(record, fromDay, toDay) {
  * session's auxiliary requests (official web_search, title LLM, timeline
  * reports) with the title entries' text-derived input/output estimates, so
  * the detail view can render an honest auxiliary bill without re-reading the
- * log. Events inside
+ * log. Timeline report outcomes ride along as `timeline-report` /
+ * `timeline-failure` entries — counts only, never priced. Events inside
  * a fork's inherited prefix are skipped, like the projection fold: the
  * detail view shows the session's own consumption, not its parent's.
  *
@@ -865,7 +937,9 @@ export function sliceRecord(record, fromDay, toDay) {
  *   `events` = `[{t, i, o, cr, cw, key}]` sorted by time; `turns` =
  *   `[{start, end, preview}]` in time order, where `preview` is the turn's
  *   opening user message flattened and capped to 40 code points (null when
- *   the turn carries no user text); `aux` = `[{t, kind, key?, in?, out?}]`.
+ *   the turn carries no user text); `aux` = `[{t, kind, key?, in?, out?}]`
+ *   with `kind` one of `search`, `title`, `timeline` (a report request),
+ *   `timeline-report` (a summary that landed), `timeline-failure`.
  */
 export function timelineEvents(events, { id = null, header = null, inheritedEventCount = 0 } = {}) {
   const out = [];
@@ -933,6 +1007,11 @@ export function timelineEvents(events, { id = null, header = null, inheritedEven
             : null,
         });
       }
+    } else if (event.type === "plugin:timeline/report" || event.type === "plugin:timeline/failure") {
+      // A report summary's outcome — landed or failed — for the detail
+      // line's failure count. Never priced.
+      const t = num(event.time);
+      if (t > 0) aux.push({ t, kind: event.type === "plugin:timeline/report" ? "timeline-report" : "timeline-failure" });
     }
   }
   out.sort((a, b) => a.t - b.t);

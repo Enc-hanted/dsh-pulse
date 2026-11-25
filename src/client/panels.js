@@ -9,7 +9,7 @@ export { compareVersions, PulseAboutPanel, PulseCardPanel, QuotaQueryPanel };
 		//#region panels page
 		/** Display settings — which observatory panels render, plus the
 		 *  sidebar balance toggle. Local preferences only. */
-		/** 显示面板清单：9 个开关。费用估算不在列——它由通用设置的
+		/** 显示面板清单：10 个开关。费用估算不在列——它由通用设置的
 		 *  「启用费用估算」唯一控制；月度预算与对账明细属于估算功能，
 		 *  跟随估算显隐，不设独立开关；侧栏余额只留在通用设置。 */
 		export const PANEL_ITEMS = (t) => [
@@ -20,6 +20,7 @@ export { compareVersions, PulseAboutPanel, PulseCardPanel, QuotaQueryPanel };
 			["cache", t("panelCache"), t("panelDescCache")],
 			["models", t("panelModels"), t("panelDescModels")],
 			["projects", t("panelProjects"), t("panelDescProjects")],
+			["collab", t("panelCollab"), t("panelDescCollab")],
 			["sessions", t("panelSessions"), t("panelDescSessions")],
 			["anomaly", t("panelAnomaly"), t("panelDescAnomaly")],
 		];

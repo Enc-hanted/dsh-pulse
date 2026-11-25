@@ -12,6 +12,7 @@ Releases are cut by git tag; this file lists the notable changes per release. Th
 - **Quick display redo**: one source selector (`footSource`) and two footer styles. Classic is the 0.6.1 face (still the default, no data traffic). Data adds a utilization ring / peak sun-moon icon, the source name (full or brand `short` by row width), unitless today tokens, a hover tip with windows, reset countdowns and fees, a <50%-share suggestion, and a self-drawn float for hosts without the official Float.
 - **Reconciliation script**: `scripts/reconcile.mjs` refolds the stored session logs with the plugin's own fold (the highest log generation per session, fork cut honored) and lists tokens by day, model and session, for when the dashboard and the provider's usage page disagree.
 - **Timeline report calls counted**: `plugin:timeline/request` carries no usage event, so the fold keeps the honest whole — a per-day count tiered by the billed model the request names. The session detail's auxiliary bill shows it (“Timeline ×N”) and never invents tokens for it; counts no longer hide when cost display is off.
+- **Collaboration attribution**: a subagent row goes by its own descriptor label — its LLM title is a fragment of the delegation prompt, and a forked one carried the parent's title outright — sits right after the parent that spawned it (nested ones included), and a parent row summarizes its direct children (count, tokens, share). A new **Collaboration** panel lists every family across workspaces (member label, model, tokens, off-peak share, share of the family's subagent tokens, the head's team member names) and the timeline work rows (task tree title, reports, failures), with “Open in Timeline” on the on-screen session. Timeline report outcomes are folded as plain day counts (`timelineReports` / `timelineFailures`); the session detail shows “failed ×N”. Nothing is attributed per task: usage events carry no task id.
 
 ### Changed
 
@@ -26,6 +27,7 @@ Releases are cut by git tag; this file lists the notable changes per release. Th
 - **Settings page uses one UI language**: write-through currency block, Tag badges, noun titles with one-line hints, one “Saved” toast.
 - **Search fee window**: ¥0.005/call applies 2026-11-01 → 11-18 12:00 Beijing only; server-side search bills tokens afterwards (official announcement).
 - **Single card-change entry path**: one `afterCardChange` sequence replaces four hand copies; shared guards live in `http-helpers.js`; the TUI quick-reader moved to a neutral module.
+- **Reconciliation report groups families**: `scripts/reconcile.mjs` lists a spawned session indented under its parent, named by its own descriptor label.
 
 ### Fixed
 
@@ -34,7 +36,8 @@ Releases are cut by git tag; this file lists the notable changes per release. Th
 - **Pricing page saved against a stale revision**: any other panel's write made the next save bounce 409; writes now read the live revision and retry once.
 - **USD config inflated official estimates**: the global currency re-labelled CNY rates without converting.
 - **Forked sessions re-billed their parent's history**: a seeded session (a fork, or a subagent spawned from the parent's history) opens with a copy of the parent's events, and the fold counted every copy; four such subagents in one evening read 3.5× the provider's bill. The fold now skips the inherited prefix on every read path (stats, session timeline, TUI). Persisted rows re-fold once on load, so earlier days correct themselves.
-- **Compaction runs were missing from the numbers**: the harness's compaction summary bills real tokens under the event's own provider and model (observed: 300k–410k input per run), but the fold counted only `assistant/message` — the dashboard sat a few million tokens under the provider's bill on compaction-heavy days. `compaction/summary` usage now folds like any message, into the day and model it belongs to (stateVersion 13; persisted rows re-fold once on load).
+- **Compaction runs were missing from the numbers**: the harness's compaction summary bills real tokens under the event's own provider and model (observed: 300k–410k input per run), but the fold counted only `assistant/message` — the dashboard sat a few million tokens under the provider's bill on compaction-heavy days. `compaction/summary` usage now folds like any message, into the day and model it belongs to (stateVersion 14 covers this and the two attribution fixes below; persisted rows re-fold once on load).
+- **Subagent rows showed the wrong name**: the session list titled a subagent by its LLM-generated `session/title`, which summarizes the delegation prompt (“You are a coding agent in a brand-new session”), or by the parent's title a fork inherited below the cut. The subagent's own `subagent/descriptor` label now names the row, on the web face and the TUI alike.
 
 ## v0.6.1 — 2026-10-19
 

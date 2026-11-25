@@ -114,6 +114,12 @@ export function mergeRecord(target, source) {
 				if (split !== null && split !== undefined) bucket.titleKey = split;
 				continue;
 			}
+			// Outcome counters (timeline reports / failures) are plain day
+			// counts: they sum like the tier splits instead of dropping out.
+			if (typeof split === "number") {
+				bucket[kind] = (bucket[kind] ?? 0) + split;
+				continue;
+			}
 			if (split === null || typeof split !== "object") continue;
 			const dst = (bucket[kind] ??= { peak: 0, offpeak: 0 });
 			dst.peak += split.peak ?? 0;
@@ -238,16 +244,29 @@ export function pricingLabelOf(row, day, pricing) {
 
 /** Session title: the projection cache's `title` row (the same global
  *  store the web face populates), then header fields, then null — the
- *  caller falls back to the short id. Zero-I/O read; never decodes logs. */
-function sessionTitleOf(ctx, header) {
+ *  caller falls back to the short id. Zero-I/O read; never decodes logs.
+ *  A subagent goes by its own descriptor label first, from the cache or
+ *  the fold already in hand: its LLM title is a fragment of the delegation
+ *  prompt, and a forked one carries the parent's title outright. */
+function sessionTitleOf(ctx, header, record = null) {
+	if (header?.origin === "subagent") {
+		const label = typeof record?.label === "string" ? record.label : cachedValue(ctx, header, "label");
+		if (typeof label === "string" && label !== "") return label;
+	}
 	const direct = header?.sessionTitle ?? header?.title;
 	if (typeof direct === "string" && direct !== "") return direct;
+	const title = cachedValue(ctx, header, "title");
+	return typeof title === "string" && title !== "" ? title : null;
+}
+
+/** One value of a session's cached projection row, or null — zero-I/O
+ *  when the cache service is absent and never throwing into the caller. */
+function cachedValue(ctx, header, key) {
 	const cache = ctx.get("sessionProjectionCache", false);
 	if (typeof cache?.cachedSnapshot !== "function") return null;
 	try {
-		const snap = cache.cachedSnapshot(header, ["title"]);
-		const title = snap?.values?.title;
-		return typeof title === "string" && title !== "" ? title : null;
+		const value = cache.cachedSnapshot(header, [key])?.values?.[key];
+		return value === undefined ? null : value;
 	} catch {
 		return null;
 	}
@@ -316,9 +335,10 @@ export async function collect(ctx, entryConfig) {
 			// Title chain: header fields / projection cache first, then the
 			// fold's own `session/title` event capture (zero extra I/O) —
 			// 0.2.0 headers carry no title, so the event line is often the
-			// only human-readable name left. shortSessionId stays the final
-			// fallback (scene-side).
-			title: sessionTitleOf(ctx, item.header) ?? folded.record?.title ?? null,
+			// only human-readable name left. A subagent's own descriptor
+			// label outranks every title source. shortSessionId stays the
+			// final fallback (scene-side).
+			title: sessionTitleOf(ctx, item.header, folded.record) ?? folded.record?.title ?? null,
 			recency: recency(item),
 			record: folded.record,
 		});
